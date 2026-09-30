@@ -5434,6 +5434,89 @@ async function checkpointHomeSource(
   })
 }
 
+test('Home reuses release summaries but reflects favorites, metadata, plays, availability and rollbacks', async (t) => {
+  const dir = await setupSeededLibrary(t)
+  const path = 'subsonic://1/teen-1'
+  // Virtual metadata editing is restricted to local-library tracks.
+  withDirectLibraryDb(dir, (db) => db.prepare("UPDATE tracks SET source_type = 'local' WHERE path = ?").run(path))
+  const builds: library.LibraryQueryDiagnostics[] = []
+  library.setLibraryQueryDiagnosticsReporter((entry) => {
+    if (entry.name === 'buildHomeReleaseSummaries') builds.push(entry)
+  })
+  t.after(() => library.setLibraryQueryDiagnosticsReporter(null))
+  const first = library.getHomeDashboard()
+  const teen = () => library.getHomeDashboard().newly_added_releases.find((release) => release.album === 'Teen Week')!
+  assert.equal(teen().favorite_track_count, 0)
+  library.getHomeDashboard({ rotation: 1, activeSource: { type: 'track', trackPath: path } })
+  await library.setAppMeta('home_test_unrelated', '1')
+  library.getHomeDashboard()
+  assert.equal(builds.length, 1, 'rotation, source, and unrelated settings reuse the library summary')
+  first.newly_added_releases[0].album = 'Mutated caller copy'
+  assert.ok(library.getHomeDashboard().newly_added_releases.every((release) => release.album !== 'Mutated caller copy'))
+
+  await library.addFavorite(path)
+  assert.equal(teen().favorite_track_count, 1)
+  await library.removeFavorite(path)
+  assert.equal(teen().favorite_track_count, 0)
+  await checkpointHomeSource(path, { type: 'track', trackPath: path }, 100_000)
+  assert.equal(teen().play_count, 1)
+  assert.equal(teen().last_played_at, 100_000)
+  const edited = await library.saveMetadataEdits({ mode: 'virtual', trackPaths: [path], changes: { album: 'Home edited release' } })
+  assert.equal(edited.succeeded, 1, JSON.stringify(edited.failures))
+  assert.ok(library.getHomeDashboard().newly_added_releases.some((release) => release.album === 'Home edited release'))
+  await library.setTrackAvailability(path, false, 'test')
+  assert.ok(library.getHomeDashboard().newly_added_releases.every((release) => release.album !== 'Home edited release'))
+  library.beginLibraryWriteTransaction()
+  await library.setTrackAvailability(path, true, null, { persist: false })
+  assert.ok(library.getHomeDashboard().newly_added_releases.some((release) => release.album === 'Home edited release'))
+  library.rollbackLibraryWriteTransaction()
+  assert.ok(library.getHomeDashboard().newly_added_releases.every((release) => release.album !== 'Home edited release'))
+  withDirectLibraryDb(dir, (db) => db.prepare('UPDATE tracks SET is_available = 1 WHERE path = ?').run(path))
+  assert.ok(library.getHomeDashboard().newly_added_releases.some((release) => release.album === 'Home edited release'),
+    'commits from other database connections also invalidate summaries')
+})
+
+test('Home playlist cards summarize normal, Favorites and limited dynamic collections without hydration', async (t) => {
+  const dir = await setupSeededLibrary(t)
+  const a = 'subsonic://1/split-a'
+  const b = 'subsonic://1/split-b'
+  const playlist = await library.createPlaylist('Card summary')
+  await library.addToPlaylist(playlist.id, [a, b])
+  await library.addFavorite(a)
+  await library.addFavorite(b)
+  const dynamic = await library.createDynamicPlaylist('Limited', { ...createDefaultDynamicPlaylistRules(), limit: 1 })
+  const dynamicTracks = library.getPlaylistTracks(dynamic.id)
+  const queried: string[] = []
+  library.setLibraryQueryDiagnosticsReporter((entry) => queried.push(entry.name))
+  t.after(() => library.setLibraryQueryDiagnosticsReporter(null))
+  await library.setAppMeta('home_test_invalidate_identity_snapshot', '1')
+  const card = (id: number) => library.getHomeDashboard({ activeSource: { type: 'playlist', playlistId: id } }).active_source
+  assert.equal(card(playlist.id)?.detail, '2 tracks')
+  assert.equal(card(playlist.id)?.artwork_hash, 'shared-cover')
+  assert.equal(card(-1)?.detail, '2 tracks')
+  assert.equal(card(dynamic.id)?.detail, '1 track')
+  assert.equal(card(dynamic.id)?.artwork_hash, dynamicTracks[0].artwork_hash)
+  assert.equal(card(dynamic.id)?.subtitle, 'Dynamic playlist')
+  assert.ok(!queried.includes('getDynamicPlaylistTracks'), 'cards must not hydrate dynamic collections')
+  assert.ok(!queried.includes('rebuildTrackSnapshot'), 'cards must not require track identity hydration')
+  await library.setTrackAvailability(a, false, 'test')
+  assert.equal(card(playlist.id)?.detail, '2 tracks', 'normal counts include unavailable entries while any remain playable')
+  await library.setTrackAvailability(b, false, 'test')
+  assert.equal(card(playlist.id), null)
+  assert.equal(card(-1), null)
+  await library.setTrackAvailability(a, true, null)
+  await library.renamePlaylist(playlist.id, 'Renamed card')
+  assert.equal(card(playlist.id)?.title, 'Renamed card')
+  withDirectLibraryDb(dir, (db) => {
+    db.prepare('UPDATE playlists SET custom_cover_hash = ? WHERE id = ?').run('custom-cover', playlist.id)
+    db.prepare('UPDATE playlists SET dynamic_rules_json = ? WHERE id = ?').run('{broken', dynamic.id)
+  })
+  assert.equal(card(playlist.id)?.artwork_hash, 'custom-cover')
+  assert.equal(card(dynamic.id), null)
+  await library.deletePlaylist(playlist.id)
+  assert.equal(card(playlist.id), null)
+})
+
 test('Jump back in records only the playlist for its songs and retains independently chosen sources', async (t) => {
   await setupSeededLibrary(t)
   const a = 'subsonic://1/split-a'

@@ -13,13 +13,15 @@ if (!fs.existsSync(nativeLink)) fs.symlinkSync(path.join(root, 'native'), native
 function launch(configPath) {
   const log = fs.openSync(`${configPath}.log`, 'w')
   const result = spawnSync(require('electron'), [path.join(__dirname, 'click-to-play.electron.cjs'), configPath], {
-    cwd: root, env, stdio: ['ignore', log, log], timeout: 310000
+    cwd: root, env, stdio: ['ignore', log, log], timeout: 310000, killSignal: 'SIGKILL'
   })
   fs.closeSync(log)
-  if (result.status !== 0) throw new Error(`Benchmark failed (${result.status}): ${configPath}.log ${result.error ?? ''}`)
+  if (result.status !== 0) throw new Error(`Benchmark failed (${result.status}, ${result.signal ?? 'no signal'}): ${configPath}.log ${result.error ?? ''}`)
 }
 
-if (process.argv[2] === '--single') {
+if (process.argv[2] === '--ui') {
+  require('./click-to-play.ui.cjs').run(path.resolve(process.argv[3] ?? '/private/tmp/astra-queue-ui'), launch)
+} else if (process.argv[2] === '--single') {
   launch(process.argv[3])
 } else {
   const output = process.argv[3] ?? fs.mkdtempSync(path.join(os.tmpdir(), 'astra-playback-results-'))

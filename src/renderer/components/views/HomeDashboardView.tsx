@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { HomeDashboard, HomeRediscoveryRelease, HomeReleaseSummary } from '../../../types/home'
 import { buildHomeSourceCards, playbackSourceKey, resolveCurrentPlaybackSource } from '../../../shared/home/playbackSources'
 import type { PlaybackSourceContext } from '../../../types/playbackSource'
@@ -22,6 +22,7 @@ import HomeCustomizeModal from '../home/HomeCustomizeModal'
 import HomeJumpBackIn, { type JumpBackInCard } from '../home/HomeJumpBackIn'
 import { activateHomePlayback, isHomePlaybackTargetActive } from '../../utils/homePlayback'
 import { formatHomeAddedAge } from '../../utils/homeAddedAge'
+import { createHomeDashboardLoader } from '../../utils/homeDashboardLoader'
 import type { HomeRecentTrack } from '../../utils/homeRecentTracks'
 import HomeSection from '../home/HomeSection'
 import HomeShelfNavigation from '../home/HomeShelfNavigation'
@@ -255,44 +256,49 @@ export default function HomeDashboardView() {
     }
   }, [homeSkyTimePreference])
 
-  const dashboardRequestId = useRef(0)
-  const loadHomeDashboard = useCallback(async () => {
-    const requestId = ++dashboardRequestId.current
+  const dashboardLoader = useMemo(() => createHomeDashboardLoader(
+    (query) => window.electronAPI.library.getHomeDashboard(query)
+  ), [])
+  const [homeSourcesVersion, setHomeSourcesVersion] = useState(0)
+  useEffect(() => {
+    const refresh = () => setHomeSourcesVersion((version) => version + 1)
+    window.addEventListener('astra:home-sources-changed', refresh)
+    return () => window.removeEventListener('astra:home-sources-changed', refresh)
+  }, [])
+
+  // Compare query values, not queue/source object identities. Metadata hydration
+  // can replace those objects without changing what Home needs to display.
+  const dashboardQueryKey = JSON.stringify({
+    rotation: rediscoveryRotation.index,
+    activeSource: queueSourceContext,
+    artistBrowseMode,
+    excludedReleaseIdentityKeys: activeAlbumIdentityKey ? [activeAlbumIdentityKey] : [],
+    jumpBackInReleaseLimit: HOME_SHELF_ITEM_LIMIT,
+    rediscoverLimit: HOME_SHELF_ITEM_LIMIT,
+    newlyAddedLimit: HOME_SHELF_ITEM_LIMIT
+  })
+  const deferDashboardRefresh = pendingPlaybackKey !== null || playbackState === 'loading'
+  useEffect(() => {
+    // A dashboard refresh must not compete with the selected track's load. Keep
+    // the existing cards visible and request the latest state once it settles.
+    if (deferDashboardRefresh) return
     setDashboardLoading(true)
     setDashboardError(null)
-    try {
-      const result = await window.electronAPI.library.getHomeDashboard({
-        rotation: rediscoveryRotation.index,
-        activeSource: queueSourceContext,
-        artistBrowseMode,
-        excludedReleaseIdentityKeys: activeAlbumIdentityKey ? [activeAlbumIdentityKey] : [],
-        jumpBackInReleaseLimit: HOME_SHELF_ITEM_LIMIT,
-        rediscoverLimit: HOME_SHELF_ITEM_LIMIT,
-        newlyAddedLimit: HOME_SHELF_ITEM_LIMIT
-      })
-      if (requestId !== dashboardRequestId.current) return
+    return dashboardLoader.request(JSON.parse(dashboardQueryKey), (result) => {
       setDashboard(result)
+      setDashboardLoading(false)
       if (result.day_key !== rediscoveryRotation.dayKey) {
         const reset = { dayKey: result.day_key, index: 0 }
         persistRediscoveryRotation(reset)
         setRediscoveryRotation(reset)
       }
-    } catch (error) {
-      if (requestId === dashboardRequestId.current) setDashboardError(error instanceof Error ? error.message : 'Home recommendations could not be loaded.')
-    } finally {
-      if (requestId === dashboardRequestId.current) setDashboardLoading(false)
-    }
-  }, [activeAlbumIdentityKey, rediscoveryRotation, queueSourceContext, artistBrowseMode])
-
-  useEffect(() => {
-    void loadHomeDashboard()
-    const refresh = () => { void loadHomeDashboard() }
-    window.addEventListener('astra:home-sources-changed', refresh)
-    return () => {
-      dashboardRequestId.current += 1
-      window.removeEventListener('astra:home-sources-changed', refresh)
-    }
-  }, [loadHomeDashboard, trackCacheVersion, playlists, favoriteTrackPaths])
+    }, (error) => {
+      setDashboardError(error instanceof Error ? error.message : 'Home recommendations could not be loaded.')
+      setDashboardLoading(false)
+    })
+    // Album/artist reloads represent library edits; cache fills only hydrate rows.
+  }, [dashboardLoader, dashboardQueryKey, deferDashboardRefresh, rediscoveryRotation.dayKey,
+    homeSourcesVersion, albums, artists, playlists, favoriteTrackPaths])
 
   const favoriteTracks = useMemo(
     () => resolveTrackPaths(favoriteTrackPaths) as HomeRecentTrack[],
@@ -614,7 +620,7 @@ export default function HomeDashboardView() {
               <div className="home-dashboard-error" role="alert">
                 <span>{dashboardError ?? actionError}</span>
                 {dashboardError ? (
-                  <button type="button" onClick={() => void loadHomeDashboard()}>Retry</button>
+                  <button type="button" onClick={() => setHomeSourcesVersion((version) => version + 1)}>Retry</button>
                 ) : (
                   <button type="button" onClick={() => setActionError(null)}>Dismiss</button>
                 )}

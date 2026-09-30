@@ -1,6 +1,10 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const directory = process.argv[2]
+if (process.argv.includes('--ui')) {
+  process.stdout.write(JSON.stringify(require('./click-to-play.ui.summary.cjs').summarize(directory), null, 2) + '\n')
+  return
+}
 const results = fs.readdirSync(directory).filter((name) => name.endsWith('.result.json')).map((name) => JSON.parse(fs.readFileSync(path.join(directory, name))))
 const groups = new Map()
 for (const result of results) {

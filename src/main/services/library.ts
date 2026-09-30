@@ -1408,10 +1408,12 @@ interface DerivedAlbumIdentityRow {
 
 let libraryWriteGeneration = 0
 let trackSnapshot: LibraryTrackSnapshot | null = null
+let homeReleaseSummaryCache: { dataVersion: number; releases: HomeReleaseSummary[] } | null = null
 
 const SNAPSHOT_WRITE_STATEMENT_PATTERN = /^\s*(?:INSERT|UPDATE|DELETE|REPLACE)\b/im
 const SNAPSHOT_ALWAYS_INVALIDATE_PATTERN = /^\s*(?:CREATE|DROP|ALTER|ROLLBACK)\b/im
 const SNAPSHOT_SOURCE_TABLE_PATTERN = /\b(?:tracks|track_metadata_overrides|app_meta)\b/i
+const HOME_RELEASE_SOURCE_TABLE_PATTERN = /\b(?:tracks|track_metadata_overrides|favorites)\b/i
 
 function invalidateLibraryTrackSnapshot(): void {
   libraryWriteGeneration += 1
@@ -1419,6 +1421,10 @@ function invalidateLibraryTrackSnapshot(): void {
 }
 
 function noteLibrarySqlMutation(sql: string): void {
+  if (SNAPSHOT_ALWAYS_INVALIDATE_PATTERN.test(sql)
+    || (SNAPSHOT_WRITE_STATEMENT_PATTERN.test(sql) && HOME_RELEASE_SOURCE_TABLE_PATTERN.test(sql))) {
+    homeReleaseSummaryCache = null
+  }
   if (SNAPSHOT_ALWAYS_INVALIDATE_PATTERN.test(sql)) {
     invalidateLibraryTrackSnapshot()
     return
@@ -3001,6 +3007,7 @@ export function closeDatabase(): void {
     db = null
   }
   invalidateLibraryTrackSnapshot()
+  homeReleaseSummaryCache = null
 }
 
 export function setReplayGainScanEnabled(enabled: boolean): void {
@@ -5879,6 +5886,82 @@ function buildHomeReleaseSummary(group: AlbumSummaryAccumulator): HomeReleaseSum
   }
 }
 
+function getHomeReleaseSummaries(): HomeReleaseSummary[] {
+  if (!db) return []
+  // Local mutations invalidate explicitly; data_version also catches commits
+  // from another connection without invalidating on unrelated app_meta writes.
+  const dataVersion = db.get<{ data_version: number }>('PRAGMA data_version')!.data_version
+  if (homeReleaseSummaryCache?.dataVersion === dataVersion) return homeReleaseSummaryCache.releases
+  const releases = measureLibraryQuery('buildHomeReleaseSummaries', () => {
+    const favoritePaths = new Set(db!.all<{ track_path: string }>(
+      'SELECT track_path FROM favorites'
+    ).map((row) => row.track_path))
+    return Array.from(collectAlbumSummaryGroups(null, favoritePaths).values())
+      .filter((group) => isAlbumGroupEligible(group, { includeSingles: true }))
+      .map(buildHomeReleaseSummary)
+      .filter((release) => release.available_track_count > 0)
+  })
+  homeReleaseSummaryCache = { dataVersion, releases }
+  return releases
+}
+
+function resolveHomePlaylistSource(
+  source: Extract<PlaybackSourceContext, { type: 'playlist' }>,
+  playedAt: number
+): HomePlaybackSourceSummary | null {
+  if (!db) return null
+  const playlist = source.playlistId === -1 ? null : db.get<{
+    name: string; kind: string; dynamic_rules_json: string | null; custom_cover_hash: string | null
+  }>('SELECT name, kind, dynamic_rules_json, custom_cover_hash FROM playlists WHERE id = ?', [source.playlistId])
+  if (source.playlistId !== -1 && !playlist) return null
+
+  const dynamic = playlist?.kind === 'dynamic'
+  let suffix: string
+  let params: unknown[]
+  if (dynamic) {
+    // Invalid saved rules hide only this card, matching the playlist-list API.
+    let rules: DynamicPlaylistRulesV2
+    try { rules = parseDynamicPlaylistRules(playlist.dynamic_rules_json) } catch { return null }
+    const filter = buildDynamicPlaylistWhereClause(rules)
+    suffix = `${filter.joins} WHERE ${filter.where} ORDER BY ${buildDynamicPlaylistOrderByClause(rules)}`
+    if (rules.limit !== null) suffix += ' LIMIT ?'
+    params = [...filter.params, ...(rules.limit === null ? [] : [rules.limit])]
+  } else if (source.playlistId === -1) {
+    suffix = 'INNER JOIN favorites f ON f.track_path = t.path ORDER BY f.added_at DESC'
+    params = []
+  } else {
+    suffix = 'INNER JOIN playlist_tracks pt ON pt.track_path = t.path WHERE pt.playlist_id = ? ORDER BY pt.position ASC, pt.id ASC'
+    params = [source.playlistId]
+  }
+
+  // Count and select artwork inside SQLite. A card must not transfer/hydrate an
+  // entire playlist (or rebuild the library identity snapshot) to describe it.
+  const summary = db.get<{
+    track_count: number; available: number | null; artwork_hash: string | null; base_artwork_hash: string | null
+  }>(`WITH source_tracks AS (
+    SELECT t.is_available, t.artwork_hash AS base_artwork_hash,
+      CASE WHEN COALESCE(o.artwork_cleared, 0) = 1 THEN NULL
+        ELSE COALESCE(o.artwork_hash, t.artwork_hash) END AS artwork_hash
+    ${EFFECTIVE_TRACK_FROM_CLAUSE}
+    ${suffix}
+  ) SELECT COUNT(*) AS track_count, MAX(COALESCE(is_available, 1) != 0) AS available,
+    (SELECT artwork_hash FROM source_tracks LIMIT 1) AS artwork_hash,
+    (SELECT base_artwork_hash FROM source_tracks LIMIT 1) AS base_artwork_hash
+    FROM source_tracks`, params)!
+  if (!summary.available) return null
+  const artworkHash = playlist?.custom_cover_hash
+    ?? (!dynamic && playlist ? summary.base_artwork_hash : null)
+    ?? summary.artwork_hash
+  return {
+    key: playbackSourceKey(source), source,
+    title: playlist?.name ?? 'Favorites',
+    subtitle: dynamic ? 'Dynamic playlist' : 'Playlist',
+    detail: `${summary.track_count} ${summary.track_count === 1 ? 'track' : 'tracks'}`,
+    artwork_hash: artworkHash,
+    last_played_at: playedAt
+  }
+}
+
 function upsertHomePlaybackSource(source: PlaybackSourceContext, trackId: number | null, playedAt: number): void {
   if (!db) return
   const key = source.type === 'track' ? `track:${trackId}` : playbackSourceKey(source)
@@ -5906,7 +5989,6 @@ function moveHomeTrackSource(oldPath: string, newPath: string): void {
 }
 
 interface HomeSourceLookups {
-  playlists?: Playlist[]
   artists?: ArtistRecord[]
   genres?: GenreRecord[]
 }
@@ -5949,15 +6031,7 @@ function resolveHomePlaybackSource(
       break
     }
     case 'playlist': {
-      const playlistId = source.playlistId
-      const playlist = playlistId === -1 ? null : (lookups.playlists ??= getPlaylists()).find((entry) => entry.id === playlistId)
-      if (source.playlistId !== -1 && (!playlist || playlist.track_count === 0)) return null
-      tracks = source.playlistId === -1 ? getFavorites() : getPlaylistTracks(source.playlistId)
-      title = playlist?.name ?? 'Favorites'
-      subtitle = playlist?.kind === 'dynamic' ? 'Dynamic playlist' : 'Playlist'
-      detail = trackCount(tracks.length)
-      artworkHash = playlist?.custom_cover_hash ?? playlist?.auto_cover_hash ?? tracks[0]?.artwork_hash ?? null
-      break
+      return resolveHomePlaylistSource(source, playedAt)
     }
     case 'artist': {
       const artistName = source.artist
@@ -6024,14 +6098,7 @@ export function getHomeDashboard(query: HomeDashboardQuery = {}): HomeDashboard 
       return { day_key: dayKey, recent_sources: [], active_source: null, recent_releases: [], rediscover_releases: [], newly_added_releases: [] }
     }
 
-    const favoritePaths = new Set(db.all<{ track_path: string }>(
-      'SELECT track_path FROM favorites'
-    ).map((row) => row.track_path))
-    const groups = collectAlbumSummaryGroups(null, favoritePaths)
-    const releases = Array.from(groups.values())
-      .filter((group) => isAlbumGroupEligible(group, { includeSingles: true }))
-      .map(buildHomeReleaseSummary)
-      .filter((release) => release.available_track_count > 0)
+    const releases = getHomeReleaseSummaries()
 
     const artistMode = query.artistBrowseMode === 'strict' ? 'strict' : 'canonical'
     const lookups: HomeSourceLookups = {}
@@ -6093,9 +6160,9 @@ export function getHomeDashboard(query: HomeDashboardQuery = {}): HomeDashboard 
       day_key: dayKey,
       recent_sources: recentSources,
       active_source: activeSummary,
-      recent_releases: recentReleases,
+      recent_releases: recentReleases.map((release) => ({ ...release })),
       rediscover_releases: rediscoverReleases,
-      newly_added_releases: newlyAddedReleases
+      newly_added_releases: newlyAddedReleases.map((release) => ({ ...release }))
     }
   })
 }
