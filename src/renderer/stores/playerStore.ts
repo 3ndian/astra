@@ -224,6 +224,10 @@ const LARGE_LOCAL_FILE_BYTES = 128 * 1024 * 1024
 const MAX_STANDARD_PREBUFFER_TRACK_BYTES = 192 * 1024 * 1024
 const MAX_STANDARD_PREBUFFER_TOTAL_BYTES = 384 * 1024 * 1024
 const LOCAL_PROGRESSIVE_DECODED_BYTES = MAX_STANDARD_PREBUFFER_TRACK_BYTES
+// Tracks whose decoded size passes this (~45+ minutes of stereo audio: audiobooks, long mixes) are
+// streamed without a loudness analysis and without loudness normalization. Analysing them is slow,
+// and if it failed the player used to fall back to decoding the whole file into memory.
+const SKIP_LOUDNESS_DECODED_BYTES = 1024 * 1024 * 1024
 const LOUDNESS_WARMUP_UPCOMING_TRACKS = 2
 export const GAPLESS_PREBUFFER_LEAD_SECONDS = 15
 const GAPLESS_PREBUFFER_TIMER_TOLERANCE_MS = 250
@@ -320,6 +324,11 @@ function estimateWaveformCacheBytes(): number {
 function estimateTrackArtworkBytes(track: Track | null | undefined): number {
   const artworkData = track?.artworkData
   return typeof artworkData === 'string' ? artworkData.length * 2 : 0
+}
+
+function isTooLongForLoudnessAnalysis(track: Track | null | undefined): boolean {
+  const estimatedBytes = estimateDecodedTrackBytes(track)
+  return estimatedBytes !== null && estimatedBytes >= SKIP_LOUDNESS_DECODED_BYTES
 }
 
 function estimateDecodedTrackBytes(track: Track | null | undefined): number | null {
@@ -875,6 +884,7 @@ function requestTrackLoudnessAnalysis(
   priority: 'interactive' | 'background' = 'interactive'
 ): Promise<{ loudnessLufs: number; peakLinear: number | null } | null> | null {
   if (track.sourceType && track.sourceType !== 'local') return null
+  if (isTooLongForLoudnessAnalysis(track)) return null
   if (!audioEngine.needsLoudnessAnalysisForLoad(replayGainDb)) return null
   const request = priority === 'background'
     ? window.electronAPI.warmupTrackLoudness(track.path)
@@ -2841,7 +2851,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         const useLocalProgressive = await shouldUseLocalProgressivePath(track)
         throwIfSupersededLoad(loadRequestId)
         if (useLocalProgressive) {
-          const needsFixedLoudness = audioEngine.needsLoudnessAnalysisForLoad(replayGainDb)
+          const skipLoudness = isTooLongForLoudnessAnalysis(track)
+          const needsFixedLoudness = !skipLoudness && audioEngine.needsLoudnessAnalysisForLoad(replayGainDb)
           const fixedLoudness = needsFixedLoudness
             ? await resolveInteractiveLoudnessForProgressiveLoad(track, replayGainDb, loadRequestId)
             : null
@@ -2851,7 +2862,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             try {
               const streamInfo = await audioEngine.loadProgressiveStream(track, {
                 replayGainDb,
-                loudnessAnalysis: fixedLoudness
+                loudnessAnalysis: fixedLoudness,
+                allowMissingLoudness: skipLoudness
               })
               throwIfSupersededLoad(loadRequestId)
               const resolvedTrack: Track = {

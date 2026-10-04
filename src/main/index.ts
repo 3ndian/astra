@@ -10086,6 +10086,7 @@ interface RendererTrackLoudnessPayload {
 }
 
 const LOUDNESS_FFMPEG_TIMEOUT_MS = 180_000
+const LOUDNESS_FFMPEG_MAX_TIMEOUT_MS = 30 * 60_000
 // The ebur128 filter logs a running line per 100ms of audio, so stderr for an
 // hour-long track runs to a few MB.
 const LOUDNESS_FFMPEG_MAX_STDERR_BYTES = 32 * 1024 * 1024
@@ -10191,10 +10192,19 @@ async function runLoudnessAnalysisJob(job: LoudnessAnalysisJob): Promise<TrackLo
         '-i', job.filePath,
         '-map', '0:a:0',
         '-vn',
-        '-af', 'ebur128=peak=sample',
+        // framelog=quiet: without it ffmpeg logs a line per 100ms of audio, which overflows the
+        // stderr buffer on very long files (a 500-minute audiobook produced ~45 MB).
+        '-af', 'ebur128=peak=sample:framelog=quiet',
         '-f', 'null', '-'
       ],
-      { timeout: LOUDNESS_FFMPEG_TIMEOUT_MS, maxBuffer: LOUDNESS_FFMPEG_MAX_STDERR_BYTES },
+      {
+        // Long files need longer than the base timeout: add time in proportion to file size.
+        timeout: Math.min(
+          LOUDNESS_FFMPEG_MAX_TIMEOUT_MS,
+          LOUDNESS_FFMPEG_TIMEOUT_MS + Math.round(job.fileStat.size / (1024 * 1024)) * 2_000
+        ),
+        maxBuffer: LOUDNESS_FFMPEG_MAX_STDERR_BYTES
+      },
       job.abortController.signal
     )
     const parsed = parseEbur128Summary(stderr)

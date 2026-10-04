@@ -211,6 +211,8 @@ interface AudioLoadDataOptions {
 interface RemoteStreamLoadOptions {
   replayGainDb?: number | null
   loudnessAnalysis?: ExternalLoudnessResult | null
+  // Very long tracks (audiobooks, long mixes) stream without a loudness pass; gain stays neutral.
+  allowMissingLoudness?: boolean
   startTimeSeconds?: number | null
 }
 
@@ -2598,7 +2600,7 @@ export class AudioEngine {
     const sourceType = track.sourceType ?? 'local'
     const requiresFixedLocalLoudness = sourceType === 'local'
       && this.shouldAnalyzeLoudnessForLoad(this.currentReplayGainDb)
-    if (requiresFixedLocalLoudness && !options.loudnessAnalysis) {
+    if (requiresFixedLocalLoudness && !options.loudnessAnalysis && !options.allowMissingLoudness) {
       throw new Error('Normalized local progressive playback requires precomputed loudness.')
     }
 
@@ -2637,6 +2639,14 @@ export class AudioEngine {
       ? {
           loudnessLufs: options.loudnessAnalysis.loudnessLufs,
           peakLinear: options.loudnessAnalysis.peakLinear ?? 0,
+          sampleRate: info.sampleRate,
+          frameCount: Math.max(1, Math.round(Math.max(durationSeconds, 1) * info.sampleRate))
+        }
+      : requiresFixedLocalLoudness && options.allowMissingLoudness
+      ? {
+          // Neutral: loudness equal to the target means 0 dB of normalization gain.
+          loudnessLufs: this._targetLufs,
+          peakLinear: 0,
           sampleRate: info.sampleRate,
           frameCount: Math.max(1, Math.round(Math.max(durationSeconds, 1) * info.sampleRate))
         }
