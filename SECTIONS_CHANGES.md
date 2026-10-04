@@ -160,3 +160,14 @@ without a loudness pass and without normalization (playerStore.ts, AudioEngine.t
 - Raw `.milk` files are rejected with a clear message: they need converting to Butterchurn JSON first.
 - Not available in bit-perfect mode (no Web Audio tap); a notice says so.
 - Requires: `npm install butterchurn butterchurn-presets`.
+
+## Milkdrop favorites and folders
+- ☆/★ button favorites the current preset. "Folders" opens a panel to tick the preset into folders, make, rename and delete folders (deleting a folder keeps the presets).
+- "Show" filters the dropdown to All / Favorites / My imports / any folder. Next, previous, shuffle and auto-cycle all stay inside the chosen list, so a "Chill" folder plus Auto gives a themed loop.
+- Stored by preset name in localStorage with the other Milkdrop settings.
+
+## Milkdrop flicker fixes + quality
+- Paused: the visual freezes on its last frame (it used to redraw at ~5 fps, which looked like flicker).
+- The audio connection is kept when the analyser is briefly missing (track change), instead of disconnecting and going silent.
+- A preset only reloads when you actually change it, not when the preset list changes.
+- New Quality (Low/Medium/High) and FPS (30/60) selectors in the Milkdrop bar.

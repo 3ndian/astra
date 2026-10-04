@@ -25,6 +25,12 @@ interface SectionsStore {
 
 let unsubscribeRegistry: (() => void) | null = null
 
+// Work to finish against the section being left, before the library database switches.
+let beforeSwitchHook: (() => Promise<void>) | null = null
+export function setBeforeSectionSwitchHook(hook: (() => Promise<void>) | null): void {
+  beforeSwitchHook = hook
+}
+
 function applyPayload(payload: SectionsPayload): Pick<SectionsStore, 'registry' | 'activeSectionId'> {
   return { registry: payload.registry, activeSectionId: payload.activeSectionId }
 }
@@ -93,6 +99,11 @@ export const useSectionsStore = create<SectionsStore>((set, get) => ({
     if (get().isSwitching || id === get().activeSectionId) return false
     set({ isSwitching: true, errorMessage: '' })
     try {
+      try {
+        await beforeSwitchHook?.()
+      } catch (error) {
+        console.warn('Before-switch hook failed:', error)
+      }
       const result = await window.electronAPI.sections.switchTo(id)
       if (!result.success) {
         set({ errorMessage: result.error })

@@ -3,6 +3,8 @@ import type { ButterchurnVisualizer } from 'butterchurn'
 import { audioEngine } from '../../audio/AudioEngine'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useMilkdropStore } from '../../stores/milkdropStore'
+import { applyFilter, filterToValue, inFolder, isFavorite, valueToFilter } from '../../../shared/milkdrop/collections'
+import { FPS_CAP_CHOICES, QUALITY_CHOICES, qualityScale } from '../../../shared/milkdrop/quality'
 import { AUTO_CYCLE_CHOICES, BLEND_CHOICES, sortPresetNames, stepIndex, type CycleMode } from '../../../shared/milkdrop/presets'
 
 interface PresetEntry {
@@ -27,6 +29,13 @@ export default function MilkdropStage({ controlsVisible }: { controlsVisible: bo
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const vizRef = useRef<ButterchurnVisualizer | null>(null)
   const connectedNodeRef = useRef<AudioNode | null>(null)
+  const resizeRef = useRef<(() => void) | null>(null)
+  const forceFramesRef = useRef(0)
+  const lastLoadedPresetRef = useRef<string | null>(null)
+  const qualityRef = useRef(quality)
+  const fpsCapRef = useRef(fpsCap)
+  qualityRef.current = quality
+  fpsCapRef.current = fpsCap
   const [status, setStatus] = useState<Status>('loading')
   const [presets, setPresets] = useState<PresetEntry[]>([])
   const [noAudio, setNoAudio] = useState(false)
@@ -38,6 +47,23 @@ export default function MilkdropStage({ controlsVisible }: { controlsVisible: bo
   const setPresetName = useMilkdropStore((s) => s.setPresetName)
   const setAutoCycleSeconds = useMilkdropStore((s) => s.setAutoCycleSeconds)
   const setBlendSeconds = useMilkdropStore((s) => s.setBlendSeconds)
+  const quality = useMilkdropStore((s) => s.quality)
+  const fpsCap = useMilkdropStore((s) => s.fpsCap)
+  const setQuality = useMilkdropStore((s) => s.setQuality)
+  const setFpsCap = useMilkdropStore((s) => s.setFpsCap)
+  const collections = useMilkdropStore((s) => s.collections)
+  const filter = useMilkdropStore((s) => s.filter)
+  const setFilter = useMilkdropStore((s) => s.setFilter)
+  const toggleFavorite = useMilkdropStore((s) => s.toggleFavorite)
+  const createFolder = useMilkdropStore((s) => s.createFolder)
+  const renameFolder = useMilkdropStore((s) => s.renameFolder)
+  const deleteFolder = useMilkdropStore((s) => s.deleteFolder)
+  const toggleInFolder = useMilkdropStore((s) => s.toggleInFolder)
+  const [organizeOpen, setOrganizeOpen] = useState(false)
+  const [newFolderName, setNewFolderName] = useState('')
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
 
   const entries = useMemo(() => {
     const byName = new Map<string, PresetEntry>()
@@ -45,8 +71,10 @@ export default function MilkdropStage({ controlsVisible }: { controlsVisible: bo
     return sortPresetNames([...byName.keys()]).map((name) => byName.get(name) as PresetEntry)
   }, [presets])
 
-  const currentIndex = Math.max(0, entries.findIndex((e) => e.name === presetName))
-  const currentEntry = entries[currentIndex]
+  const pool = useMemo(() => applyFilter(entries, filter, collections), [entries, filter, collections])
+  const currentEntry = entries.find((e) => e.name === presetName) ?? entries[0]
+  const poolIndex = pool.findIndex((e) => e.name === currentEntry?.name)
+  const currentIsFavorite = currentEntry ? isFavorite(collections, currentEntry.name) : false
 
   const loadUserPresets = useCallback(async (): Promise<PresetEntry[]> => {
     try {
@@ -90,43 +118,58 @@ export default function MilkdropStage({ controlsVisible }: { controlsVisible: bo
         const canvas = canvasRef.current
         if (cancelled || !context || !canvas) return
 
-        const ratio = Math.min(window.devicePixelRatio || 1, 1.5)
-        const width = Math.max(2, Math.floor(canvas.clientWidth * ratio))
-        const height = Math.max(2, Math.floor(canvas.clientHeight * ratio))
-        canvas.width = width
-        canvas.height = height
-        const viz = butterchurn.createVisualizer(context, canvas, { width, height, pixelRatio: ratio })
+        const sizeFor = (): { w: number; h: number } => {
+          const ratio = qualityScale(qualityRef.current, window.devicePixelRatio || 1)
+          return {
+            w: Math.max(2, Math.floor(canvas.clientWidth * ratio)),
+            h: Math.max(2, Math.floor(canvas.clientHeight * ratio))
+          }
+        }
+        const first = sizeFor()
+        canvas.width = first.w
+        canvas.height = first.h
+        const viz = butterchurn.createVisualizer(context, canvas, { width: first.w, height: first.h, pixelRatio: 1 })
         vizRef.current = viz
 
-        observer = new ResizeObserver(() => {
-          const w = Math.max(2, Math.floor(canvas.clientWidth * ratio))
-          const h = Math.max(2, Math.floor(canvas.clientHeight * ratio))
+        const applySize = () => {
+          const { w, h } = sizeFor()
+          if (canvas.width === w && canvas.height === h) return
           canvas.width = w
           canvas.height = h
           viz.setRendererSize(w, h)
-        })
+          forceFramesRef.current = 3
+        }
+        resizeRef.current = applySize
+        observer = new ResizeObserver(applySize)
         observer.observe(canvas)
 
         // The analyser can be rebuilt (new output path, device change), so keep it connected.
         const syncAudio = () => {
           const node = audioEngine.getEQAnalyserNode()
           setNoAudio(!node)
-          if (node === connectedNodeRef.current) return
+          // Keep the last connection while the node is briefly missing (track change, graph
+          // rebuild). Disconnecting made the visual go silent and flash.
+          if (!node || node === connectedNodeRef.current) return
           if (connectedNodeRef.current) {
             try { viz.disconnectAudio?.(connectedNodeRef.current) } catch { /* already gone */ }
           }
           connectedNodeRef.current = node
-          if (node) viz.connectAudio(node)
+          viz.connectAudio(node)
         }
         syncAudio()
         reconnectTimer = window.setInterval(syncAudio, 500)
 
-        let lastPausedFrame = 0
+        let lastFrameAt = 0
         const frame = (now: number) => {
           rafId = window.requestAnimationFrame(frame)
+          // Paused: freeze the last picture (drawing at a few fps looked like flicker). A few
+          // frames still render after a preset or size change so the new look appears.
           const playing = usePlayerStore.getState().playbackState === 'playing'
-          if (!playing && now - lastPausedFrame < 200) return
-          lastPausedFrame = now
+          if (!playing && forceFramesRef.current <= 0) return
+          const minGap = 1000 / fpsCapRef.current - 2
+          if (now - lastFrameAt < minGap) return
+          lastFrameAt = now
+          if (forceFramesRef.current > 0) forceFramesRef.current -= 1
           try {
             viz.render()
           } catch {
@@ -154,6 +197,8 @@ export default function MilkdropStage({ controlsVisible }: { controlsVisible: bo
       }
       connectedNodeRef.current = null
       vizRef.current = null
+      resizeRef.current = null
+      lastLoadedPresetRef.current = null
     }
   }, [loadUserPresets])
 
@@ -168,6 +213,9 @@ export default function MilkdropStage({ controlsVisible }: { controlsVisible: bo
       setPresetName(entry.name)
       return
     }
+    if (lastLoadedPresetRef.current === entry.name) return
+    lastLoadedPresetRef.current = entry.name
+    forceFramesRef.current = 12
     try {
       void viz.loadPreset(entry.preset, blendSeconds)
     } catch (error) {
@@ -178,18 +226,24 @@ export default function MilkdropStage({ controlsVisible }: { controlsVisible: bo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, entries, presetName])
 
+  useEffect(() => {
+    resizeRef.current?.()
+  }, [quality])
+
+  // Next / previous / shuffle / auto-cycle all stay inside the active filter.
   const go = useCallback((mode: CycleMode) => {
-    if (entries.length === 0) return
-    const index = stepIndex(entries.length, currentIndex, mode)
-    if (index >= 0) setPresetName(entries[index].name)
-  }, [entries, currentIndex, setPresetName])
+    if (pool.length === 0) return
+    const from = poolIndex < 0 && mode === 'previous' ? 0 : poolIndex
+    const index = stepIndex(pool.length, from, mode)
+    if (index >= 0) setPresetName(pool[index].name)
+  }, [pool, poolIndex, setPresetName])
 
   // Auto-cycle.
   useEffect(() => {
-    if (status !== 'ready' || autoCycleSeconds <= 0 || entries.length < 2) return
+    if (status !== 'ready' || autoCycleSeconds <= 0 || pool.length < 2) return
     const id = window.setInterval(() => go('random'), autoCycleSeconds * 1000)
     return () => window.clearInterval(id)
-  }, [status, autoCycleSeconds, entries.length, go])
+  }, [status, autoCycleSeconds, pool.length, go])
 
   const importPresets = useCallback(async () => {
     const result = await window.api.milkdrop.importPresets()
@@ -216,8 +270,9 @@ export default function MilkdropStage({ controlsVisible }: { controlsVisible: bo
     return () => window.clearTimeout(id)
   }, [message])
 
-  const builtIn = entries.filter((e) => !e.user)
-  const mine = entries.filter((e) => e.user)
+  const poolBuiltIn = pool.filter((e) => !e.user)
+  const poolMine = pool.filter((e) => e.user)
+  const folderCount = (id: string) => applyFilter(entries, { kind: 'folder', id }, collections).length
 
   return (
     <div className="milkdrop-stage" aria-hidden={status !== 'ready'}>
@@ -240,17 +295,114 @@ export default function MilkdropStage({ controlsVisible }: { controlsVisible: bo
             aria-label="Milkdrop preset"
             className="milkdrop-select"
           >
-            {mine.length > 0 && (
+            {currentEntry && poolIndex < 0 && <option value={currentEntry.name}>{currentEntry.name} (outside this list)</option>}
+            {poolMine.length > 0 && (
               <optgroup label="My presets">
-                {mine.map((e) => <option key={`u-${e.name}`} value={e.name}>{e.name}</option>)}
+                {poolMine.map((e) => <option key={`u-${e.name}`} value={e.name}>{e.name}</option>)}
               </optgroup>
             )}
-            <optgroup label="Built-in">
-              {builtIn.map((e) => <option key={`b-${e.name}`} value={e.name}>{e.name}</option>)}
+            <optgroup label={filter.kind === 'all' ? 'Built-in' : 'Presets'}>
+              {poolBuiltIn.map((e) => <option key={`b-${e.name}`} value={e.name}>{e.name}</option>)}
             </optgroup>
           </select>
           <button type="button" onClick={() => go('next')} title="Next preset" aria-label="Next preset">›</button>
+          <button
+            type="button"
+            className={currentIsFavorite ? 'is-on' : ''}
+            onClick={() => currentEntry && toggleFavorite(currentEntry.name)}
+            title={currentIsFavorite ? 'Remove from favorites' : 'Add to favorites'}
+            aria-label={currentIsFavorite ? 'Remove from favorites' : 'Add to favorites'}
+            aria-pressed={currentIsFavorite}
+          >
+            {currentIsFavorite ? '★' : '☆'}
+          </button>
           <button type="button" onClick={() => go('random')} title="Random preset (or double-click the visual)" aria-label="Random preset">Shuffle</button>
+          <label className="milkdrop-field">
+            Show
+            <select value={filterToValue(filter)} onChange={(e) => setFilter(valueToFilter(e.target.value))}>
+              <option value="all">All ({entries.length})</option>
+              <option value="favorites">★ Favorites ({applyFilter(entries, { kind: 'favorites' }, collections).length})</option>
+              {entries.some((e) => e.user) && <option value="mine">My imports ({entries.filter((e) => e.user).length})</option>}
+              {collections.folders.map((f) => (
+                <option key={f.id} value={`folder:${f.id}`}>{f.name} ({folderCount(f.id)})</option>
+              ))}
+            </select>
+          </label>
+          <div className="milkdrop-organize">
+            <button type="button" className={organizeOpen ? 'is-on' : ''} onClick={() => setOrganizeOpen((o) => !o)} aria-expanded={organizeOpen}>
+              Folders
+            </button>
+            {organizeOpen && currentEntry && (
+              <div className="milkdrop-popover" onKeyDown={(e) => e.stopPropagation()}>
+                <div className="milkdrop-popover-title">Put “{currentEntry.name}” in…</div>
+                {collections.folders.length === 0 && <div className="milkdrop-popover-empty">No folders yet. Make one below.</div>}
+                {collections.folders.map((f) => (
+                  <div className="milkdrop-folder-row" key={f.id}>
+                    <input
+                      type="checkbox"
+                      checked={inFolder(collections, f.id, currentEntry.name)}
+                      onChange={() => toggleInFolder(f.id, currentEntry.name)}
+                      aria-label={`In folder ${f.name}`}
+                    />
+                    {renamingId === f.id ? (
+                      <input
+                        className="milkdrop-text-input"
+                        value={renameValue}
+                        autoFocus
+                        maxLength={40}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') { renameFolder(f.id, renameValue); setRenamingId(null) }
+                          if (e.key === 'Escape') setRenamingId(null)
+                        }}
+                        onBlur={() => setRenamingId(null)}
+                      />
+                    ) : (
+                      <span className="milkdrop-folder-name">{f.name}</span>
+                    )}
+                    <button type="button" title="Rename folder" aria-label={`Rename ${f.name}`} onClick={() => { setRenamingId(f.id); setRenameValue(f.name) }}>✎</button>
+                    {confirmDeleteId === f.id ? (
+                      <button type="button" className="is-danger" onClick={() => { deleteFolder(f.id); setConfirmDeleteId(null) }} onBlur={() => setConfirmDeleteId(null)}>
+                        Delete?
+                      </button>
+                    ) : (
+                      <button type="button" title="Delete folder (presets are kept)" aria-label={`Delete ${f.name}`} onClick={() => setConfirmDeleteId(f.id)}>✕</button>
+                    )}
+                  </div>
+                ))}
+                <form
+                  className="milkdrop-folder-row"
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    const before = collections.folders.length
+                    createFolder(newFolderName)
+                    if (useMilkdropStore.getState().collections.folders.length > before) setNewFolderName('')
+                  }}
+                >
+                  <input
+                    className="milkdrop-text-input"
+                    placeholder="New folder name"
+                    value={newFolderName}
+                    maxLength={40}
+                    onChange={(e) => setNewFolderName(e.target.value)}
+                  />
+                  <button type="submit" disabled={!newFolderName.trim()}>Add</button>
+                </form>
+              </div>
+            )}
+          </div>
+          <label className="milkdrop-field">
+            Quality
+            <select value={quality} onChange={(e) => setQuality(e.target.value as typeof quality)}>
+              {QUALITY_CHOICES.map((q) => <option key={q.id} value={q.id}>{q.label}</option>)}
+            </select>
+          </label>
+          <label className="milkdrop-field">
+            FPS
+            <select value={fpsCap} onChange={(e) => setFpsCap(Number(e.target.value) as typeof fpsCap)}>
+              {FPS_CAP_CHOICES.map((f) => <option key={f} value={f}>{f}</option>)}
+            </select>
+          </label>
           <label className="milkdrop-field">
             Auto
             <select value={autoCycleSeconds} onChange={(e) => setAutoCycleSeconds(Number(e.target.value))}>

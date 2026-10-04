@@ -73,6 +73,8 @@ export function stepIndex(count: number, current: number, mode: CycleMode, rand:
   if (count === 1) return 0
   if (mode === 'next') return (current + 1 + count) % count
   if (mode === 'previous') return (current - 1 + count) % count
+  // Current not in the list (e.g. the filter changed): any index is fair game.
+  if (current < 0 || current >= count) return Math.min(Math.floor(rand() * count), count - 1)
   let pick = Math.floor(rand() * (count - 1))
   if (pick >= current) pick += 1
   return Math.min(pick, count - 1)

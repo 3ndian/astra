@@ -177,6 +177,8 @@ interface PlayerStore {
   // Stops playback and drops the current track, queue and history entirely. Used when the
   // active library section changes so nothing from the old section can keep playing or queue up.
   resetPlaybackForSectionSwitch: () => void
+  /** Saves listening history to the section being left. Playback keeps going. */
+  flushListeningForSectionSwitch: () => Promise<void>
   playNext: () => Promise<void>
   playPrevious: () => Promise<void>
   playQueuedItem: (queueId: string, options?: { manualStart?: boolean }) => Promise<void>
@@ -1269,15 +1271,15 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       completedNaturally?: boolean
       observedAt?: number
     } = {}
-  ): void => {
-    if (!session.allowDbWrite) return
+  ): Promise<void> => {
+    if (!session.allowDbWrite) return Promise.resolve()
     const observedAt = options.observedAt ?? Date.now()
     const sessionListenedSeconds = session.accumulatedSeconds
     const segmentListenedSeconds = Math.max(0, sessionListenedSeconds - session.segmentStartAccumulatedSeconds)
     const checkpointSessionKey = session.sessionKey
     const checkpointSegmentKey = session.segmentKey
 
-    void (async () => {
+    return (async () => {
       try {
         const status = session.generation
           ? { generation: session.generation, startedAt: null }
@@ -1361,15 +1363,16 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   const finalizeRecentPlaySession = (
     playbackState: PlaybackState = get().playbackState,
     options: { completedNaturally?: boolean } = {}
-  ): void => {
+  ): Promise<void> => {
     const session = updateRecentPlayAccumulation(playbackState)
-    if (!session) return
-    checkpointRecentPlay(session, {
+    if (!session) return Promise.resolve()
+    const pending = checkpointRecentPlay(session, {
       finalizeSegment: true,
       finalizeSession: true,
       completedNaturally: Boolean(options.completedNaturally)
     })
     recentPlaySession = null
+    return pending
   }
 
   const startRecentPlaySession = (trackPath: string): void => {
@@ -2320,6 +2323,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         currentTrackSource: currentItem?.origin ?? (state.currentTrack ? 'standalone' : 'standalone')
       })
     },
+
+    flushListeningForSectionSwitch: () => finalizeRecentPlaySession(),
 
     resetPlaybackForSectionSwitch: () => {
       invalidateLoadRequest()

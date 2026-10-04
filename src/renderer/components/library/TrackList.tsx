@@ -618,7 +618,7 @@ function TrackListRowRenderer({
         }}
       >
         <div className="track-col track-col-num">
-          {showNewTrackIndicator && track.is_new && (
+          {showNewTrackIndicator && track.is_new && !(track.play_count > 0) && (
             <span className="track-new-indicator" title="Added in latest library sync" aria-hidden="true" />
           )}
           {isCurrent && isPlaying ? (

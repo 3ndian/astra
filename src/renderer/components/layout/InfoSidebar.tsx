@@ -320,7 +320,7 @@ export default function InfoSidebar() {
         <button
           type="button"
           className={`info-sidebar-tab ${activeTab === 'lyrics' ? 'active' : ''}`}
-          onClick={() => setActiveTab('lyrics')}
+          onClick={() => setActiveTab((tab) => (tab === 'lyrics' ? 'info' : 'lyrics'))}
         >
           Lyrics
         </button>

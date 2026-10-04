@@ -37,7 +37,7 @@ import SignalShareModal from './components/signal/SignalShareModal'
 import { useUIStore, type AppView } from './stores/uiStore'
 import { planRestore, rememberSectionView, sanitizeMemory, type SectionViewMemory } from '../shared/sections/sectionViewMemory'
 import { useLibraryStore, type ViewMode } from './stores/libraryStore'
-import { useSectionsStore } from './stores/sectionsStore'
+import { setBeforeSectionSwitchHook, useSectionsStore } from './stores/sectionsStore'
 import { useRatingsStore } from './stores/ratingsStore'
 import { useAudioSettingsStore } from './stores/audioSettingsStore'
 import { useDiscordSettingsStore } from './stores/discordSettingsStore'
@@ -338,6 +338,7 @@ function App() {
     void useParallaxStore.getState().init()
     void useLastFmSettingsStore.getState().init()
     void useSectionsStore.getState().init()
+    setBeforeSectionSwitchHook(() => usePlayerStore.getState().flushListeningForSectionSwitch())
     void useLyricsStore.getState().init()
     void useSubsonicSettingsStore.getState().init()
     void useJellyfinSettingsStore.getState().init()
@@ -458,7 +459,7 @@ function App() {
         }
         lastSectionId = payload.activeSectionId
 
-        usePlayerStore.getState().resetPlaybackForSectionSwitch()
+        // Playback keeps going across a section switch; the new section is just being browsed.
         const remembered = sectionViewMemory[payload.activeSectionId]
         const quickPlan = planRestore(remembered, () => false)
         useUIStore.getState().setActiveView(quickPlan.view === 'library' && remembered?.view === 'playlist' ? 'home' : (quickPlan.view as AppView))
@@ -495,6 +496,7 @@ function App() {
     return () => {
       didUnmount = true
       unsubscribeSectionSwitched()
+      setBeforeSectionSwitchHook(null)
       unsubscribeFileCreatedAtBackfill()
       unsubscribeBackfill()
       unsubscribeExternalLibraryMutation()

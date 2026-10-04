@@ -63,3 +63,8 @@ test('random never repeats current and covers all other indices', () => {
 test('sortPresetNames is case-insensitive', () => {
   assert.deepEqual(sortPresetNames(['b', 'A', 'c']), ['A', 'b', 'c'])
 })
+
+test('random from outside the list can pick any index including the first', () => {
+  assert.equal(stepIndex(4, -1, 'random', () => 0), 0)
+  assert.equal(stepIndex(4, -1, 'random', () => 0.999999), 3)
+})
