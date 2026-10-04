@@ -57,7 +57,7 @@ export const SETTINGS_SECTIONS = [
   {
     id: 'playback',
     label: 'Playback',
-    keywords: ['sleep timer', 'timer', 'countdown', 'pause', 'gapless', 'crossfade', 'shuffle', 'repeat', 'jump to playing', 'now playing', 'queue', 'playlist', 'album', 'artist']
+    keywords: ['sleep timer', 'timer', 'countdown', 'pause', 'fade', 'fade in', 'fade out', 'audio transitions', 'gapless', 'crossfade', 'shuffle', 'repeat', 'jump to playing', 'now playing', 'queue', 'playlist', 'album', 'artist']
   },
   {
     id: 'keybinds',

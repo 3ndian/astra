@@ -42,6 +42,7 @@ export const EQ_STORAGE_KEY = 'astra-eq-custom-presets'
 export const EQ_DEVICE_PROFILE_STORAGE_KEY = 'astra-eq-device-profiles-v1'
 
 export const PLAYER_VOLUME_STORAGE_KEY = 'astra-player-volume-v1'
+export const PLAYBACK_FADE_ENABLED_STORAGE_KEY = 'astra-audio-playback-fade-enabled-v1'
 export const NORMALIZATION_ENABLED_STORAGE_KEY = 'astra-audio-normalization-enabled-v1'
 export const NORMALIZATION_TARGET_STORAGE_KEY = 'astra-audio-normalization-target-lufs-v1'
 export const REPLAYGAIN_MODE_STORAGE_KEY = 'astra-audio-replaygain-mode-v1'

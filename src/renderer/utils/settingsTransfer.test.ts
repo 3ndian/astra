@@ -12,6 +12,7 @@ import {
   LYRICS_DISPLAY_SETTINGS_STORAGE_KEY,
   LISTENING_STATS_ENABLED_STORAGE_KEY,
   NORMALIZATION_ENABLED_STORAGE_KEY,
+  PLAYBACK_FADE_ENABLED_STORAGE_KEY,
   PLAYLIST_BROWSER_SORT_STORAGE_KEY,
   PLAYLIST_SIDEBAR_PINS_STORAGE_KEY,
   ROOT_TRACK_TABLE_LAYOUT_STORAGE_KEY,
@@ -63,6 +64,20 @@ function collectExportedStorageKeys(file: AstraSettingsTransferFile): string[] {
     category ? Object.keys(category.localStorage) : []
   ))
 }
+
+test('playback fade preference round-trips through Playback Audio settings', async () => {
+  for (const value of ['0', '1']) {
+    const file = createSettingsTransferFile(['playback_audio'], {
+      storage: new MemoryStorage({ [PLAYBACK_FADE_ENABLED_STORAGE_KEY]: value }),
+    })
+    const parsed = parseSettingsTransferFile(serializeSettingsTransferFile(file))
+    assert.ok(parsed.ok)
+    const target = new MemoryStorage()
+    const result = await applySettingsTransferFile(parsed.file, ['playback_audio'], { storage: target })
+    assert.ok(result.ok)
+    assert.equal(target.getItem(PLAYBACK_FADE_ENABLED_STORAGE_KEY), value)
+  }
+})
 
 test('selected export categories include only allowlisted portable keys', () => {
   const storage = new MemoryStorage({

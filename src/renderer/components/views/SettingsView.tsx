@@ -397,6 +397,8 @@ export default function SettingsView() {
   const replayGainMode = useAudioSettingsStore((state) => state.replayGainMode)
   const setReplayGainMode = useAudioSettingsStore((state) => state.setReplayGainMode)
   const normalizationEnabled = useAudioSettingsStore((state) => state.normalizationEnabled)
+  const playbackFadeEnabled = useAudioSettingsStore((state) => state.playbackFadeEnabled)
+  const setPlaybackFadeEnabled = useAudioSettingsStore((state) => state.setPlaybackFadeEnabled)
   const setNormalizationEnabled = useAudioSettingsStore((state) => state.setNormalizationEnabled)
   const normalizationTargetLufs = useAudioSettingsStore((state) => state.normalizationTargetLufs)
   const setNormalizationTargetLufs = useAudioSettingsStore((state) => state.setNormalizationTargetLufs)
@@ -2398,6 +2400,32 @@ export default function SettingsView() {
               <h3>Playback</h3>
             </div>
             <div className="settings-cards">
+              <div className="settings-card">
+                <div className="settings-card-label">Audio transitions</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span id="playback-fade-label" className="settings-field-label">Audio fade in/out</span>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={playbackFadeEnabled}
+                      aria-labelledby="playback-fade-label"
+                      aria-describedby="playback-fade-description"
+                      className={`settings-toggle ${playbackFadeEnabled ? 'active' : ''}`}
+                      onClick={() => setPlaybackFadeEnabled(!playbackFadeEnabled)}
+                      onKeyDown={(event) => {
+                        // Let the button handle activation without triggering playback shortcuts.
+                        if (event.key === ' ' || event.key === 'Enter') event.stopPropagation()
+                      }}
+                    >
+                      {playbackFadeEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                </div>
+                <p id="playback-fade-description" className="settings-note">
+                  Apply short fades when starting and pausing standard playback.
+                </p>
+              </div>
               <div className="settings-card">
                 <div className="settings-card-label">Navigation</div>
                 <div className="settings-grid">

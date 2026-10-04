@@ -54,6 +54,7 @@ import {
   NORMALIZATION_TARGET_STORAGE_KEY,
   OSCILLOSCOPE_UNDERFILL_STORAGE_KEY,
   PLAYBACK_OUTPUT_MODE_STORAGE_KEY,
+  PLAYBACK_FADE_ENABLED_STORAGE_KEY,
   PLAYER_VOLUME_STORAGE_KEY,
   PLAYLIST_BROWSER_SORT_STORAGE_KEY,
   PLAYLIST_OVERVIEW_ADAPTIVE_HEADER_STORAGE_KEY,
@@ -188,7 +189,7 @@ const SETTINGS_TRANSFER_CATEGORY_DEFINITIONS_INTERNAL: SettingsTransferCategoryD
   {
     id: 'playback_audio',
     label: 'Playback Audio',
-    description: 'Volume, normalization, normalization target, and ReplayGain mode.',
+    description: 'Volume, playback fades, normalization, normalization target, and ReplayGain mode.',
   },
   {
     id: 'keybinds',
@@ -261,6 +262,7 @@ export const SETTINGS_TRANSFER_CATEGORY_STORAGE_KEYS: Record<SettingsTransferCat
   ],
   playback_audio: [
     PLAYER_VOLUME_STORAGE_KEY,
+    PLAYBACK_FADE_ENABLED_STORAGE_KEY,
     NORMALIZATION_ENABLED_STORAGE_KEY,
     NORMALIZATION_TARGET_STORAGE_KEY,
     REPLAYGAIN_MODE_STORAGE_KEY,

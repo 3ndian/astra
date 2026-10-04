@@ -27,7 +27,7 @@ import {
   type HrtfProfileError,
   type HrtfProfileSummary,
 } from '../../types/hrtfProfiles'
-import { SPATIAL_HRTF_PROFILE_STORAGE_KEY } from '../constants/settingsStorageKeys'
+import { PLAYBACK_FADE_ENABLED_STORAGE_KEY, SPATIAL_HRTF_PROFILE_STORAGE_KEY } from '../constants/settingsStorageKeys'
 import { resolveAvailableHrtfProfileId } from '../utils/hrtfProfileSelection'
 import {
   createDefaultDeviceSpeakerProfile,
@@ -88,6 +88,7 @@ export interface InputDelayBaseline {
 
 interface AudioSettingsStore {
   playbackOutputMode: PlaybackOutputMode
+  playbackFadeEnabled: boolean
   disableGaplessPrebufferDev: boolean
   disableStandardAnalysisGraphDev: boolean
   nativeAudioCapabilities: NativeAudioCapabilities
@@ -133,6 +134,7 @@ interface AudioSettingsStore {
   refreshDevices: () => Promise<void>
   refreshOutputChannelCount: () => Promise<void>
   setPlaybackOutputMode: (mode: PlaybackOutputMode) => Promise<void>
+  setPlaybackFadeEnabled: (enabled: boolean) => void
   setDisableGaplessPrebufferDev: (disabled: boolean) => void
   setDisableStandardAnalysisGraphDev: (disabled: boolean) => void
   selectDevice: (deviceId: string) => Promise<void>
@@ -1215,6 +1217,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     selectedHrtfProfileId: BUILTIN_HRTF_PROFILE_ID,
     hrtfProfileError: null,
     hrtfImporting: false,
+    playbackFadeEnabled: true,
     normalizationEnabled: true,
     normalizationTargetLufs: DEFAULT_NORMALIZATION_TARGET_LUFS,
     replayGainScanEnabled: false,
@@ -1690,6 +1693,13 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       set({ spatialStatus: audioEngine.getSpatialStatus() })
     },
 
+    setPlaybackFadeEnabled: (enabled: boolean) => {
+      const normalized = Boolean(enabled)
+      set({ playbackFadeEnabled: normalized })
+      audioEngine.playbackFadeEnabled = normalized
+      localStorage.setItem(PLAYBACK_FADE_ENABLED_STORAGE_KEY, normalized ? '1' : '0')
+    },
+
     setNormalizationEnabled: (enabled: boolean) => {
       const normalized = Boolean(enabled)
       set({ normalizationEnabled: normalized })
@@ -2160,6 +2170,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       localStorage.removeItem(STORAGE_KEY)
       localStorage.removeItem(NATIVE_OUTPUT_STORAGE_KEY)
       localStorage.removeItem(PLAYBACK_OUTPUT_MODE_STORAGE_KEY)
+      localStorage.removeItem(PLAYBACK_FADE_ENABLED_STORAGE_KEY)
       localStorage.removeItem(EXCLUSIVE_SAMPLE_RATE_STORAGE_KEY)
       localStorage.removeItem(EXCLUSIVE_LIMITER_STORAGE_KEY)
       localStorage.removeItem(CALIBRATION_INPUT_STORAGE_KEY)
@@ -2236,6 +2247,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       }
       audioEngine.setReplayGainEnabled(false)
       audioEngine.normalizationEnabled = true
+      audioEngine.playbackFadeEnabled = true
       audioEngine.targetLufs = DEFAULT_NORMALIZATION_TARGET_LUFS
       audioEngine.setDisableStandardAnalysisGraphDev(false)
       await audioEngine.setExclusiveSampleRate(null)
@@ -2298,6 +2310,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         hrtfProfileError: null,
         hrtfImporting: false,
         spatialStatus: audioEngine.getSpatialStatus(),
+        playbackFadeEnabled: true,
         normalizationEnabled: true,
         normalizationTargetLufs: DEFAULT_NORMALIZATION_TARGET_LUFS,
         replayGainScanEnabled: false,
@@ -2348,6 +2361,8 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         : playbackModeResult.capabilities
 
       const savedNormalizationEnabled = localStorage.getItem(NORMALIZATION_ENABLED_STORAGE_KEY)
+      const playbackFadeEnabled = localStorage.getItem(PLAYBACK_FADE_ENABLED_STORAGE_KEY) !== '0'
+      audioEngine.playbackFadeEnabled = playbackFadeEnabled
       const normalizationEnabled = savedNormalizationEnabled == null
         ? true
         : savedNormalizationEnabled === '1'
@@ -2396,6 +2411,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         sourceSpeakerRoutingMap: savedSourceSpeakerRoutingMap,
         delayProfilesByDeviceKey: savedProfiles,
         inputBaselinesByKey: savedInputBaselines,
+        playbackFadeEnabled,
         normalizationEnabled,
         normalizationTargetLufs,
         replayGainScanEnabled: replayGainEnabled,

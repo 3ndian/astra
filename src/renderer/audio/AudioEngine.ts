@@ -514,6 +514,9 @@ export class AudioEngine {
   private gainNode: GainNode | null = null
   // Final-stage gain used only for play/pause/skip fades, independent of volume/mute and normalization.
   private fadeGainNode: GainNode | null = null
+  private _playbackFadeEnabled = true
+  // Skip click suppression also uses this node; the toggle must only cancel playback fades.
+  private playbackFadeScheduled = false
   // Main-program ducking lives after fades and before the final hardware mapper.
   private programDuckGainNode: GainNode | null = null
   private hardwareMapperNodes: AudioNode[] = []
@@ -1695,12 +1698,7 @@ export class AudioEngine {
     const startAt = ctx.currentTime
     this.startTime = startAt - offset
     this.pauseTime = offset
-    if (this.fadeGainNode) {
-      const fade = this.fadeGainNode.gain
-      fade.cancelScheduledValues(startAt)
-      fade.setValueAtTime(0, startAt)
-      fade.linearRampToValueAtTime(1, startAt + PLAYBACK_FADE_MS / 1000)
-    }
+    this.schedulePlaybackFade(1, startAt, 0)
     this.sourceNode.start(startAt, offset)
     if (this.nextBuffer) this.scheduleGaplessTransition()
     return true
@@ -3623,12 +3621,7 @@ export class AudioEngine {
     // state, making the stream look healthy while speakers remain silent. Restore the audible
     // path at the scheduled Parallax onset, matching host-side Parallax playback.
     if (timeline.playbackState === 'playing' && this.fadeGainNode && this.fadeGainNode.gain.value < 0.999) {
-      const fade = this.fadeGainNode.gain
-      const now = this.context.currentTime
-      fade.cancelScheduledValues(now)
-      fade.setValueAtTime(fade.value, now)
-      fade.setValueAtTime(fade.value, startAtContextTime)
-      fade.linearRampToValueAtTime(1, startAtContextTime + PLAYBACK_FADE_MS / 1000)
+      this.schedulePlaybackFade(1, startAtContextTime)
     }
     this.parallaxSinkState.currentFrame = Math.max(0, Math.floor(timeline.startFrame))
     this.parallaxSinkState.playbackRatePpm = playbackRatePpm
@@ -3981,10 +3974,7 @@ export class AudioEngine {
     // source onset. When the gain is already at unity (seek while playing), leave the schedule
     // untouched so the skip-declick dip from stopSource() above is not cancelled mid-dip.
     if (this.fadeGainNode && this.fadeGainNode.gain.value < 0.999) {
-      const fade = this.fadeGainNode.gain
-      fade.cancelScheduledValues(this.context.currentTime)
-      fade.setValueAtTime(0, startAtContextTime)
-      fade.linearRampToValueAtTime(1, startAtContextTime + PLAYBACK_FADE_MS / 1000)
+      this.schedulePlaybackFade(1, startAtContextTime, 0)
     }
     this.sourceNode.start(startAtContextTime, offset)
     this._playbackState = 'playing'
@@ -4176,15 +4166,7 @@ export class AudioEngine {
     // The trim tone bypasses the normal play()/host-track path, so it must also undo a completed
     // pause fade itself. Without this, the local audible chain can remain at zero while the
     // independent Parallax publisher still sends the tone to sinks.
-    if (this.fadeGainNode) {
-      const fade = this.fadeGainNode.gain
-      const now = this.context.currentTime
-      const current = fade.value
-      fade.cancelScheduledValues(now)
-      fade.setValueAtTime(current, now)
-      fade.setValueAtTime(current, startAtContextTime)
-      fade.linearRampToValueAtTime(1, startAtContextTime + PLAYBACK_FADE_MS / 1000)
-    }
+    this.schedulePlaybackFade(1, startAtContextTime)
     const sourceOffsetSeconds = ((timeline.startFrame % this.testToneBuffer.length) + this.testToneBuffer.length)
       % this.testToneBuffer.length / this.testToneBuffer.sampleRate
     source.start(startAtContextTime, sourceOffsetSeconds)
@@ -8307,6 +8289,7 @@ export class AudioEngine {
     newSource.start(now, 0)
 
     // Dip the shared fade node to silence and back; stop the outgoing source at the dip bottom.
+    this.playbackFadeScheduled = false
     const declickSec = SKIP_DECLICK_MS / 1000
     const stopAt = this.fadeGainNode ? now + declickSec : now
     if (this.fadeGainNode) {
@@ -8507,7 +8490,7 @@ export class AudioEngine {
       this._playbackState = 'playing'
       this.emit('stateChange', this._playbackState)
       this.startTimeUpdate()
-      this.rampFadeGain(1, PLAYBACK_FADE_MS)
+      this.schedulePlaybackFade(1)
       if (this.nextBuffer) {
         this.scheduleGaplessTransition()
       }
@@ -8533,15 +8516,10 @@ export class AudioEngine {
     const playingSource = this.sourceNode
     playingSource.onended = () => this.handleStandardSourceEnded(playingSource)
 
-    // Start from pause position, fading in from silence so the start is not abrupt.
+    // Start from the pause position, with the optional playback fade.
     const offset = this.pauseTime
     this.startTime = this.context.currentTime - offset
-    if (this.fadeGainNode) {
-      const fadeStart = this.context.currentTime
-      this.fadeGainNode.gain.cancelScheduledValues(fadeStart)
-      this.fadeGainNode.gain.setValueAtTime(0, fadeStart)
-      this.fadeGainNode.gain.linearRampToValueAtTime(1, fadeStart + PLAYBACK_FADE_MS / 1000)
-    }
+    this.schedulePlaybackFade(1, undefined, 0)
     this.sourceNode.start(0, offset)
 
     this._playbackState = 'playing'
@@ -8554,19 +8532,51 @@ export class AudioEngine {
     }
   }
 
-  // Ramp the fade node toward `target` over `durationMs`, holding the live value first so a
-  // mid-fade reversal (rapid pause/play) stays smooth. No-op for bit-perfect/remote (no fade node).
-  private rampFadeGain(target: number, durationMs: number): void {
+  get playbackFadeEnabled(): boolean {
+    return this._playbackFadeEnabled
+  }
+
+  set playbackFadeEnabled(enabled: boolean) {
+    if (this._playbackFadeEnabled === enabled) return
+    this._playbackFadeEnabled = enabled
+    if (enabled) return
+
+    // A paused source is still audible until its fade finishes. Stop it before restoring gain,
+    // and cancel its teardown so it cannot stop a later playback session.
+    if (this.pauseFadeTimer != null) {
+      this.clearPauseFadeTimer()
+      if (this._playbackState === 'paused') this.stopSource()
+    }
+    if (this.playbackFadeScheduled) this.schedulePlaybackFade(1)
+  }
+
+  // Hold the live gain before a reversal; future Parallax starts retain their onset time.
+  // Only playback fades use this helper. Skip click suppression and DSP ramps are independent.
+  private schedulePlaybackFade(target: number, startAt?: number, from?: number): void {
     if (!this.context || !this.fadeGainNode) return
+    this.playbackFadeScheduled = this._playbackFadeEnabled
     const now = this.context.currentTime
+    const onset = startAt ?? now
     const gain = this.fadeGainNode.gain
     // Read the live (possibly mid-ramp) value, then anchor it explicitly. linearRampToValueAtTime
     // interpolates from the previous event, so a concrete setValueAtTime anchor is required —
     // cancelAndHoldAtTime is not a reliable ramp anchor in Chromium (the ramp jumps to target).
     const current = gain.value
     gain.cancelScheduledValues(now)
-    gain.setValueAtTime(current, now)
-    gain.linearRampToValueAtTime(target, now + durationMs / 1000)
+    if (!this._playbackFadeEnabled) {
+      gain.setValueAtTime(target, onset)
+      return
+    }
+    // Preserve the existing schedules: fresh sources start from silence at onset, while
+    // reversals and sink/tone recovery hold the live value before ramping. Parallax callers
+    // already clamp onset to their timeline; do not move it to a later clock sample here.
+    if (from !== undefined) {
+      gain.setValueAtTime(from, onset)
+    } else {
+      gain.setValueAtTime(current, now)
+      if (startAt !== undefined) gain.setValueAtTime(current, onset)
+    }
+    gain.linearRampToValueAtTime(target, onset + PLAYBACK_FADE_MS / 1000)
   }
 
   private clearPauseFadeTimer(): void {
@@ -8627,8 +8637,12 @@ export class AudioEngine {
 
     // Fade out, then tear down the source once it is silent. The source keeps playing during the
     // fade so a quick play() can reverse it gaplessly (see play()'s rapid-resume branch).
-    this.rampFadeGain(0, PLAYBACK_FADE_MS)
     this.clearPauseFadeTimer()
+    if (!this._playbackFadeEnabled) {
+      this.stopSource()
+      return
+    }
+    this.schedulePlaybackFade(0)
     this.pauseFadeTimer = setTimeout(() => {
       this.pauseFadeTimer = null
       if (this._playbackState === 'paused') {
