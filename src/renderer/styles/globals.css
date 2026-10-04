@@ -23338,6 +23338,79 @@ html.playlist-context-backward::view-transition-new(playlist-context-surface) {
   accent-color: #f87171;
 }
 
+/* Danger surfaces need a light palette alongside the theme-aware foregrounds. */
+html[data-theme-tone="light"] .settings-shell .settings-danger-zone,
+html[data-theme-tone="light"] .confirm-action-modal-danger {
+  border-color: rgba(185, 28, 28, 0.28);
+  background: linear-gradient(180deg, #fff7f7, #fff1f2);
+}
+
+html[data-theme-tone="light"] .settings-shell .settings-danger-group-destructive {
+  border-color: rgba(185, 28, 28, 0.2);
+  background: rgba(185, 28, 28, 0.035);
+}
+
+html[data-theme-tone="light"] .settings-shell .settings-danger-item-destructive {
+  border-color: rgba(185, 28, 28, 0.24);
+  background: rgba(185, 28, 28, 0.045);
+}
+
+html[data-theme-tone="light"] .settings-shell .settings-danger-item-title {
+  color: var(--text-primary);
+}
+
+html[data-theme-tone="light"] .settings-shell .settings-danger-item-description {
+  color: var(--text-secondary);
+}
+
+html[data-theme-tone="light"] .settings-shell .settings-btn-danger,
+html[data-theme-tone="light"] .confirm-action-modal .settings-btn-danger {
+  border-color: rgba(185, 28, 28, 0.4);
+  background: rgba(185, 28, 28, 0.07);
+  color: #991b1b;
+}
+
+html[data-theme-tone="light"] .settings-shell .settings-btn-danger:hover:not(:disabled),
+html[data-theme-tone="light"] .confirm-action-modal .settings-btn-danger:hover:not(:disabled) {
+  border-color: rgba(185, 28, 28, 0.6);
+  background: rgba(185, 28, 28, 0.12);
+}
+
+html[data-theme-tone="light"] .settings-shell .settings-btn-danger:focus-visible,
+html[data-theme-tone="light"] .confirm-action-modal .settings-btn-danger:focus-visible {
+  outline: 2px solid #991b1b;
+  outline-offset: 2px;
+}
+
+html[data-theme-tone="light"] .settings-shell .settings-btn-danger:disabled,
+html[data-theme-tone="light"] .confirm-action-modal .settings-btn-danger:disabled {
+  border-color: rgba(185, 28, 28, 0.24);
+  background: rgba(185, 28, 28, 0.035);
+  color: #991b1b;
+}
+
+html[data-theme-tone="light"] .settings-shell .settings-danger-status-running {
+  color: #854d0e;
+}
+
+html[data-theme-tone="light"] .settings-shell .settings-danger-status-success {
+  color: #166534;
+}
+
+html[data-theme-tone="light"] .settings-shell .settings-danger-status-error,
+html[data-theme-tone="light"] .settings-shell .settings-danger-note,
+html[data-theme-tone="light"] .confirm-action-typed-label code {
+  color: #991b1b;
+}
+
+html[data-theme-tone="light"] .confirm-action-modal-danger {
+  box-shadow: 0 20px 60px var(--shadow-soft);
+}
+
+html[data-theme-tone="light"] .exclusive-mode-warning-checkbox input {
+  accent-color: #991b1b;
+}
+
 .audio-output-btn {
   width: 100%;
   height: 42px;
