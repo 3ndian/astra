@@ -65,7 +65,16 @@ import type {
     LyricsTrackOverride,
     LyricsTrackQuery
 } from '../types/lyrics'
-import type { SpotifyCommand, SpotifyStatus } from '../types/spotify'
+import type {
+  SpotifyCommand,
+  SpotifyHistoryPage,
+  SpotifyHistoryQuery,
+  SpotifyStatus,
+  WantedAddRequest,
+  WantedAddResult,
+  WantedQuery,
+  WantedTrackRow
+} from '../types/spotify'
 import type {
     JellyfinSource,
     JellyfinSourceCreateInput,
@@ -472,7 +481,18 @@ declare global {
             spotify: {
                 getStatus: () => Promise<SpotifyStatus>
                 command: (command: SpotifyCommand) => Promise<SpotifyStatus>
+                getHistory: (query: SpotifyHistoryQuery) => Promise<SpotifyHistoryPage>
+                getHistoryCovers: (keys: string[]) => Promise<Record<string, string>>
             }
+        wanted: {
+          add: (request: WantedAddRequest) => Promise<WantedAddResult>
+          list: (query: WantedQuery) => Promise<WantedTrackRow[]>
+          ids: () => Promise<string[]>
+          thumbs: (ids: number[]) => Promise<Record<number, string>>
+          cover: (id: number) => Promise<string | null>
+          remove: (id: number) => Promise<void>
+          onFulfilled: (callback: (items: Array<{ title: string; artist: string }>) => void) => () => void
+        }
             lyrics: {
                 getStatus: () => Promise<LyricsStatus>
                 setEnabled: (enabled: boolean) => Promise<LyricsStatus>

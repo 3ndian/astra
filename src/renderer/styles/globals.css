@@ -27184,3 +27184,54 @@ html[data-theme-tone="light"] .parallax-setup-status.is-good {
 .spotify-handoff-actions button:hover { border-color: rgba(var(--accent-rgb), 0.6); }
 .spotify-handoff-setting { display: flex; align-items: center; gap: 12px; font-size: 13px; color: var(--text-secondary); }
 .spotify-handoff-setting select { background: transparent; color: var(--text-primary); border: 1px solid var(--glass-border); border-radius: 6px; padding: 4px 8px; font-size: 13px; }
+
+/* Spotify listen history */
+.spotify-history { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
+.spotify-history-header { display: flex; align-items: baseline; gap: 14px; margin-bottom: 10px; }
+.spotify-history-header h2 { margin: 0; font-size: 18px; font-weight: 600; }
+.spotify-history-search { margin-left: auto; width: 200px; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--glass-border); background: transparent; color: var(--text-primary); font-size: 13px; }
+.spotify-history-row { display: grid; grid-template-columns: 48px minmax(0, 2fr) minmax(0, 1.5fr) minmax(0, 1.5fr) 110px 40px; column-gap: 14px; align-items: center; padding: 6px 12px; border-radius: 8px; font-size: 13px; }
+.spotify-history-row:not(.spotify-history-head):hover { background: rgba(var(--tint), 0.05); }
+.spotify-history-head { padding-bottom: 8px; border-bottom: 1px solid var(--glass-border); border-radius: 0; }
+.spotify-history-sort { background: none; border: 0; padding: 0; text-align: left; cursor: pointer; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-secondary); }
+.spotify-history-sort:hover { color: var(--text-primary); }
+.spotify-history-thumb { width: 36px; height: 36px; border-radius: 4px; overflow: hidden; background: rgba(var(--tint), 0.06); display: flex; align-items: center; justify-content: center; color: var(--text-secondary); }
+.spotify-history-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.spotify-history-title, .spotify-history-muted { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.spotify-history-muted { color: var(--text-secondary); }
+.spotify-history-more { align-self: center; margin-top: 10px; padding: 6px 16px; border-radius: 14px; border: 1px solid var(--glass-border); background: transparent; color: var(--text-primary); cursor: pointer; font-size: 12px; }
+
+/* Section rail: pinned section icons + "all sections" button */
+.section-rail { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--glass-border); width: 100%; }
+.section-rail-btn { color: var(--section-color, var(--text-tertiary)); opacity: 0.7; }
+.section-rail-btn:hover { color: var(--section-color, var(--text-primary)); opacity: 1; }
+.section-rail-btn.active { opacity: 1; color: var(--section-color, var(--accent)); background: color-mix(in srgb, var(--section-color, var(--accent)) 18%, transparent); box-shadow: inset 2px 0 0 var(--section-color, var(--accent)); }
+.section-rail-letters { font-size: 11px; font-weight: 700; letter-spacing: 0.02em; }
+.section-rail-more { width: 32px; height: 28px; }
+.section-switcher-badge { background: color-mix(in srgb, var(--section-color, var(--accent)) 20%, transparent); color: var(--section-color, var(--accent)); }
+.section-switcher-pin { background: none; border: 1px solid var(--glass-border); color: var(--text-secondary); border-radius: 10px; font-size: 10px; padding: 2px 8px; cursor: pointer; margin-right: 4px; }
+.section-switcher-pin.pinned { color: var(--text-primary); border-color: rgba(var(--accent-rgb), 0.5); }
+.spotify-options { position: relative; margin-left: auto; }
+.spotify-options-button { width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--glass-border); background: transparent; color: var(--text-secondary); font-size: 16px; line-height: 1; cursor: pointer; }
+.spotify-options-button:hover { color: var(--text-primary); }
+.spotify-options-menu { position: absolute; right: 0; top: 36px; z-index: 20; width: 260px; padding: 12px; border-radius: 10px; border: 1px solid var(--glass-border); background: var(--surface-overlay); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); box-shadow: 0 10px 30px rgba(0,0,0,0.35); }
+.spotify-options-menu .spotify-handoff-setting { flex-direction: column; align-items: stretch; gap: 8px; }
+
+/* "Not downloaded" list + "+" button */
+.wanted-add { height: 28px; padding: 0 12px; border-radius: 14px; border: 1px solid rgba(var(--accent-rgb), 0.5); background: rgba(var(--accent-rgb), 0.12); color: var(--text-primary); font-size: 12px; cursor: pointer; white-space: nowrap; }
+.wanted-add:hover:not(:disabled) { background: rgba(var(--accent-rgb), 0.22); }
+.wanted-add:disabled { opacity: 0.5; cursor: progress; }
+.wanted-add-done { display: inline-flex; align-items: center; border-color: var(--glass-border); background: transparent; color: var(--text-secondary); cursor: default; }
+.wanted-note { margin: 0; font-size: 13px; color: var(--text-secondary); max-width: 640px; }
+.wanted-search { margin-left: 0; width: 260px; }
+.wanted-copy { margin: 0 0 0 auto; }
+.wanted-row { display: grid; grid-template-columns: 48px minmax(0, 2fr) minmax(0, 1.5fr) minmax(0, 1.5fr) 110px 70px; column-gap: 14px; align-items: center; padding: 6px 12px; border-radius: 8px; font-size: 13px; }
+.wanted-head { padding-bottom: 8px; border-bottom: 1px solid var(--glass-border); border-radius: 0; }
+.wanted-item { opacity: 0.7; }
+.wanted-item:hover { opacity: 1; background: rgba(var(--tint), 0.05); }
+.wanted-remove { justify-self: end; width: 26px; height: 26px; border-radius: 50%; border: 0; background: transparent; color: var(--text-secondary); font-size: 18px; cursor: pointer; }
+.wanted-remove:hover { color: var(--text-primary); background: rgba(var(--tint), 0.1); }
+.wanted-confirm { justify-self: end; display: flex; gap: 6px; }
+.wanted-confirm button { height: 24px; padding: 0 8px; border-radius: 12px; border: 1px solid var(--glass-border); background: transparent; color: var(--text-primary); font-size: 11px; cursor: pointer; }
+.spotify-now-playing .wanted-add { align-self: flex-start; margin-top: 10px; }
+.spotify-history-row .wanted-add { justify-self: end; }

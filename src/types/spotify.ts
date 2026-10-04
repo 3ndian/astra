@@ -34,3 +34,61 @@ export type SpotifyCommand =
   | { kind: 'previous' }
   | { kind: 'seek'; seconds: number }
   | { kind: 'volume'; percent: number }
+
+export type SpotifyHistorySort = 'title' | 'artist' | 'album' | 'played'
+
+export interface SpotifyHistoryQuery {
+  sort: SpotifyHistorySort
+  dir: 'asc' | 'desc'
+  search: string
+  limit: number
+  offset: number
+}
+
+export interface SpotifyHistoryRow {
+  id: number
+  trackId: string
+  title: string
+  artist: string
+  album: string
+  /** Key for `getHistoryCovers`; null when the play had no artwork. */
+  coverKey: string | null
+  durationMs: number
+  playedAtMs: number
+}
+
+export interface SpotifyHistoryPage {
+  rows: SpotifyHistoryRow[]
+  total: number
+}
+
+export type WantedSort = 'added' | 'title' | 'artist' | 'album'
+
+export interface WantedQuery {
+  sort: WantedSort
+  dir: 'asc' | 'desc'
+  search: string
+}
+
+/** A song added from Spotify that is not in the library yet ("Not downloaded"). */
+export interface WantedTrackRow {
+  id: number
+  spotifyTrackId: string
+  title: string
+  artist: string
+  album: string
+  durationMs: number
+  addedAtMs: number
+  hasCover: boolean
+}
+
+export interface WantedAddRequest {
+  spotifyTrackId: string
+  title: string
+  artist: string
+  album: string
+  durationMs: number
+  artworkUrl: string | null
+}
+
+export type WantedAddResult = { status: 'added' | 'exists' } | { status: 'error'; message: string }

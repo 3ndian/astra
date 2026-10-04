@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import SpotifyHistoryList from './SpotifyHistoryList'
+import WantedAddButton from './WantedAddButton'
 import { useSpotifyStore, type SpotifyHandoffPreference } from '../../stores/spotifyStore'
 
 function formatClock(totalSeconds: number): string {
@@ -16,6 +18,7 @@ export default function SpotifyView() {
   const enable = useSpotifyStore((state) => state.enable)
   const setHandoffPreference = useSpotifyStore((state) => state.setHandoffPreference)
   const sendCommand = useSpotifyStore((state) => state.sendCommand)
+  const [optionsOpen, setOptionsOpen] = useState(false)
   const [displayPosition, setDisplayPosition] = useState(status.positionSeconds)
 
   // Opening this view is what switches Spotify support on (and triggers the macOS Automation prompt).
@@ -57,16 +60,30 @@ export default function SpotifyView() {
       <div className="spotify-view-header">
         <h1>Spotify</h1>
         <span className="spotify-view-sub">Controls the Spotify desktop app</span>
+        <div className="spotify-options">
+          <button
+            type="button"
+            className="spotify-options-button"
+            onClick={() => setOptionsOpen((open) => !open)}
+            aria-label="Spotify options"
+            aria-expanded={optionsOpen}
+          >
+            &#8943;
+          </button>
+          {optionsOpen && (
+            <div className="spotify-options-menu" role="dialog" aria-label="Spotify options">
+              <label className="spotify-handoff-setting">
+                <span>When a local song starts while Spotify is playing</span>
+                <select value={handoffPreference} onChange={(event) => setHandoffPreference(event.target.value as SpotifyHandoffPreference)}>
+                  <option value="ask">Ask me</option>
+                  <option value="always">Always pause Spotify</option>
+                  <option value="never">Leave Spotify playing</option>
+                </select>
+              </label>
+            </div>
+          )}
+        </div>
       </div>
-
-      <label className="spotify-handoff-setting">
-        <span>When a local song starts while Spotify is playing</span>
-        <select value={handoffPreference} onChange={(event) => setHandoffPreference(event.target.value as SpotifyHandoffPreference)}>
-          <option value="ask">Ask me</option>
-          <option value="always">Always pause Spotify</option>
-          <option value="never">Leave Spotify playing</option>
-        </select>
-      </label>
 
       {emptyMessage && <div className="spotify-view-empty" role="status">{emptyMessage}</div>}
 
@@ -84,6 +101,16 @@ export default function SpotifyView() {
             <div className="spotify-title">{track.title}</div>
             <div className="spotify-artist">{track.artist}</div>
             <div className="spotify-album">{track.album}</div>
+            <WantedAddButton
+              request={{
+                spotifyTrackId: track.id,
+                title: track.title,
+                artist: track.artist,
+                album: track.album,
+                durationMs: track.durationMs,
+                artworkUrl: track.artworkUrl
+              }}
+            />
 
             <div className="spotify-progress">
               <span>{formatClock(displayPosition)}</span>
@@ -121,6 +148,8 @@ export default function SpotifyView() {
           </div>
         </div>
       )}
+
+      <SpotifyHistoryList />
     </div>
   )
 }

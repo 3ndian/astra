@@ -2599,6 +2599,28 @@ export async function initDatabase(sectionId: string = DEFAULT_SECTION_ID): Prom
   await saveDatabase()
 }
 
+/** The always-open Music (default section) database, for app-wide tables that must not follow the active section. */
+export function getDefaultSectionDatabase(): {
+  run(sql: string, params?: unknown[]): unknown
+  get<T = Record<string, unknown>>(sql: string, params?: unknown[]): T | undefined
+  all<T = Record<string, unknown>>(sql: string, params?: unknown[]): T[]
+} | null {
+  return defaultSectionDb
+}
+
+export interface ImportedTrackIdentity {
+  title: string
+  artist: string
+  album: string
+}
+
+let importedTracksListener: ((tracks: ImportedTrackIdentity[]) => void) | null = null
+
+/** Called after a Music-section scan has added new files (used to clear "Not downloaded" entries). */
+export function setImportedTracksListener(listener: ((tracks: ImportedTrackIdentity[]) => void) | null): void {
+  importedTracksListener = listener
+}
+
 export function getActiveLibrarySectionId(): string {
   return activeSectionId
 }
@@ -6377,6 +6399,7 @@ export async function scanFolder(
   let updated = 0
   let errors = 0
   let processed = 0
+  const importedIdentities: ImportedTrackIdentity[] = []
 
   // Existing rows keyed by case-folded path so a casing-only folder rename
   // still matches the stored row instead of inserting a duplicate (#180).
@@ -6449,6 +6472,7 @@ export async function scanFolder(
           metadata.replayGainTrackDb, metadata.replayGainAlbumDb, metadata.bpm, metadata.musicalKey, fileCreatedAt, syncSessionKey, now, now
         ])
         added++
+        importedIdentities.push({ title: metadata.title, artist: metadata.artist, album: metadata.album })
       }
     } catch (err: unknown) {
       if (isLibraryScanCancelledError(err)) {
@@ -6472,6 +6496,13 @@ export async function scanFolder(
   }
   if (persist) {
     await saveDatabase()
+  }
+  if (importedIdentities.length > 0 && activeSectionId === DEFAULT_SECTION_ID && importedTracksListener) {
+    try {
+      importedTracksListener(importedIdentities)
+    } catch (error) {
+      console.warn('[library] imported-tracks listener failed', error)
+    }
   }
   return { added, updated, errors, skippedDirs }
 }

@@ -82,3 +82,25 @@ without a loudness pass and without normalization (playerStore.ts, AudioEngine.t
 - `SpotifyHandoffPrompt.tsx`: "Pause Spotify / Always pause / Keep both".
 - `useCoverArtAccent`: takes the accent from the Spotify cover when Spotify is active.
 - Starting Spotify pauses Astra; Astra never scrobbles Spotify.
+
+## Spotify listen history
+- `shared/spotify/playTracker.ts`: a play counts after 30 s heard (or half of a very short track); ads/podcasts skipped; repeats counted.
+- `main/services/spotifyHistory.ts` + `openSpotifyHistory.ts`: own database `spotify-history.db` in userData (never the library). ~500 newest 300 px JPEG thumbnails, shared per album cover.
+- Recording happens in main (SpotifyBridge `onStatus`), so it works whenever the Spotify watcher polls.
+- `SpotifyHistoryList.tsx`: sortable by title/artist/album/played, search, "show more".
+- Not yet: "+" placeholders and real-file takeover.
+
+## Sidebar section rail
+- `shared/sections/sectionStyle.ts` (+ test): colour per section, pinned sections (max 3, default Music/Audiobooks/first custom), active section always visible.
+- `SectionSwitcher.tsx`: pinned section icons (music note, book, letters for custom) + "all sections" grid button; the popup has Pin/Pinned per section. Pins are saved in localStorage (`astra-pinned-sections-v1`).
+- Spotify "when a local song starts" option moved behind the "..." button on the Spotify page.
+
+## "Not downloaded" list (the "+" button)
+- Own table `wanted_tracks` in the Music database; NOT rows of `tracks`, so never playable/queued/shuffled/counted.
+- "+" on the now-playing card and on each history row; permanent 640 px cover + 300 px thumb.
+- `library.scanFolder` reports newly imported files (Music section only); `WantedTracksStore.fulfill` clears entries with the same title + an overlapping artist (album ignored, remaster/explicit/feat tags ignored).
+- New page `WantedView` (nav item "Not downloaded", shown in Music once Spotify is enabled): sort, search, Copy list, remove.
+- Not yet: showing them greyed in the main track list, cover takeover onto the real file, loose-match confirmation, drag-and-drop import.
+
+## Per-section page memory
+- `shared/sections/sectionViewMemory.ts` (+ test) and the `sections.onSwitched` handler in `App.tsx`: leaving a section saves its page (home/library/stats/playlist/...), the library browse mode and the open playlist (localStorage `astra-section-view-memory-v1`); returning restores them. A deleted playlist falls back to the library page.

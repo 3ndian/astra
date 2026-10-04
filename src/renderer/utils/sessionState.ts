@@ -5,7 +5,7 @@ import type { LibraryYearKey } from './libraryYears'
 export const SESSION_STATE_KIND = 'astra-session-state'
 export const SESSION_STATE_SCHEMA_VERSION = 1
 
-export type SessionAppView = 'home' | 'library' | 'stats' | 'graph' | 'eq' | 'settings' | 'playlist' | 'spotify'
+export type SessionAppView = 'home' | 'library' | 'stats' | 'graph' | 'eq' | 'settings' | 'playlist' | 'spotify' | 'wanted'
 export type SessionTrackSortKey = 'title' | 'artist' | 'album' | 'genre' | 'duration' | 'bpm' | 'musical_key' | 'added' | 'rating' | 'play_count'
 export type SessionSortDirection = 'asc' | 'desc'
 export type SessionViewMode = 'tracks' | 'albums' | 'artists' | 'genres' | 'years' | 'folders'
@@ -229,6 +229,7 @@ export function normalizeAppView(value: unknown): SessionAppView {
     || value === 'settings'
     || value === 'playlist'
     || value === 'spotify'
+    || value === 'wanted'
     || value === 'home'
     ? value
     : 'home'

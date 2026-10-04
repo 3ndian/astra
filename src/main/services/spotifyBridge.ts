@@ -37,9 +37,19 @@ function friendlyError(error: unknown): string {
   return message.split('\n')[0].slice(0, 200)
 }
 
+export interface SpotifyBridgeOptions {
+  /** Called with every status read from Spotify (used by the listen-history recorder). */
+  onStatus?: (status: SpotifyStatus) => void
+}
+
 export class SpotifyBridge {
+  private readonly onStatus: ((status: SpotifyStatus) => void) | undefined
   private readonly artworkCache = new Map<string, string>()
   private statusInFlight: Promise<SpotifyStatus> | null = null
+
+  constructor(options: SpotifyBridgeOptions = {}) {
+    this.onStatus = options.onStatus
+  }
 
   isSupported(): boolean {
     return process.platform === 'darwin'
@@ -80,7 +90,17 @@ export class SpotifyBridge {
     }
     const url = status.track?.artworkUrl
     if (url) status.artworkDataUrl = await this.loadArtwork(url)
+    try {
+      this.onStatus?.(status)
+    } catch (error) {
+      console.warn('[spotify] status observer failed', error)
+    }
     return status
+  }
+
+  /** Fetches a Spotify cover (https://*.scdn.co only) as a data: URL; null when refused or unavailable. */
+  fetchArtwork(url: string): Promise<string | null> {
+    return this.loadArtwork(url)
   }
 
   private async loadArtwork(url: string): Promise<string | null> {

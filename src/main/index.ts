@@ -11,7 +11,19 @@ import { loadSectionRegistry, saveSectionRegistry } from './services/sectionsSto
 import { saveSidecarLrc } from './services/lyricsSidecarWriter'
 import { createSidecarLookup } from './services/lyricsSidecarLocation'
 import { SpotifyBridge } from './services/spotifyBridge'
-import type { SpotifyCommand } from '../types/spotify'
+import { openSpotifyHistoryStore } from './services/openSpotifyHistory'
+import type { SpotifyHistoryStore } from './services/spotifyHistory'
+import { WantedTracksStore } from './services/wantedTracks'
+import { createPlayTracker } from '../shared/spotify/playTracker'
+import type {
+  SpotifyCommand,
+  SpotifyHistoryQuery,
+  SpotifyHistorySort,
+  WantedAddRequest,
+  WantedAddResult,
+  WantedQuery,
+  WantedSort
+} from '../types/spotify'
 import {
   addSection,
   getActiveSection,
@@ -5700,7 +5712,48 @@ ipcMain.handle('lyrics:saveSidecar', async (_event, rawQuery: unknown) => {
   })
 })
 
-const spotifyBridge = new SpotifyBridge()
+let spotifyHistory: SpotifyHistoryStore | null = null
+
+function makeSpotifyThumbnail(dataUrl: string): { mime: string; bytes: Uint8Array } | null {
+  const image = nativeImage.createFromDataURL(dataUrl)
+  if (image.isEmpty()) return null
+  const { width } = image.getSize()
+  const resized = width > 300 ? image.resize({ width: 300, quality: 'best' }) : image
+  const bytes = resized.toJPEG(82)
+  return bytes.length > 0 ? { mime: 'image/jpeg', bytes } : null
+}
+
+function getSpotifyHistory(): SpotifyHistoryStore | null {
+  if (!spotifyHistory) {
+    try {
+      spotifyHistory = openSpotifyHistoryStore(join(app.getPath('userData'), 'spotify-history.db'), makeSpotifyThumbnail)
+    } catch (error) {
+      console.error('[spotify] could not open the listen history', error)
+    }
+  }
+  return spotifyHistory
+}
+
+const spotifyPlayTracker = createPlayTracker()
+const spotifyBridge = new SpotifyBridge({
+  onStatus: (status) => {
+    const play = spotifyPlayTracker.observe(status, Date.now())
+    if (play) getSpotifyHistory()?.record(play, status.artworkDataUrl)
+  }
+})
+
+function normalizeHistoryQuery(raw: unknown): SpotifyHistoryQuery {
+  const record = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const sorts: SpotifyHistorySort[] = ['title', 'artist', 'album', 'played']
+  const sort = sorts.find((candidate) => candidate === record.sort) ?? 'played'
+  return {
+    sort,
+    dir: record.dir === 'asc' ? 'asc' : 'desc',
+    search: typeof record.search === 'string' ? record.search.slice(0, 200) : '',
+    limit: typeof record.limit === 'number' ? record.limit : 100,
+    offset: typeof record.offset === 'number' ? record.offset : 0
+  }
+}
 
 function normalizeSpotifyCommand(raw: unknown): SpotifyCommand | null {
   if (!raw || typeof raw !== 'object') return null
@@ -5721,7 +5774,111 @@ function normalizeSpotifyCommand(raw: unknown): SpotifyCommand | null {
   return null
 }
 
+
+// "Not downloaded" songs added from Spotify (kept in the Music database, but not as library tracks).
+let wantedStore: WantedTracksStore | null = null
+
+function getWantedStore(): WantedTracksStore | null {
+  if (!wantedStore) {
+    const defaultDb = library.getDefaultSectionDatabase()
+    if (!defaultDb) return null
+    try {
+      wantedStore = new WantedTracksStore(defaultDb)
+    } catch (error) {
+      console.error('[wanted] could not open the Not downloaded list', error)
+    }
+  }
+  return wantedStore
+}
+
+function decodeDataUrl(dataUrl: string): { mime: string; bytes: Buffer } | null {
+  const match = /^data:([^;,]+);base64,(.+)$/.exec(dataUrl)
+  if (!match) return null
+  return { mime: match[1], bytes: Buffer.from(match[2], 'base64') }
+}
+
+library.setImportedTracksListener((tracks) => {
+  const fulfilled = getWantedStore()?.fulfill(tracks, Date.now()) ?? []
+  if (fulfilled.length > 0) mainWindow?.webContents.send('wanted:fulfilled', fulfilled)
+})
+
+function normalizeWantedQuery(raw: unknown): WantedQuery {
+  const record = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const sorts: WantedSort[] = ['added', 'title', 'artist', 'album']
+  return {
+    sort: sorts.find((candidate) => candidate === record.sort) ?? 'added',
+    dir: record.dir === 'asc' ? 'asc' : 'desc',
+    search: typeof record.search === 'string' ? record.search.slice(0, 200) : ''
+  }
+}
+
+function normalizeWantedRequest(raw: unknown): WantedAddRequest | null {
+  if (!raw || typeof raw !== 'object') return null
+  const record = raw as Record<string, unknown>
+  const text = (value: unknown, max: number): string => (typeof value === 'string' ? value.slice(0, max) : '')
+  const spotifyTrackId = text(record.spotifyTrackId, 100)
+  const title = text(record.title, 300).trim()
+  if (!spotifyTrackId.startsWith('spotify:track:') || !title) return null
+  return {
+    spotifyTrackId,
+    title,
+    artist: text(record.artist, 300),
+    album: text(record.album, 300),
+    durationMs: typeof record.durationMs === 'number' && Number.isFinite(record.durationMs) ? record.durationMs : 0,
+    artworkUrl: typeof record.artworkUrl === 'string' && record.artworkUrl.length < 500 ? record.artworkUrl : null
+  }
+}
+
+ipcMain.handle('wanted:add', async (_event, raw: unknown): Promise<WantedAddResult> => {
+  const request = normalizeWantedRequest(raw)
+  if (!request) return { status: 'error', message: 'That song cannot be added.' }
+  const store = getWantedStore()
+  if (!store) return { status: 'error', message: 'The Music library is not ready yet.' }
+  try {
+    let cover: { mime: string; bytes: Uint8Array } | null = null
+    let thumb: { mime: string; bytes: Uint8Array } | null = null
+    if (request.artworkUrl) {
+      const dataUrl = await spotifyBridge.fetchArtwork(request.artworkUrl)
+      const decoded = dataUrl ? decodeDataUrl(dataUrl) : null
+      if (decoded && dataUrl) {
+        cover = decoded
+        thumb = makeSpotifyThumbnail(dataUrl)
+      }
+    }
+    const status = store.add({
+      spotifyTrackId: request.spotifyTrackId,
+      title: request.title,
+      artist: request.artist,
+      album: request.album,
+      durationMs: request.durationMs,
+      cover,
+      thumb
+    }, Date.now())
+    return { status }
+  } catch (error) {
+    console.error('[wanted] add failed', error)
+    return { status: 'error', message: 'Could not add that song.' }
+  }
+})
+ipcMain.handle('wanted:list', (_event, raw: unknown) => getWantedStore()?.list(normalizeWantedQuery(raw)) ?? [])
+ipcMain.handle('wanted:ids', () => getWantedStore()?.wantedSpotifyIds() ?? [])
+ipcMain.handle('wanted:thumbs', (_event, raw: unknown) => {
+  const ids = Array.isArray(raw) ? raw.filter((id): id is number => typeof id === 'number' && Number.isInteger(id)) : []
+  return getWantedStore()?.getThumbs(ids) ?? {}
+})
+ipcMain.handle('wanted:cover', (_event, id: unknown) => (typeof id === 'number' ? getWantedStore()?.getCover(id) ?? null : null))
+ipcMain.handle('wanted:remove', (_event, id: unknown) => {
+  if (typeof id === 'number' && Number.isInteger(id)) getWantedStore()?.remove(id)
+})
+
 ipcMain.handle('spotify:getStatus', () => spotifyBridge.getStatus())
+ipcMain.handle('spotify:history:list', (_event, raw: unknown) => {
+  return getSpotifyHistory()?.list(normalizeHistoryQuery(raw)) ?? { rows: [], total: 0 }
+})
+ipcMain.handle('spotify:history:covers', (_event, raw: unknown) => {
+  const keys = Array.isArray(raw) ? raw.filter((key): key is string => typeof key === 'string').slice(0, 500) : []
+  return getSpotifyHistory()?.getCovers(keys) ?? {}
+})
 ipcMain.handle('spotify:command', async (_event, raw: unknown) => {
   const command = normalizeSpotifyCommand(raw)
   if (!command) return spotifyBridge.getStatus()

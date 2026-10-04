@@ -1,7 +1,43 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { DEFAULT_SECTION_ID, type SectionConfig, type SectionFlagKey, type SectionKind } from '../../../shared/sections/sections'
+import {
+  MAX_PINNED_SECTIONS,
+  resolvePinned,
+  sectionColor,
+  togglePinned,
+  visibleRailIds
+} from '../../../shared/sections/sectionStyle'
 import { selectActiveSection, useSectionsStore } from '../../stores/sectionsStore'
+
+const PINNED_STORAGE_KEY = 'astra-pinned-sections-v1'
+
+function readStoredPins(): unknown {
+  try {
+    const raw = window.localStorage.getItem(PINNED_STORAGE_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
+
+function SectionIcon({ section }: { section: SectionConfig }) {
+  if (section.kind === 'music') {
+    return (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3z" />
+      </svg>
+    )
+  }
+  if (section.kind === 'audiobook') {
+    return (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M5 3h12a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm1 2v14h11V5H6zm2 3h7v2H8V8z" />
+      </svg>
+    )
+  }
+  return <span className="section-rail-letters">{sectionBadge(section.name)}</span>
+}
 
 const FLAG_LABELS: { key: SectionFlagKey; label: string }[] = [
   { key: 'scrobble', label: 'Scrobble to Last.fm' },
@@ -42,6 +78,8 @@ export default function SectionSwitcher() {
   const [newName, setNewName] = useState('')
   const [newKind, setNewKind] = useState<SectionKind>('custom')
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
+  const [storedPins, setStoredPins] = useState<unknown>(readStoredPins)
+  const [pinHint, setPinHint] = useState('')
 
   const close = useCallback(() => {
     setOpen(false)
@@ -95,6 +133,28 @@ export default function SectionSwitcher() {
     }
   }
 
+  const pinned = resolvePinned(registry.sections, storedPins)
+  const railIds = visibleRailIds(registry.sections, pinned, activeSection.id)
+
+  const handleTogglePin = (id: string) => {
+    const result = togglePinned(pinned, id)
+    if (!result.changed) {
+      setPinHint(
+        pinned.includes(id)
+          ? 'Keep at least one section pinned.'
+          : `You can pin up to ${MAX_PINNED_SECTIONS}. Unpin one first.`
+      )
+      return
+    }
+    setPinHint('')
+    setStoredPins(result.pinned)
+    try {
+      window.localStorage.setItem(PINNED_STORAGE_KEY, JSON.stringify(result.pinned))
+    } catch {
+      // not persisted; applies for this session
+    }
+  }
+
   const managed = managedId ? registry.sections.find((section) => section.id === managedId) ?? null : null
 
   const popover =
@@ -110,8 +170,10 @@ export default function SectionSwitcher() {
             <div className="section-switcher-title">Sections</div>
             <p className="section-switcher-hint">
               Each section is its own library. Nothing mixes between them, and switching stops playback.
+              Pin up to {MAX_PINNED_SECTIONS} to keep them in the sidebar.
             </p>
 
+            {pinHint && <div className="section-switcher-hint" role="status">{pinHint}</div>}
             <ul className="section-switcher-list">
               {registry.sections.map((section) => (
                 <li key={section.id} className="section-switcher-row">
@@ -122,9 +184,18 @@ export default function SectionSwitcher() {
                     onClick={() => void handleSwitch(section)}
                     aria-current={section.id === activeSection.id ? 'true' : undefined}
                   >
-                    <span className="section-switcher-badge">{sectionBadge(section.name)}</span>
+                    <span className="section-switcher-badge" style={{ ['--section-color' as string]: sectionColor(section) }}>{sectionBadge(section.name)}</span>
                     <span className="section-switcher-name">{section.name}</span>
                     {section.id === activeSection.id && <span className="section-switcher-active-tag">Active</span>}
+                  </button>
+                  <button
+                    type="button"
+                    className={`section-switcher-pin ${pinned.includes(section.id) ? 'pinned' : ''}`}
+                    aria-label={pinned.includes(section.id) ? `Unpin ${section.name} from the sidebar` : `Pin ${section.name} to the sidebar`}
+                    aria-pressed={pinned.includes(section.id)}
+                    onClick={() => handleTogglePin(section.id)}
+                  >
+                    {pinned.includes(section.id) ? 'Pinned' : 'Pin'}
                   </button>
                   <button
                     type="button"
@@ -233,22 +304,46 @@ export default function SectionSwitcher() {
         )
       : null
 
+  const railSections = railIds
+    .map((id) => registry.sections.find((section) => section.id === id))
+    .filter((section): section is SectionConfig => !!section)
+
   return (
-    <>
+    <div className="section-rail">
+      {railSections.map((section) => {
+        const isActive = section.id === activeSection.id
+        return (
+          <button
+            key={section.id}
+            type="button"
+            className={`sidebar-icon-btn section-rail-btn ${isActive ? 'active' : ''}`}
+            style={{ ['--section-color' as string]: sectionColor(section) }}
+            onClick={() => void handleSwitch(section)}
+            aria-label={`Section: ${section.name}`}
+            aria-current={isActive ? 'true' : undefined}
+            data-sidebar-tooltip={section.name}
+            disabled={isSwitching}
+          >
+            <SectionIcon section={section} />
+          </button>
+        )
+      })}
       <button
         ref={buttonRef}
         type="button"
-        className={`sidebar-icon-btn section-switcher-button ${open ? 'active' : ''}`}
+        className={`sidebar-icon-btn section-rail-more ${open ? 'active' : ''}`}
         onClick={toggleOpen}
-        aria-label={`Library section: ${activeSection.name}`}
+        aria-label="All sections"
         aria-haspopup="dialog"
         aria-expanded={open}
-        data-sidebar-tooltip={`Section: ${activeSection.name}`}
+        data-sidebar-tooltip="All sections"
         disabled={isSwitching}
       >
-        <span className="section-switcher-badge">{sectionBadge(activeSection.name)}</span>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z" />
+        </svg>
       </button>
       {popover}
-    </>
+    </div>
   )
 }

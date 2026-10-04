@@ -7,6 +7,7 @@ import SettingsView from '../views/SettingsView'
 import PlaylistView from '../views/PlaylistView'
 import StatsView from '../views/StatsView'
 import SpotifyView from '../views/SpotifyView'
+import WantedView from '../views/WantedView'
 
 export default function ViewRouter() {
   const activeView = useUIStore((s) => s.activeView)
@@ -37,6 +38,9 @@ export default function ViewRouter() {
       break
     case 'spotify':
       content = <SpotifyView />
+      break
+    case 'wanted':
+      content = <WantedView />
       break
     default:
       content = <HomeView />

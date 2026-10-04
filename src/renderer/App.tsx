@@ -32,8 +32,9 @@ import TrackIntegrityResultModal from './components/library/TrackIntegrityResult
 import MetadataEditorPanel from './components/metadata/MetadataEditorPanel'
 import LyricsEditorPanel from './components/lyrics/LyricsEditorPanel'
 import SignalShareModal from './components/signal/SignalShareModal'
-import { useUIStore } from './stores/uiStore'
-import { useLibraryStore } from './stores/libraryStore'
+import { useUIStore, type AppView } from './stores/uiStore'
+import { planRestore, rememberSectionView, sanitizeMemory, type SectionViewMemory } from '../shared/sections/sectionViewMemory'
+import { useLibraryStore, type ViewMode } from './stores/libraryStore'
 import { useSectionsStore } from './stores/sectionsStore'
 import { useRatingsStore } from './stores/ratingsStore'
 import { useAudioSettingsStore } from './stores/audioSettingsStore'
@@ -420,14 +421,57 @@ function App() {
     })
     // Switching library sections swaps the whole library underneath us: stop playback, drop
     // the queue, and reload everything from the newly opened section.
+    // Each section remembers the page it was on (and the library browse mode), so coming back
+    // lands where you left off instead of on Home.
+    const SECTION_VIEW_MEMORY_KEY = 'astra-section-view-memory-v1'
+    let sectionViewMemory: SectionViewMemory = {}
+    try {
+      sectionViewMemory = sanitizeMemory(JSON.parse(window.localStorage.getItem(SECTION_VIEW_MEMORY_KEY) ?? 'null'))
+    } catch {
+      sectionViewMemory = {}
+    }
+    let lastSectionId: string | null = null
+    void window.electronAPI.sections.get().then((payload) => {
+      if (lastSectionId === null) lastSectionId = payload.activeSectionId
+    }).catch(() => undefined)
+
     const unsubscribeSectionSwitched = window.electronAPI.sections.onSwitched((payload) => {
       void (async () => {
+        if (lastSectionId && lastSectionId !== payload.activeSectionId) {
+          sectionViewMemory = rememberSectionView(sectionViewMemory, lastSectionId, {
+            view: useUIStore.getState().activeView,
+            libraryViewMode: useLibraryStore.getState().viewMode,
+            playlistId: usePlaylistStore.getState().selectedPlaylistId
+          })
+          try {
+            window.localStorage.setItem(SECTION_VIEW_MEMORY_KEY, JSON.stringify(sectionViewMemory))
+          } catch {
+            // remembered for this session only
+          }
+        }
+        lastSectionId = payload.activeSectionId
+
         usePlayerStore.getState().resetPlaybackForSectionSwitch()
-        useUIStore.getState().setActiveView('home')
+        const remembered = sectionViewMemory[payload.activeSectionId]
+        const quickPlan = planRestore(remembered, () => false)
+        useUIStore.getState().setActiveView(quickPlan.view === 'library' && remembered?.view === 'playlist' ? 'home' : (quickPlan.view as AppView))
         try {
           await useLibraryStore.getState().loadLibrary()
           await usePlaylistStore.getState().loadPlaylists()
           await useRatingsStore.getState().loadRatings()
+          if (remembered) {
+            const plan = planRestore(
+              remembered,
+              (id) => usePlaylistStore.getState().playlists.some((playlist) => playlist.id === id)
+            )
+            if (plan.libraryViewMode) {
+              useLibraryStore.getState().setViewMode(plan.libraryViewMode as ViewMode)
+            }
+            if (plan.playlistId !== null) {
+              await usePlaylistStore.getState().selectPlaylist(plan.playlistId)
+            }
+            useUIStore.getState().setActiveView(plan.view as AppView)
+          }
         } catch (error) {
           console.error(`Failed to load library section "${payload.activeSectionId}":`, error)
         }
