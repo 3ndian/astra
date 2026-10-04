@@ -66,3 +66,19 @@ time-stretch, so speed is a real engine task), Spotify control (macOS then Linux
 - Hover button on the bottom-left album cover that expands it to the old-Spotify layout: the left pane widens to the width of the cover/title/heart block, the cover grows docked at the bottom-left, playlists listed above it. Same button collapses back to the icon rail. Per-section remembered.
 - Quick lyrics import: drag a .lrc/.xlrc onto the lyrics panel; bulk-match many .lrc files to tracks by filename.
 - Easy lyrics resync: quick nudge buttons (-0.5s / +0.5s, "sync here") in the lyrics menu or lyrics panel; the per-track sync offset already exists in the lyrics editor panel (right-click a track), but it is buried.
+
+## Fix: very long audiobooks (500+ min) ran out of memory
+
+Cause: loudness analysis (ffmpeg ebur128) logged a line per 100 ms, overflowing its stderr buffer
+(ERR_CHILD_PROCESS_STDIO_MAXBUFFER) and timing out at 3 min. With normalization on, progressive playback
+required that result, so when it failed the player fell back to decoding the WHOLE file into memory
+(~10 GB for 500 min). Not the visualizers.
+Fix: `framelog=quiet` + size-scaled timeout (main/index.ts); tracks over ~45 min decoded size stream
+without a loudness pass and without normalization (playerStore.ts, AudioEngine.ts `allowMissingLoudness`).
+
+## Spotify as a second source (one transport bar)
+- `stores/spotifyStore.ts`: watcher, active source, handoff preference (ask/always/never). Starts only after the Spotify view has been opened once.
+- `SpotifyTransportBar.tsx` replaces the normal bar while Spotify is the active source (cover, title, seek, prev/play/next, Spotify volume slider).
+- `SpotifyHandoffPrompt.tsx`: "Pause Spotify / Always pause / Keep both".
+- `useCoverArtAccent`: takes the accent from the Spotify cover when Spotify is active.
+- Starting Spotify pauses Astra; Astra never scrobbles Spotify.

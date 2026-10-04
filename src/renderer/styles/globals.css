@@ -27158,3 +27158,29 @@ html[data-theme-tone="light"] .parallax-setup-status.is-good {
 .spotify-controls button:hover:not(:disabled) { border-color: rgba(var(--accent-rgb), 0.45); background: rgba(var(--accent-rgb), 0.1); }
 .spotify-controls button:disabled { opacity: 0.4; cursor: not-allowed; }
 .spotify-controls .spotify-play { width: 46px; height: 46px; background: var(--text-primary); color: var(--bg-primary, #0d0e12); }
+
+/* Spotify transport bar + handoff prompt */
+.spotify-transport-bar { align-items: center; gap: 18px; padding: 0 20px; }
+.spotify-bar-track { display: flex; align-items: center; gap: 12px; width: 280px; min-width: 0; flex: none; }
+.spotify-bar-cover { width: 56px; height: 56px; border-radius: 6px; overflow: hidden; flex: none; background: rgba(var(--tint), 0.05); }
+.spotify-bar-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.spotify-bar-text { min-width: 0; }
+.spotify-bar-title { font-size: 14px; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.spotify-bar-artist { font-size: 12px; margin-top: 3px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.spotify-bar-center { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.spotify-bar-buttons { display: flex; align-items: center; gap: 20px; }
+.spotify-bar-buttons button { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border: 0; border-radius: 50%; background: transparent; color: var(--text-secondary); cursor: pointer; }
+.spotify-bar-buttons button:hover { color: var(--text-primary); }
+.spotify-bar-buttons .spotify-bar-play { width: 36px; height: 36px; background: var(--text-primary); color: var(--bg-primary, #0d0e12); }
+.spotify-bar-progress { display: flex; align-items: center; gap: 10px; width: min(520px, 100%); font-size: 11px; color: var(--text-secondary); }
+.spotify-bar-side { width: 200px; flex: none; display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
+.spotify-bar-source { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.12em; color: var(--accent, #3ecf6e); }
+.spotify-bar-volume { flex: none; width: 90px; }
+.spotify-handoff-prompt { position: fixed; right: 20px; bottom: calc(var(--now-playing-height) + 14px); z-index: 80; display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border-radius: 12px; border: 1px solid var(--glass-border); background: var(--surface-overlay); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35); }
+.spotify-handoff-text { font-size: 13px; color: var(--text-primary); }
+.spotify-handoff-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.spotify-handoff-actions button { height: 28px; padding: 0 12px; border-radius: 14px; border: 1px solid var(--glass-border); background: transparent; color: var(--text-primary); font-size: 12px; cursor: pointer; }
+.spotify-handoff-actions button:first-child { border-color: rgba(var(--accent-rgb), 0.5); background: rgba(var(--accent-rgb), 0.12); }
+.spotify-handoff-actions button:hover { border-color: rgba(var(--accent-rgb), 0.6); }
+.spotify-handoff-setting { display: flex; align-items: center; gap: 12px; font-size: 13px; color: var(--text-secondary); }
+.spotify-handoff-setting select { background: transparent; color: var(--text-primary); border: 1px solid var(--glass-border); border-radius: 6px; padding: 4px 8px; font-size: 13px; }

@@ -1,15 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import type { SpotifyCommand, SpotifyStatus } from '../../../types/spotify'
-
-const POLL_INTERVAL_MS = 1000
-
-const INITIAL_STATUS: SpotifyStatus = {
-  state: 'notrunning',
-  track: null,
-  positionSeconds: 0,
-  artworkDataUrl: null,
-  message: null
-}
+import { useEffect, useState } from 'react'
+import { useSpotifyStore, type SpotifyHandoffPreference } from '../../stores/spotifyStore'
 
 function formatClock(totalSeconds: number): string {
   const safe = Math.max(0, Math.floor(totalSeconds))
@@ -19,59 +9,34 @@ function formatClock(totalSeconds: number): string {
 }
 
 export default function SpotifyView() {
-  const [status, setStatus] = useState<SpotifyStatus>(INITIAL_STATUS)
-  const [loaded, setLoaded] = useState(false)
-  const [displayPosition, setDisplayPosition] = useState(0)
-  const lastPollAtRef = useRef(0)
-  const statusRef = useRef(status)
-  statusRef.current = status
+  const status = useSpotifyStore((state) => state.status)
+  const statusReceivedAt = useSpotifyStore((state) => state.statusReceivedAt)
+  const loaded = useSpotifyStore((state) => state.loaded)
+  const handoffPreference = useSpotifyStore((state) => state.handoffPreference)
+  const enable = useSpotifyStore((state) => state.enable)
+  const setHandoffPreference = useSpotifyStore((state) => state.setHandoffPreference)
+  const sendCommand = useSpotifyStore((state) => state.sendCommand)
+  const [displayPosition, setDisplayPosition] = useState(status.positionSeconds)
 
-  const applyStatus = useCallback((next: SpotifyStatus) => {
-    lastPollAtRef.current = performance.now()
-    setStatus(next)
-    setDisplayPosition(next.positionSeconds)
-    setLoaded(true)
-  }, [])
+  // Opening this view is what switches Spotify support on (and triggers the macOS Automation prompt).
+  useEffect(() => { enable() }, [enable])
 
   useEffect(() => {
-    let cancelled = false
-    let timer: number | null = null
-
-    const poll = async () => {
-      try {
-        const next = await window.electronAPI.spotify.getStatus()
-        if (!cancelled) applyStatus(next)
-      } catch {
-        // keep the last status; try again next tick
-      }
-      if (!cancelled) timer = window.setTimeout(poll, POLL_INTERVAL_MS)
-    }
-    void poll()
-    return () => {
-      cancelled = true
-      if (timer !== null) window.clearTimeout(timer)
-    }
-  }, [applyStatus])
+    setDisplayPosition(status.positionSeconds)
+  }, [status])
 
   // Smooth the progress bar between polls while playing.
   useEffect(() => {
+    if (status.state !== 'playing' || !status.track) return
+    const durationSeconds = status.track.durationMs / 1000
     const id = window.setInterval(() => {
-      const current = statusRef.current
-      if (current.state !== 'playing' || !current.track) return
-      const elapsed = (performance.now() - lastPollAtRef.current) / 1000
-      const durationSeconds = current.track.durationMs / 1000
-      setDisplayPosition(Math.min(durationSeconds, current.positionSeconds + elapsed))
+      const elapsed = (performance.now() - statusReceivedAt) / 1000
+      setDisplayPosition(Math.min(durationSeconds, status.positionSeconds + elapsed))
     }, 250)
     return () => window.clearInterval(id)
-  }, [])
+  }, [status, statusReceivedAt])
 
-  const send = useCallback(async (command: SpotifyCommand) => {
-    try {
-      applyStatus(await window.electronAPI.spotify.command(command))
-    } catch {
-      // the next poll reports the real state
-    }
-  }, [applyStatus])
+  const send = sendCommand
 
   const track = status.track
   const durationSeconds = track ? track.durationMs / 1000 : 0
@@ -93,6 +58,15 @@ export default function SpotifyView() {
         <h1>Spotify</h1>
         <span className="spotify-view-sub">Controls the Spotify desktop app</span>
       </div>
+
+      <label className="spotify-handoff-setting">
+        <span>When a local song starts while Spotify is playing</span>
+        <select value={handoffPreference} onChange={(event) => setHandoffPreference(event.target.value as SpotifyHandoffPreference)}>
+          <option value="ask">Ask me</option>
+          <option value="always">Always pause Spotify</option>
+          <option value="never">Leave Spotify playing</option>
+        </select>
+      </label>
 
       {emptyMessage && <div className="spotify-view-empty" role="status">{emptyMessage}</div>}
 

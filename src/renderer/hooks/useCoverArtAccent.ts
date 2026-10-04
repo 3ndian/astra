@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { useLibraryStore } from '../stores/libraryStore'
 import { usePlayerStore } from '../stores/playerStore'
 import { useThemeStore } from '../stores/themeStore'
+import { useSpotifyStore } from '../stores/spotifyStore'
 import { extractArtworkAccent } from '../utils/artworkAccent'
 
 const MAX_COVER_ART_ACCENT_CACHE_ENTRIES = 256
@@ -60,6 +61,9 @@ export function useCoverArtAccent(): void {
   const currentTrack = usePlayerStore((state) => state.currentTrack)
   const getArtwork = useLibraryStore((state) => state.getArtwork)
 
+  const spotifyTrackId = useSpotifyStore((state) => (state.activeSource === 'spotify' ? state.status.track?.id ?? null : null))
+  const spotifyArtwork = useSpotifyStore((state) => (state.activeSource === 'spotify' ? state.status.artworkDataUrl : null))
+
   const accentSource = useThemeStore((state) => state.accentSource)
   const coverArtAccentMethod = useThemeStore((state) => state.coverArtAccentMethod)
   const setCoverArtAccent = useThemeStore((state) => state.setCoverArtAccent)
@@ -72,6 +76,29 @@ export function useCoverArtAccent(): void {
 
     if (accentSource !== 'cover-art') {
       setCoverArtAccent(null)
+      return () => {
+        requestTokenRef.current += 1
+      }
+    }
+
+    if (spotifyTrackId) {
+      if (!spotifyArtwork) {
+        setCoverArtAccent(null)
+        return () => {
+          requestTokenRef.current += 1
+        }
+      }
+      const spotifyCacheKey = `${coverArtAccentMethod}:spotify:${spotifyTrackId}`
+      const cachedSpotifyAccent = getCoverArtAccentCacheEntry(spotifyCacheKey)
+      if (cachedSpotifyAccent !== undefined) {
+        setCoverArtAccent(cachedSpotifyAccent)
+      } else {
+        void extractArtworkAccent(spotifyArtwork, coverArtAccentMethod).then((accent) => {
+          if (requestTokenRef.current !== requestToken) return
+          setCoverArtAccentCacheEntry(spotifyCacheKey, accent)
+          setCoverArtAccent(accent)
+        })
+      }
       return () => {
         requestTokenRef.current += 1
       }
@@ -118,5 +145,5 @@ export function useCoverArtAccent(): void {
     return () => {
       requestTokenRef.current += 1
     }
-  }, [accentSource, coverArtAccentMethod, currentTrack, getArtwork, setCoverArtAccent])
+  }, [accentSource, coverArtAccentMethod, currentTrack, getArtwork, setCoverArtAccent, spotifyTrackId, spotifyArtwork])
 }

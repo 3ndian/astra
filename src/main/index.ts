@@ -5705,8 +5705,15 @@ const spotifyBridge = new SpotifyBridge()
 function normalizeSpotifyCommand(raw: unknown): SpotifyCommand | null {
   if (!raw || typeof raw !== 'object') return null
   const record = raw as { kind?: unknown; seconds?: unknown }
-  if (record.kind === 'playpause' || record.kind === 'next' || record.kind === 'previous') {
+  if (
+    record.kind === 'playpause' || record.kind === 'play' || record.kind === 'pause'
+    || record.kind === 'next' || record.kind === 'previous'
+  ) {
     return { kind: record.kind }
+  }
+  const percent = (raw as { percent?: unknown }).percent
+  if (record.kind === 'volume' && typeof percent === 'number' && Number.isFinite(percent)) {
+    return { kind: 'volume', percent: Math.min(100, Math.max(0, percent)) }
   }
   if (record.kind === 'seek' && typeof record.seconds === 'number' && Number.isFinite(record.seconds)) {
     return { kind: 'seek', seconds: Math.max(0, record.seconds) }

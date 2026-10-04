@@ -4,6 +4,9 @@ import Sidebar from './components/layout/Sidebar'
 import AnalyzerDeck from './components/layout/AnalyzerDeck'
 import ViewRouter from './components/layout/ViewRouter'
 import TransportBar from './components/layout/TransportBar'
+import SpotifyTransportBar from './components/layout/SpotifyTransportBar'
+import SpotifyHandoffPrompt from './components/layout/SpotifyHandoffPrompt'
+import { startSpotifyWatcher, useSpotifyStore } from './stores/spotifyStore'
 import QueuePanel from './components/queue/QueuePanel'
 import QueuePanelBoundary from './components/queue/QueuePanelBoundary'
 import CollectionQueueContextMenu from './components/queue/CollectionQueueContextMenu'
@@ -105,6 +108,10 @@ function App() {
   useScopePopoutBridge()
   useMemoryDiagnosticsBridge()
   useCoverArtAccent()
+  const spotifyBarActive = useSpotifyStore(
+    (state) => state.activeSource === 'spotify' && state.status.track !== null && (state.status.state === 'playing' || state.status.state === 'paused')
+  )
+  useEffect(() => startSpotifyWatcher(), [])
   useRuntimeAppIconSync()
 
   const showQueue = useUIStore((s) => s.showQueue)
@@ -530,7 +537,8 @@ function App() {
             )}
           </div>
         </div>
-        <TransportBar />
+        <SpotifyHandoffPrompt />
+        {spotifyBarActive ? <SpotifyTransportBar /> : <TransportBar />}
         <ParallaxSinkMode />
         <ParallaxIncomingPairCard />
         <PhoneRemoteIncomingPairCard />

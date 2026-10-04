@@ -3,11 +3,12 @@ import assert from 'node:assert/strict'
 import { parseSpotifyStatusOutput, parseLocaleNumber, scriptForCommand } from './spotifyStatus.ts'
 
 test('parses a playing track', () => {
-  const s = parseSpotifyStatusOutput('playing\tspotify:track:1\tNeon Harbor\tVelvet Static\tNight Signals\thttps://i.scdn.co/image/abc\t12.5\t268000\n')
+  const s = parseSpotifyStatusOutput('playing\tspotify:track:1\tNeon Harbor\tVelvet Static\tNight Signals\thttps://i.scdn.co/image/abc\t12.5\t268000\t55\n')
   assert.equal(s.state, 'playing')
   assert.equal(s.track?.title, 'Neon Harbor')
   assert.equal(s.track?.durationMs, 268000)
   assert.equal(s.positionSeconds, 12.5)
+  assert.equal(s.volume, 55)
   assert.equal(s.track?.artworkUrl, 'https://i.scdn.co/image/abc')
 })
 
@@ -22,6 +23,14 @@ test('stopped, not running and garbage', () => {
   assert.equal(parseSpotifyStatusOutput('stopped').state, 'stopped')
   assert.equal(parseSpotifyStatusOutput('notrunning\n').state, 'notrunning')
   assert.equal(parseSpotifyStatusOutput('what').state, 'error')
+})
+
+test('volume and play/pause commands', () => {
+  assert.match(scriptForCommand({ kind: 'pause' }) ?? '', /to pause$/)
+  assert.match(scriptForCommand({ kind: 'play' }) ?? '', /to play$/)
+  assert.match(scriptForCommand({ kind: 'volume', percent: 150 }) ?? '', /sound volume to 100$/)
+  assert.equal(scriptForCommand({ kind: 'volume', percent: Number.NaN }), null)
+  assert.equal(parseSpotifyStatusOutput('playing\tid\tT\tA\tAl\tu\t1\t1000').volume, null)
 })
 
 test('locale numbers and command scripts', () => {
