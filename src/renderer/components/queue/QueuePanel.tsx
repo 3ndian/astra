@@ -158,7 +158,7 @@ function resolveQueueVirtualRow(model: QueueVirtualModel, index: number): QueueV
     }
     return {
       kind: 'section',
-      label: 'Previously Played',
+      label: 'Previous',
       dropIndex: model.layout.upcomingCount,
       faded: true
     }

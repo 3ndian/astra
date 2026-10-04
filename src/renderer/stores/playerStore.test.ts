@@ -7,7 +7,6 @@ import {
   GAPLESS_PREBUFFER_LEAD_SECONDS,
   getGaplessPrebufferDelayMs,
   getRecentPlayThresholdSecondsForDuration,
-  MAX_PLAYBACK_HISTORY,
   mergeAssociatedTrackMetadata,
   RECENT_PLAY_MIN_SECONDS,
   resolvePositiveDuration,
@@ -745,6 +744,51 @@ function resolvedUpcomingPaths(): string[] {
   return usePlayerStore.getState().getResolvedUpcomingEntries().map((entry) => entry.track.path)
 }
 
+function installNavigationEventListeners(): { emit: (event: string) => void; restore: () => void } {
+  const originalOn = audioEngine.on
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const callbacks = new Map<string, () => void>()
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      location: { search: '?window=test' },
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      electronAPI: {
+        ...window.electronAPI,
+        onProgressiveLoadProgress: () => () => undefined,
+        library: {
+          getListeningHistoryStatus: async () => ({ generation: 'navigation', startedAt: null }),
+          checkpointListeningSession: async () => ({
+            accepted: true,
+            qualifiedNow: false,
+            status: { generation: 'navigation', startedAt: null }
+          })
+        }
+      }
+    }
+  })
+  audioEngine.on = (event, callback) => {
+    callbacks.set(event, callback as () => void)
+    return () => undefined
+  }
+  usePlayerStore.getState()._cleanupListeners()
+  usePlayerStore.getState()._initListeners()
+  return {
+    emit: (event) => {
+      const callback = callbacks.get(event)
+      assert.ok(callback, `listener registered for ${event}`)
+      callback()
+    },
+    restore: () => {
+      usePlayerStore.getState()._cleanupListeners()
+      audioEngine.on = originalOn
+      if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+      else delete (globalThis as Record<string, unknown>).window
+    }
+  }
+}
+
 test('queue entries strip artworkData from retained snapshots', () => {
   resetStores()
 
@@ -1402,7 +1446,7 @@ test('stale path hydration cannot patch a newer playback context', async () => {
   }
 })
 
-test('late replaced-context hydration patches only its preserved history item', async () => {
+test('late replaced-context hydration cannot restore discarded navigation history', async () => {
   resetStores()
   const firstPath = '/replaced-context/a.flac'
   const replacementPath = '/replaced-context/c.flac'
@@ -1463,29 +1507,23 @@ test('late replaced-context hydration patches only its preserved history item', 
     await flushAsyncWork()
     const replacedState = usePlayerStore.getState()
     assert.equal(replacedState.currentTrack?.path, replacementPath)
-    assert.equal(replacedState.playbackHistory.length, 1)
-    assert.equal(replacedState.playbackHistory[0]?.item.entry.path, firstPath)
-    assert.equal(replacedState.playbackHistory[0]?.item.entry.snapshot.sourceType, undefined)
+    assert.deepEqual(replacedState.playbackHistory, [])
 
     firstHydration.resolve([hydratedFirst])
     await firstContext
     await flushAsyncWork()
 
     const hydratedState = usePlayerStore.getState()
-    const historyItem = hydratedState.playbackHistory[0]?.item
-    assert.equal(historyItem?.entry.path, firstPath)
-    assert.equal(historyItem?.entry.snapshot.title, 'Authoritative Remote A')
-    assert.equal(historyItem?.entry.snapshot.sourceType, 'subsonic')
+    assert.deepEqual(hydratedState.playbackHistory, [])
+    assert.equal(hydratedState.queueItems.some((item) => item.entry.path === firstPath), false)
     const liveReplacement = hydratedState.queueItems.find((item) => item.entry.path === replacementPath)
     assert.equal(liveReplacement?.entry.snapshot.title, 'Authoritative C')
     assert.equal(liveReplacement?.entry.snapshot.sourceType, 'local')
     assert.deepEqual(loadedTracks.map((track) => track.path), [replacementPath])
 
     await usePlayerStore.getState().playPrevious()
-    assert.deepEqual(loadedTracks.map((track) => track.path), [replacementPath, firstPath])
-    assert.equal(loadedTracks[1]?.title, 'Authoritative Remote A')
-    assert.equal(loadedTracks[1]?.sourceType, 'subsonic')
-    assert.equal(usePlayerStore.getState().getResolvedNextTrack()?.path, replacementPath)
+    assert.deepEqual(loadedTracks.map((track) => track.path), [replacementPath])
+    assert.equal(usePlayerStore.getState().getResolvedNextTrack(), null)
   } finally {
     firstHydration.resolve([hydratedFirst])
     if (firstContext) await Promise.allSettled([firstContext])
@@ -1499,7 +1537,7 @@ test('late replaced-context hydration patches only its preserved history item', 
   }
 })
 
-test('Previous reuses deferred metadata for a replaced uncached context item', async () => {
+test('Previous reuses deferred metadata for an earlier item in the active context', async () => {
   resetStores()
   const firstPath = '/replaced-context-reuse/uncached.flac'
   const replacementPath = '/replaced-context-reuse/cached.flac'
@@ -1557,11 +1595,11 @@ test('Previous reuses deferred metadata for a replaced uncached context item', a
   })
 
   try {
-    firstContext = usePlayerStore.getState().startPlaybackContextByPaths([firstPath], 0)
+    firstContext = usePlayerStore.getState().startPlaybackContextByPaths([firstPath, replacementPath], 0)
     await flushAsyncWork()
     assert.deepEqual(fetchCalls, [[firstPath]])
 
-    await usePlayerStore.getState().startPlaybackContextByPaths([replacementPath], 0)
+    await usePlayerStore.getState().playNext()
     assert.deepEqual(loadedTracks.map((track) => track.path), [replacementPath])
     assert.equal(usePlayerStore.getState().playbackHistory[0]?.item.entry.path, firstPath)
 
@@ -1733,7 +1771,7 @@ test('Pause supersedes deferred hydration for a duplicate-path context target wi
     assert.equal(committedState.currentTrack?.path, sharedPath)
     assert.deepEqual(
       committedState.playbackHistory.map((entry) => entry.item.queueId),
-      [oldItem.queueId]
+      []
     )
 
     usePlayerStore.getState().pause()
@@ -3858,38 +3896,260 @@ test('recent play accumulation ignores paused gaps and position jumps', () => {
   assert.equal(shortTrackState.accumulatedSeconds >= shortTrackThreshold, true)
 })
 
-test('playback history is capped and stores sanitized queue entries', async () => {
+test('ordered context navigation reaches the start of a list larger than 500 tracks', async () => {
   resetStores()
-
-  const originalLoadAndPlayTrack = usePlayerStore.getState()._loadAndPlayTrack
-  usePlayerStore.setState({
-    _loadAndPlayTrack: async () => 'loaded'
-  })
+  const restoreLoad = installLoadedTrackStub()
+  const tracks = Array.from({ length: 510 }, (_, index) => makeTrack(`/large/${index}.flac`, {
+    artworkData: `data:image/jpeg;base64,${index}`
+  }))
 
   try {
-    const iterations = MAX_PLAYBACK_HISTORY + 5
-    for (let index = 0; index < iterations; index += 1) {
-      usePlayerStore.setState({
-        currentTrack: makeTrack(`/history/current-${index}.flac`, {
-          artworkData: `data:image/jpeg;base64,${index}`
-        }),
-        currentTrackSource: 'standalone',
-        currentQueueItemId: null
-      })
-
-      await usePlayerStore.getState().startPlaybackContext([
-        makeTrack(`/history/next-${index}.flac`)
-      ], 0)
-    }
-
+    await usePlayerStore.getState().startPlaybackContext(tracks, 508)
+    const items = usePlayerStore.getState().queueItems
     const history = usePlayerStore.getState().playbackHistory
-    assert.equal(history.length, MAX_PLAYBACK_HISTORY)
-    assert.equal(history[0]?.item.entry.path, '/history/current-5.flac')
+    assert.equal(history.length, 508)
+    assert.equal(history.every((entry, index) => entry.item === items[index]), true)
     assert.equal(history.every((entry) => !hasArtworkData(entry.item.entry)), true)
+    for (let index = 507; index >= 0; index -= 1) {
+      await usePlayerStore.getState().playPrevious()
+      assert.equal(usePlayerStore.getState().currentTrack?.path, tracks[index].path)
+      assert.equal(usePlayerStore.getState().getResolvedQueueLength(), tracks.length)
+    }
+    await usePlayerStore.getState().playPrevious()
+    assert.equal(usePlayerStore.getState().currentTrack?.path, tracks[0].path)
+    for (let index = 1; index < tracks.length; index += 1) {
+      await usePlayerStore.getState().playNext()
+      assert.equal(usePlayerStore.getState().currentTrack?.path, tracks[index].path)
+    }
+    assert.equal(usePlayerStore.getState().playbackHistory.length, 509)
+    assert.equal(usePlayerStore.getState().queueItems, items)
   } finally {
-    usePlayerStore.setState({
-      _loadAndPlayTrack: originalLoadAndPlayTrack
-    })
+    restoreLoad()
+  }
+})
+
+test('repeated library selections and back/forward navigation never accumulate old occurrences', async () => {
+  resetStores()
+  const restoreLoad = installLoadedTrackStub()
+  const tracks = ['a', 'b', 'c', 'd'].map((name) => makeTrack(`/queue/${name}.flac`))
+  try {
+    for (let click = 0; click < 5; click += 1) {
+      await usePlayerStore.getState().startPlaybackContext(tracks, 1)
+      assert.deepEqual(usePlayerStore.getState().getResolvedPreviousTracks().map((track) => track.path), [tracks[0].path])
+    }
+    const items = usePlayerStore.getState().queueItems
+    for (let cycle = 0; cycle < 10; cycle += 1) {
+      await usePlayerStore.getState().playPrevious()
+      await usePlayerStore.getState().playPrevious()
+      assert.equal(usePlayerStore.getState().currentTrack?.path, tracks[0].path)
+      assert.deepEqual(resolvedUpcomingPaths(), tracks.slice(1).map((track) => track.path))
+      await usePlayerStore.getState().playNext()
+      assert.equal(usePlayerStore.getState().currentTrack?.path, tracks[1].path)
+      assert.equal(usePlayerStore.getState().queueItems, items)
+      assert.equal(usePlayerStore.getState().getResolvedQueueLength(), tracks.length)
+    }
+  } finally {
+    restoreLoad()
+  }
+})
+
+test('navigation preserves intentional duplicate paths and manually queued occurrences', async () => {
+  resetStores()
+  const restoreLoad = installLoadedTrackStub()
+  const duplicate = makeTrack('/queue/duplicate.flac')
+  try {
+    usePlayerStore.getState().enqueueTrack(duplicate, 'next')
+    const manualId = usePlayerStore.getState().upcomingQueueIds[0]
+    await usePlayerStore.getState().startPlaybackContext([duplicate, duplicate, makeTrack('/queue/c.flac')], 1)
+    const items = usePlayerStore.getState().queueItems
+    const previousId = usePlayerStore.getState().playbackHistory[0].item.queueId
+    const selectedId = usePlayerStore.getState().currentQueueItemId
+    await usePlayerStore.getState().playPrevious()
+    assert.equal(usePlayerStore.getState().currentQueueItemId, previousId)
+    assert.deepEqual(usePlayerStore.getState().upcomingQueueIds.slice(0, 2), [selectedId, manualId])
+    await usePlayerStore.getState().playNext()
+    await usePlayerStore.getState().playNext()
+    assert.equal(usePlayerStore.getState().currentQueueItemId, manualId)
+    assert.equal(usePlayerStore.getState().queueItems, items)
+    assert.equal(new Set(items.map((item) => item.queueId)).size, 4)
+  } finally {
+    restoreLoad()
+  }
+})
+
+test('Repeat All and direct queue selections keep history bounded by active occurrences', async () => {
+  resetStores()
+  const restoreLoad = installLoadedTrackStub()
+  try {
+    await usePlayerStore.getState().startPlaybackContext(['a', 'b', 'c'].map((name) => makeTrack(`/queue/${name}.flac`)), 0)
+    usePlayerStore.getState().toggleRepeat()
+    const items = usePlayerStore.getState().queueItems
+    for (let step = 0; step < 15; step += 1) {
+      await usePlayerStore.getState().playNext()
+      const state = usePlayerStore.getState()
+      assert.equal(state.playbackHistory.length <= 2, true)
+      assert.equal(new Set(state.playbackHistory.map((entry) => entry.item.queueId)).size, state.playbackHistory.length)
+      assert.equal(state.playbackHistory.some((entry) => entry.item.queueId === state.currentQueueItemId), false)
+      assert.equal(state.queueItems, items)
+    }
+    await usePlayerStore.getState().playQueuedItem(usePlayerStore.getState().currentQueueItemId!)
+    assert.equal(usePlayerStore.getState().playbackHistory.some((entry) => entry.item.queueId === usePlayerStore.getState().currentQueueItemId), false)
+    const removableId = usePlayerStore.getState().upcomingQueueIds[0]
+    usePlayerStore.getState().removeUpcomingItem(removableId)
+    assert.equal(usePlayerStore.getState().playbackHistory.some((entry) => entry.item.queueId === removableId), false)
+    const currentId = usePlayerStore.getState().currentQueueItemId
+    usePlayerStore.getState().clearAllQueues()
+    await usePlayerStore.getState().playPrevious()
+    assert.equal(usePlayerStore.getState().currentQueueItemId, currentId)
+    assert.deepEqual(usePlayerStore.getState().playbackHistory, [])
+  } finally {
+    restoreLoad()
+  }
+})
+
+test('shuffled starts discard preceding context history and Previous follows actual navigation', async () => {
+  resetStores()
+  const restoreLoad = installLoadedTrackStub()
+  const tracks = ['a', 'b', 'c', 'd'].map((name) => makeTrack(`/queue/${name}.flac`))
+  try {
+    await usePlayerStore.getState().startPlaybackContext(tracks, 3)
+    await usePlayerStore.getState().startPlaybackContext(tracks, 2, { shuffle: true })
+    const selectedId = usePlayerStore.getState().currentQueueItemId
+    assert.deepEqual(usePlayerStore.getState().playbackHistory, [])
+    assert.deepEqual(new Set(resolvedUpcomingPaths()), new Set([tracks[0].path, tracks[1].path, tracks[3].path]))
+    await usePlayerStore.getState().playNext()
+    await usePlayerStore.getState().playPrevious()
+    assert.equal(usePlayerStore.getState().currentQueueItemId, selectedId)
+    assert.equal(usePlayerStore.getState().getResolvedQueueLength(), tracks.length)
+  } finally {
+    restoreLoad()
+  }
+})
+
+test('Repeat One affects natural endings but manual Next advances and remains enabled', async () => {
+  resetStores()
+  installMockTrackFetch(() => [])
+  const restoreLoad = installLoadedTrackStub()
+  const events = installNavigationEventListeners()
+  const originalLoad = usePlayerStore.getState()._loadAndPlayTrack
+  const loads: string[] = []
+  usePlayerStore.setState({ _loadAndPlayTrack: async (track, options) => {
+    loads.push(track.path)
+    return originalLoad(track, options)
+  } })
+  try {
+    const tracks = ['a', 'b', 'c'].map((name) => makeTrack(`/repeat/${name}.flac`))
+    await usePlayerStore.getState().startPlaybackContext(tracks, 0)
+    usePlayerStore.getState().toggleRepeat()
+    usePlayerStore.getState().toggleRepeat()
+    await flushAsyncWork()
+    // The lightweight load stub does not complete playback-attempt bookkeeping.
+    // Restore the same queue to model a settled track before its natural end.
+    await usePlayerStore.getState().restoreSession(usePlayerStore.getState().getSessionSnapshot())
+    events.emit('ended')
+    await flushAsyncWork()
+    assert.deepEqual(loads, [tracks[0].path, tracks[0].path])
+    assert.deepEqual(usePlayerStore.getState().playbackHistory, [])
+    assert.deepEqual(resolvedUpcomingPaths(), tracks.slice(1).map((track) => track.path))
+    await usePlayerStore.getState().playNext()
+    assert.equal(usePlayerStore.getState().currentTrack?.path, tracks[1].path)
+    assert.equal(usePlayerStore.getState().repeat, 'one')
+    await flushAsyncWork()
+    await usePlayerStore.getState().restoreSession(usePlayerStore.getState().getSessionSnapshot())
+    events.emit('ended')
+    await flushAsyncWork()
+    assert.deepEqual(loads.slice(-2), [tracks[1].path, tracks[1].path])
+    assert.equal(usePlayerStore.getState().playbackHistory.length, 1)
+    await usePlayerStore.getState().playNext()
+    const loadCount = loads.length
+    await usePlayerStore.getState().playNext()
+    assert.equal(loads.length, loadCount, 'manual Next at the end does not restart the current track')
+    assert.equal(usePlayerStore.getState().repeat, 'one')
+  } finally {
+    events.restore()
+    restoreLoad()
+    resetStores()
+  }
+})
+
+for (const mode of ['ready', 'in-flight', 'natural-during-next'] as const) {
+  test(`manual Repeat One Next promotes a ${mode} buffer exactly once`, async () => {
+    const harness = await installMatchingPrebufferHarness()
+    const events = installNavigationEventListeners()
+    const originalSkip = audioEngine.skipToPreBuffered
+    let next: Promise<void> | null = null
+    audioEngine.skipToPreBuffered = () => {
+      harness.metrics.promotionCalls += 1
+      harness.metrics.prebufferReady = false
+      events.emit('gaplessTransition')
+      return true
+    }
+    try {
+      if (mode === 'ready') {
+        harness.prebufferGate.resolve()
+        await flushAsyncWork()
+      }
+      // Exercise a buffer already prepared when the repeat mode changes.
+      usePlayerStore.setState({ repeat: 'one' })
+      if (mode === 'natural-during-next') {
+        harness.setPrebufferCompletionHook(() => {
+          harness.metrics.prebufferReady = false
+          events.emit('gaplessTransition')
+        })
+      }
+      next = usePlayerStore.getState().playNext()
+      if (mode !== 'ready') {
+        await flushAsyncWork()
+        assert.equal(usePlayerStore.getState().currentQueueItemId, harness.targetItem.queueId)
+        harness.prebufferGate.resolve()
+      }
+      await next
+      assert.equal(usePlayerStore.getState().currentTrack?.path, harness.targetTrack.path)
+      assert.equal(usePlayerStore.getState().repeat, 'one')
+      assert.deepEqual(usePlayerStore.getState().playbackHistory.map((entry) => entry.item.queueId), [harness.currentItem.queueId])
+      assert.deepEqual(usePlayerStore.getState().upcomingQueueIds, [])
+      assert.deepEqual(harness.metrics.loadedTracks, [], 'promotion must not cold-load or reload the old Repeat One track')
+      assert.equal(harness.metrics.promotionCalls, mode === 'natural-during-next' ? 0 : 1)
+    } finally {
+      harness.setPrebufferCompletionHook(null)
+      harness.prebufferGate.resolve()
+      if (next) await Promise.allSettled([next])
+      events.restore()
+      audioEngine.skipToPreBuffered = originalSkip
+      await harness.restore()
+    }
+  })
+}
+
+test('session restore filters navigation to active occurrences without collapsing duplicate paths', async () => {
+  resetStores()
+  const restoreLoad = installLoadedTrackStub()
+  try {
+    const duplicate = makeTrack('/session/duplicate.flac')
+    await usePlayerStore.getState().startPlaybackContext([duplicate, duplicate, makeTrack('/session/c.flac')], 2)
+    const snapshot = usePlayerStore.getState().getSessionSnapshot()
+    const [first, second, current] = snapshot.queueItems
+    snapshot.playbackHistory = [
+      { item: first },
+      { item: { ...first, queueId: 'queue-999999' } },
+      { item: second },
+      { item: current },
+      { item: second }
+    ]
+    await usePlayerStore.getState().restoreSession(snapshot)
+    assert.deepEqual(usePlayerStore.getState().playbackHistory.map((entry) => entry.item.queueId), [first.queueId, second.queueId])
+    await usePlayerStore.getState().playPrevious()
+    assert.equal(usePlayerStore.getState().currentQueueItemId, second.queueId)
+    await usePlayerStore.getState().playPrevious()
+    assert.equal(usePlayerStore.getState().currentQueueItemId, first.queueId)
+    assert.equal(usePlayerStore.getState().queueItems.length, 3)
+    assert.deepEqual(usePlayerStore.getState().upcomingQueueIds, [second.queueId, current.queueId])
+    const roundTrip = usePlayerStore.getState().getSessionSnapshot()
+    await usePlayerStore.getState().restoreSession(roundTrip)
+    assert.deepEqual(usePlayerStore.getState().getSessionSnapshot().playbackHistory, roundTrip.playbackHistory)
+    assert.deepEqual(usePlayerStore.getState().upcomingQueueIds, roundTrip.upcomingQueueIds)
+  } finally {
+    restoreLoad()
   }
 })
 

@@ -395,7 +395,6 @@ export const ADAPTIVE_PREBUFFER_SETTLE_MS = 1000
 export const ADAPTIVE_PREBUFFER_IDLE_TIMEOUT_MS = 2000
 export const CONTEXT_HYDRATION_BATCH_SIZE = 200
 const STANDARD_TRANSITION_COALESCE_MS = 75
-export const MAX_PLAYBACK_HISTORY = 500
 export const PLAYER_VOLUME_STORAGE_KEY = 'astra-player-volume-v1'
 const NATIVE_REMOTE_FAILURE_MESSAGE = 'Native exclusive playback is local-file-only. Switch to Standard to play remote or progressive sources.'
 const IAMF_NATIVE_FAILURE_MESSAGE = 'Eclipsa (IAMF) and Parallax sources are Standard-only. Switch to Standard to play this track.'
@@ -1937,11 +1936,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     const activeItem = state.currentQueueItemId
       ? state.queueItems.find((item) => item.queueId === state.currentQueueItemId)
       : null
-    if (activeItem) return { item: activeItem }
-    if (!state.currentTrack) return null
-    return {
-      item: createQueueItem(createQueueEntryFromTrack(state.currentTrack), 'manual')
-    }
+    return activeItem ? { item: activeItem } : null
   }
 
   const resolveAuthoritativeTransitionTrack = (
@@ -2353,8 +2348,31 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     return resolved
   }
 
-  function* iterateNextCandidates(state: PlayerStore): Generator<NextCandidate> {
-    if (state.repeat === 'one' && state.currentTrack) {
+  // Navigation belongs to the active queue, not to earlier playback contexts.
+  // Keep the most recent visit to each occurrence, using its live metadata.
+  const normalizeNavigationHistory = (
+    queueItems: QueueItem[],
+    history: readonly PlaybackHistoryEntry[],
+    currentQueueItemId: string | null
+  ): PlaybackHistoryEntry[] => {
+    const itemsById = getQueueItemsById(queueItems)
+    const seen = new Set<string>()
+    const entries: PlaybackHistoryEntry[] = []
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      const entry = history[index]!
+      const item = itemsById.get(entry.item.queueId)
+      if (!item || item.queueId === currentQueueItemId || seen.has(item.queueId)) continue
+      seen.add(item.queueId)
+      entries.push(item === entry.item ? entry : { item })
+    }
+    return entries.reverse()
+  }
+
+  function* iterateNextCandidates(
+    state: PlayerStore,
+    options: { respectRepeatOne?: boolean } = {}
+  ): Generator<NextCandidate> {
+    if (options.respectRepeatOne !== false && state.repeat === 'one' && state.currentTrack) {
       yield { kind: 'current', track: state.currentTrack }
       return
     }
@@ -2380,8 +2398,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     }
   }
 
-  const findNextPlayableCandidate = (state: PlayerStore): NextCandidate | null => {
-    for (const candidate of iterateNextCandidates(state)) {
+  const findNextPlayableCandidate = (
+    state: PlayerStore,
+    options: { respectRepeatOne?: boolean } = {}
+  ): NextCandidate | null => {
+    for (const candidate of iterateNextCandidates(state, options)) {
       if (isUnavailableRemoteTrack(candidate.track)) continue
       return candidate
     }
@@ -2667,9 +2688,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     options: { pushCurrentToHistory: boolean }
   ) => {
     const currentEntry = getCurrentPlaybackEntry(state)
-    const nextHistory = options.pushCurrentToHistory && currentEntry && candidate.kind !== 'current'
-      ? [...state.playbackHistory, currentEntry].slice(-MAX_PLAYBACK_HISTORY)
-      : state.playbackHistory
+    const nextHistory = normalizeNavigationHistory(
+      state.queueItems,
+      options.pushCurrentToHistory && currentEntry && candidate.kind !== 'current'
+        ? [...state.playbackHistory, currentEntry]
+        : state.playbackHistory,
+      candidate.kind === 'current' ? state.currentQueueItemId : candidate.item.queueId
+    )
 
     if (candidate.kind === 'current') {
       return { playbackHistory: nextHistory }
@@ -2716,10 +2741,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       })
     )
     if (generation !== contextHydrationGeneration) {
-      // A newer context owns the live queue, but an exact old queue item may
-      // have been preserved in history (or retained as the current item by a
-      // queue clear). Queue IDs are unique, so these exact-ID patches cannot
-      // touch any item created for the newer context.
+      // A queue clear may retain the current item from an older generation.
+      // Exact-ID patches update that surviving item without resurrecting
+      // discarded history or touching items created for a newer context.
       set((state) => ({
         queueItems: state.queueItems.map(patchItem),
         playbackHistory: patchHistory(state.playbackHistory)
@@ -2893,8 +2917,6 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     const playbackStartIndex = options?.startShuffled && nextShuffle
       ? getShuffledStartIndex(entries.length, normalizedStartIndex)
       : normalizedStartIndex
-    const currentEntry = getCurrentPlaybackEntry(state)
-
     if (playbackStartIndex < 0) {
       clearBufferedNextTrack()
       return
@@ -2938,7 +2960,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       queueSourceContext: resolvePlaybackSourceContext(options),
       queueContextLabel: normalizeContextLabel(options?.contextLabel) ?? 'Current Selection',
       shuffle: nextShuffle,
-      playbackHistory: currentEntry ? [...state.playbackHistory, currentEntry].slice(-MAX_PLAYBACK_HISTORY) : state.playbackHistory,
+      playbackHistory: nextShuffle
+        ? []
+        : contextItems.slice(0, playbackStartIndex).map((item) => ({ item })),
       currentTrackSource: 'context',
       restoredTrackNeedsLoad: false,
       restoredPlaybackTime: null
@@ -3982,7 +4006,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       set({
         queueItems: state.queueItems.filter((item) => item.queueId !== queueId),
         baseUpcomingQueueIds: state.baseUpcomingQueueIds.filter((id) => id !== queueId),
-        upcomingQueueIds: state.upcomingQueueIds.filter((id) => id !== queueId)
+        upcomingQueueIds: state.upcomingQueueIds.filter((id) => id !== queueId),
+        playbackHistory: state.playbackHistory.filter((entry) => entry.item.queueId !== queueId)
       })
 
       clearBufferedNextTrack()
@@ -4099,7 +4124,6 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       collectLibraryPath(snapshot.currentTrack)
       snapshot.queueItems.forEach((item) => collectLibraryPath(item.entry.snapshot))
-      snapshot.playbackHistory.forEach((entry) => collectLibraryPath(entry.item.entry.snapshot))
 
       const resolvedLibraryPaths = knownLibraryPaths.size > 0
         ? new Set((await useLibraryStore.getState().resolveTrackPathsWithFetch([...knownLibraryPaths])).map((track) => track.path))
@@ -4120,9 +4144,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       const currentQueueItemId = snapshot.currentQueueItemId && queueItemIds.has(snapshot.currentQueueItemId)
         ? snapshot.currentQueueItemId
         : null
-      const playbackHistory = snapshot.playbackHistory
-        .filter((entry) => isRestorableTrack(entry.item.entry.snapshot))
-        .map((entry) => ({ item: sessionQueueItemToQueueItem(entry.item) }))
+      const playbackHistory = normalizeNavigationHistory(
+        queueItems,
+        snapshot.playbackHistory.map((entry) => ({ item: sessionQueueItemToQueueItem(entry.item) })),
+        currentQueueItemId
+      )
       const currentTrack = isRestorableTrack(snapshot.currentTrack)
         ? sessionTrackSnapshotToTrack(snapshot.currentTrack!)
         : null
@@ -4248,7 +4274,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       nextPlaybackIntentOverride = null
       const commandStartedAtMs = performance.now()
       const state = get()
-      const candidate = findNextPlayableCandidate(state)
+      const candidate = findNextPlayableCandidate(state, {
+        respectRepeatOne: playbackIntent === 'automatic'
+      })
       if (!candidate) return
       const playbackIntentId = beginPlaybackIntent()
       clearNonmatchingPrebufferForIntent(playbackIntentId, candidate.track.path)
@@ -4462,7 +4490,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         return
       }
 
-      const previousEntry = state.playbackHistory[state.playbackHistory.length - 1]
+      const history = normalizeNavigationHistory(state.queueItems, state.playbackHistory, state.currentQueueItemId)
+      const previousEntry = history[history.length - 1]
       const previousTrack = resolveQueueEntryTrack(previousEntry?.item.entry)
       if (!previousEntry || !previousTrack || isUnavailableRemoteTrack(previousTrack)) return
       const playbackIntentId = beginPlaybackIntent()
@@ -4473,10 +4502,6 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       })
 
       const currentEntry = getCurrentPlaybackEntry(state)
-      const queueItemsById = new Map(state.queueItems.map((item) => [item.queueId, item]))
-      if (currentEntry) queueItemsById.set(currentEntry.item.queueId, currentEntry.item)
-      queueItemsById.set(previousEntry.item.queueId, previousEntry.item)
-      const queueItems = [...queueItemsById.values()]
       const currentId = currentEntry?.item.queueId ?? null
       const baseUpcomingQueueIds = currentId
         ? [currentId, ...state.baseUpcomingQueueIds.filter((id) => id !== currentId && id !== previousEntry.item.queueId)]
@@ -4485,10 +4510,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         ? [currentId, ...state.upcomingQueueIds.filter((id) => id !== currentId && id !== previousEntry.item.queueId)]
         : state.upcomingQueueIds.filter((id) => id !== previousEntry.item.queueId)
       set({
-        queueItems,
         baseUpcomingQueueIds,
         upcomingQueueIds,
-        playbackHistory: state.playbackHistory.slice(0, -1),
+        playbackHistory: history.slice(0, -1),
         currentQueueItemId: previousEntry.item.queueId,
         currentTrackSource: previousEntry.item.origin
       })
@@ -5790,7 +5814,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           completedNaturally: !manualGaplessTransitionInProgress
         })
 
-        if (state.repeat === 'one') {
+        if (state.repeat === 'one' && !manualGaplessTransitionInProgress && preAppliedGaplessQueueItemId === null) {
           // Safety net: AudioEngine already swapped to the wrong buffer.
           // Reload the correct track to fix audio/UI desync.
           const correctTrack = state.currentTrack
@@ -5803,7 +5827,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         const preAppliedQueueItem = preAppliedGaplessQueueItemId
           ? state.queueItems.find((item) => item.queueId === preAppliedGaplessQueueItemId)
           : null
-        const nextCandidate = preAppliedQueueItem ? null : findNextPlayableCandidate(state)
+        const nextCandidate = preAppliedQueueItem ? null : findNextPlayableCandidate(state, {
+          respectRepeatOne: !manualGaplessTransitionInProgress
+        })
         const nextTrack = preAppliedQueueItem
           ? resolveQueueEntryTrack(preAppliedQueueItem.entry)
           : nextCandidate && nextCandidate.kind !== 'current'
