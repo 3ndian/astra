@@ -104,3 +104,44 @@ without a loudness pass and without normalization (playerStore.ts, AudioEngine.t
 
 ## Per-section page memory
 - `shared/sections/sectionViewMemory.ts` (+ test) and the `sections.onSwitched` handler in `App.tsx`: leaving a section saves its page (home/library/stats/playlist/...), the library browse mode and the open playlist (localStorage `astra-section-view-memory-v1`); returning restores them. A deleted playlist falls back to the library page.
+
+## Expanded left pane (old-Spotify layout)
+- `uiStore.isSidebarExpanded` (localStorage `astra-sidebar-expanded-v1`), toggle button at the bottom of the left pane.
+- Expanded: pane widens to the now-playing block width, nav items and sections show labels, `SidebarCover` shows a big cover above the title/heart block (click = fullscreen; Spotify cover while Spotify is the source). The small cover in the bottom bar is hidden while expanded.
+- Visualizer strip shown/hidden is now remembered per section (part of the section memory).
+
+## Custom theme editor
+- `shared/theme/customTheme.ts` (+ test, `npm run test:theme`): one accent -> backgrounds, borders and text derived (hue follows the accent, tint strength, lightness, hue shift, text contrast). Derived text is kept readable automatically; hand-picked colours only get a warning. Dark themes only.
+- `themeStore`: `customTheme` (active, persisted in `astra-theme-settings-v1`), `savedCustomThemes` (`astra-custom-themes-v1`, up to 12), actions start/update/override/reset/exit/save/activate/delete. Choosing a preset leaves custom mode. The existing accent picker edits the custom theme's accent while one is active.
+- `CustomThemeEditor.tsx` card at the top of Settings > Appearance: follow-accent switch, sliders, per-colour overrides ("Back to automatic"), save/update/delete, back to presets.
+
+## Section colours
+- `SectionConfig.color` (optional #rrggbb), `setSectionColor`, IPC `sections:setColor`; the section's "..." settings in the sections popup has an icon colour picker with "Automatic". The "e.g. Video Game Music" placeholder in the new-section box is now just "Section name".
+- Multiple custom themes: "Save as new theme", "New custom theme" (asks before discarding unsaved edits), "Delete saved theme". Saved custom themes now appear in the Appearance grid next to the presets with a colour-swatch strip (background, panel, accent); presets show the same strip.
+
+## Greyed "Not downloaded" rows in the Music track list
+- Off by default. Switch on from the Not downloaded page ("Also show these greyed out...") or hide again with the "Hide" button in the group header.
+- Shown only in the Music section, only on the main Tracks view (not inside an album/artist), as a separate "Not downloaded (N)" group after the real tracks; follows the search box. Rows are display-only: no play, queue, drag, context menu, shuffle or stats.
+- `trackListRows.ts` (+ test) gained 'placeholder-header' / 'placeholder' row kinds; `useWantedPlaceholders` loads them; `wantedStore.showInTrackList` is saved in localStorage `astra-wanted-in-tracklist-v1`.
+
+## Audiobook resume position
+- `shared/resume/resumePositions.ts` (+ test): remembers where each file stopped (min 15 s in, "finished" within 30 s of the end clears it, resumes 3 s earlier, 300 entries max).
+- `utils/audiobookResume.ts`: only active while an Audiobook-kind section is the active section. Saves every 5 s, on pause, when switching files and on quit (localStorage `astra-resume-positions-v1`). `playerStore._loadAndPlayTrack` starts at the saved spot unless a start time is given.
+
+## Reorderable library tabs (per section)
+- Drag the tabs (Tracks/Albums/Artists/Genres/Years/Folders) to reorder them, or focus one and press Alt+Left / Alt+Right. Each section keeps its own order (localStorage `astra-library-tab-order-v1`); a small reset button appears when the order is customised.
+- `shared/library/tabOrder.ts` (+ test), `hooks/useLibraryTabOrder.ts`; the tab slide direction follows the custom order.
+
+## Folders view keyboard navigation (Finder-style)
+- Click a row to highlight it (folders still open/close on click); the tree takes keyboard focus.
+- Up/Down move, Home/End jump, Right opens a folder (then steps into it), Left closes it or jumps to the parent folder, Enter plays the selected song (on a folder it opens/closes it).
+- `shared/library/folderNav.ts` (+ test) holds the rules; `FolderTreeView.tsx` wires them in.
+
+## Audiobook skip buttons + sleep timer
+- `AudiobookControls.tsx` (next to repeat in the transport bar, only while an Audiobook section is active): back 10 s, forward 30 s, and a moon button with a sleep timer menu (the app's existing minutes timer from `sleepTimerStore.ts`, plus "End of this file", +15, turn off) and a countdown on the button.
+- `sleepEndOfFileStore.ts` + `shared/sleepTimer.ts` (+ test) add the end-of-file variant; its watcher is started in `App.tsx`. `sleepTimerStore.ts` is the original upstream file (Settings uses it) and is NOT changed.
+
+## Detached visualizer windows remember their place
+- Each popped-out visualizer (spectrum, spectrogram, ...) saves its size and position (`scope-popout-windows.json` in userData, debounced while moving, and on close) and reopens there. If the saved spot is no longer on a connected display, the size is kept and the position falls back to the default.
+- The "detached" placeholder in the main window gets a **Reset window** button next to Recall: puts that window back to its default size/position on the current screen, brings it to the front and forgets the saved spot (IPC `scope-popout:reset`).
+- `shared/scopePopout/windowBounds.ts` (+ test) holds the display-safety rules; `main/services/scopePopoutWindowPrefs.ts` the file I/O.

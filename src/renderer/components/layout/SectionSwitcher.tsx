@@ -68,6 +68,7 @@ export default function SectionSwitcher() {
   const renameSection = useSectionsStore((state) => state.renameSection)
   const setSectionFlag = useSectionsStore((state) => state.setSectionFlag)
   const deleteSection = useSectionsStore((state) => state.deleteSection)
+  const setSectionColorChoice = useSectionsStore((state) => state.setSectionColor)
 
   const buttonRef = useRef<HTMLButtonElement | null>(null)
   const popoverRef = useRef<HTMLDivElement | null>(null)
@@ -237,6 +238,21 @@ export default function SectionSwitcher() {
                     Rename
                   </button>
                 </form>
+                <div className="section-switcher-color-row">
+                  <span>Icon colour</span>
+                  <input
+                    type="color"
+                    className="settings-color"
+                    value={sectionColor(managed)}
+                    onChange={(event) => void setSectionColorChoice(managed.id, event.target.value)}
+                    aria-label={`Colour for ${managed.name}`}
+                  />
+                  {managed.color ? (
+                    <button type="button" onClick={() => void setSectionColorChoice(managed.id, null)}>Automatic</button>
+                  ) : (
+                    <span className="section-switcher-color-auto">Automatic</span>
+                  )}
+                </div>
                 {FLAG_LABELS.map(({ key, label }) => (
                   <label key={key} className="section-switcher-flag">
                     <input
@@ -283,7 +299,7 @@ export default function SectionSwitcher() {
               <input
                 value={newName}
                 maxLength={40}
-                placeholder="e.g. Video Game Music"
+                placeholder="Section name"
                 onChange={(event) => setNewName(event.target.value)}
                 aria-label="New section name"
               />
@@ -325,6 +341,7 @@ export default function SectionSwitcher() {
             disabled={isSwitching}
           >
             <SectionIcon section={section} />
+            <span className="sidebar-nav-label">{section.name}</span>
           </button>
         )
       })}
@@ -342,6 +359,7 @@ export default function SectionSwitcher() {
         <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
           <path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z" />
         </svg>
+        <span className="sidebar-nav-label">All sections</span>
       </button>
       {popover}
     </div>

@@ -22,6 +22,7 @@ import { usePresence } from '../../hooks/usePresence'
 import EQResponsePreview from '../eq/EQResponsePreview'
 import AudioPipelineShelf from './AudioPipelineShelf'
 import TransportLyricsShelf from './TransportLyricsShelf'
+import AudiobookControls from './AudiobookControls'
 import { useLyricsPopoutStore } from '../../stores/lyricsPopoutStore'
 import { useParallaxStore } from '../../stores/parallaxStore'
 import { resolveTransportInfoLine } from '../../utils/transportInfoLine'
@@ -133,6 +134,7 @@ export default function TransportBar() {
     toggleLyricsShelf,
     closeLyricsShelf,
     transportInfoLineMode,
+    isSidebarExpanded,
     setFullscreen
   } = useUIStore()
   const lyricsPopoutIsOpen = useLyricsPopoutStore((s) => s.windowState.isOpen)
@@ -367,7 +369,7 @@ export default function TransportBar() {
       <TransportLyricsShelf />
 
       {/* Left: Track info */}
-      <div className="transport-info">
+      <div className={`transport-info ${isSidebarExpanded ? 'transport-info-aligned' : ''}`.trim()}>
         <div
           className="transport-artwork"
           onClick={() => setFullscreen(true)}
@@ -535,14 +537,13 @@ export default function TransportBar() {
             </svg>
           </button>
           <button
-            className="control-btn control-btn-play"
+            className={`control-btn control-btn-play ${isLoadingTrack ? 'is-loading' : ''}`.trim()}
             onClick={togglePlay}
             disabled={transportControlsLocked || !currentTrack || isLoadingTrack}
-            aria-label={isPlaying ? 'Pause' : 'Play'}
+            aria-label={isLoadingTrack ? 'Loading' : isPlaying ? 'Pause' : 'Play'}
+            aria-busy={isLoadingTrack}
           >
-            {isLoadingTrack ? (
-              <div className="loading-spinner" />
-            ) : isPlaying ? (
+            {isPlaying || isLoadingTrack ? (
               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z"/>
               </svg>
@@ -587,6 +588,7 @@ export default function TransportBar() {
               </svg>
             )}
           </button>
+          <AudiobookControls />
         </div>
 
         {/* Waveform with floating time labels */}

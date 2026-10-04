@@ -848,10 +848,12 @@ function NativeUnavailableNotice({
 
 function PopoutPlaceholder({
   scope,
-  onRecall
+  onRecall,
+  onReset
 }: {
   scope: ScopeKind
   onRecall: () => void
+  onReset: () => void
 }) {
   return (
     <div className="visualizer-popout-placeholder">
@@ -862,6 +864,14 @@ function PopoutPlaceholder({
         aria-label={`Recall ${scopeLabel(scope)}`}
       >
         Recall
+      </button>
+      <button
+        className="visualizer-popout-placeholder-btn"
+        onClick={onReset}
+        title="Move the window back to its default size and position on this screen"
+        aria-label={`Reset ${scopeLabel(scope)} window position`}
+      >
+        Reset window
       </button>
     </div>
   )
@@ -957,6 +967,10 @@ export default function VisualizerPanel({
 
   const recallScopePopout = useCallback((scope: ScopeKind) => {
     void window.electronAPI.scopePopout.recall(scope)
+  }, [])
+
+  const resetScopePopout = useCallback((scope: ScopeKind) => {
+    void window.electronAPI.scopePopout.reset(scope)
   }, [])
 
   const visibleScopesFromStore = useMemo(() => {
@@ -1287,7 +1301,7 @@ export default function VisualizerPanel({
           )}
         </div>
         {isPoppedOut ? (
-          <PopoutPlaceholder scope={scope} onRecall={() => recallScopePopout(scope)} />
+          <PopoutPlaceholder scope={scope} onRecall={() => recallScopePopout(scope)} onReset={() => resetScopePopout(scope)} />
         ) : !nativeVisualizersAvailable && isNativeOnlyScope(scope) ? (
           <NativeUnavailableNotice scope={scope} reason={getNativeLoadError()?.message ?? null} />
         ) : scope === 'spectrum' ? (

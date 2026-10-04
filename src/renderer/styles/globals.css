@@ -27235,3 +27235,188 @@ html[data-theme-tone="light"] .parallax-setup-status.is-good {
 .wanted-confirm button { height: 24px; padding: 0 8px; border-radius: 12px; border: 1px solid var(--glass-border); background: transparent; color: var(--text-primary); font-size: 11px; cursor: pointer; }
 .spotify-now-playing .wanted-add { align-self: flex-start; margin-top: 10px; }
 .spotify-history-row .wanted-add { justify-self: end; }
+
+/* Expanded left pane (old-Spotify layout): wide pane, labels, big cover above the now-playing block */
+:root { --sidebar-expanded-width: clamp(272px, 23vw, 352px); }
+.sidebar-nav-label { display: none; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sidebar.sidebar-expanded { width: var(--sidebar-expanded-width); }
+.sidebar.sidebar-expanded .sidebar-nav { width: 100%; padding: 0 10px; box-sizing: border-box; }
+.sidebar.sidebar-expanded .sidebar-nav .nav-btn,
+.sidebar.sidebar-expanded .section-rail-btn,
+.sidebar.sidebar-expanded .section-rail-more { width: 100%; height: 36px; justify-content: flex-start; gap: 12px; padding: 0 12px; box-sizing: border-box; }
+.sidebar.sidebar-expanded .section-rail { padding: 0 10px 10px; box-sizing: border-box; align-items: stretch; }
+.sidebar.sidebar-expanded .sidebar-nav-label { display: inline; }
+.sidebar.sidebar-expanded .sidebar-bottom-actions { flex-direction: row; justify-content: space-between; width: 100%; padding: 0 10px; box-sizing: border-box; }
+.sidebar-cover { width: min(100%, 40vh); aspect-ratio: 1 / 1; flex: none; overflow: hidden; background: var(--bg-tertiary); display: flex; align-items: center; justify-content: center; margin-top: 8px; }
+.sidebar-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.sidebar-cover-clickable { cursor: pointer; }
+.transport-info.transport-info-aligned .transport-artwork { display: none; }
+.spotify-transport-bar.spotify-bar-aligned .spotify-bar-cover { display: none; }
+.spotify-transport-bar.spotify-bar-aligned .spotify-bar-track { width: calc(var(--sidebar-expanded-width) - 20px); }
+
+/* Custom theme editor */
+.custom-theme-card { grid-column: 1 / -1; }
+.custom-theme-intro p { margin: 0 0 12px; font-size: 13px; color: var(--text-secondary); max-width: 560px; }
+.custom-theme-editor { display: flex; flex-direction: column; gap: 14px; }
+.custom-theme-saved { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.custom-theme-saved-card { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--glass-border); background: transparent; color: var(--text-primary); cursor: pointer; font-size: 13px; }
+.custom-theme-saved-card:hover { border-color: rgba(var(--accent-rgb), 0.4); }
+.custom-theme-saved-card.active { border-color: rgba(var(--accent-rgb), 0.8); background: rgba(var(--accent-rgb), 0.1); }
+.custom-theme-swatches { display: inline-flex; border-radius: 6px; overflow: hidden; border: 1px solid var(--glass-border); }
+.custom-theme-swatches i { display: block; width: 14px; height: 22px; }
+.custom-theme-palette { display: flex; gap: 6px; }
+.custom-theme-palette-chip { flex: 1; height: 26px; border-radius: 6px; border: 1px solid var(--glass-border); }
+.custom-theme-slider input[type="range"] { width: 100%; }
+.custom-theme-slider-value { margin-left: 10px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.custom-theme-hint { font-size: 11px; color: var(--text-tertiary); }
+.custom-theme-hue-track { appearance: none; height: 8px; border-radius: 4px; background: linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00); }
+.custom-theme-hue-track::-webkit-slider-thumb { appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #fff; border: 2px solid rgba(0, 0, 0, 0.5); }
+.custom-theme-check input { margin-left: auto; }
+.custom-theme-individual summary { cursor: pointer; font-size: 13px; color: var(--text-secondary); }
+.custom-theme-individual-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.custom-theme-individual-row { display: flex; align-items: center; gap: 12px; }
+.custom-theme-individual-label { width: 130px; font-size: 13px; color: var(--text-secondary); }
+.custom-theme-warning { padding: 10px 12px; border-radius: 8px; border: 1px solid rgba(255, 180, 60, 0.5); background: rgba(255, 180, 60, 0.08); font-size: 12px; color: var(--text-primary); }
+.custom-theme-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.section-switcher-color-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.section-switcher-color-row > span:first-child { flex: 1; }
+.section-switcher-color-row button { background: none; border: 1px solid var(--glass-border); color: var(--text-primary); border-radius: 10px; font-size: 11px; padding: 2px 8px; cursor: pointer; }
+.section-switcher-color-auto { font-size: 11px; color: var(--text-tertiary); }
+.settings-shell .settings-theme-card .custom-theme-swatches { margin-bottom: 4px; }
+
+/* Greyed "Not downloaded" rows at the end of the Music track list */
+.track-list-placeholder-item .track-row-placeholder {
+  opacity: 0.45;
+  cursor: default;
+  pointer-events: none;
+  filter: grayscale(1);
+}
+.track-list-placeholder-item .track-artwork-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+}
+.track-placeholder-header .track-placeholder-hide {
+  margin-left: auto;
+  background: none;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.15));
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+.track-placeholder-header .track-placeholder-hide:hover {
+  color: var(--text-primary);
+}
+.wanted-show-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.settings-shell .settings-header .settings-back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  margin-right: 16px;
+  padding: 6px 12px;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.15));
+  border-radius: 999px;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.settings-shell .settings-header .settings-back-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+.settings-shell .settings-header { flex-wrap: wrap; }
+.settings-shell .settings-header .settings-back-row { flex: 0 0 100%; }
+.settings-shell .settings-header .settings-back-btn { margin-right: 0; }
+
+/* Loading a track: keep the pause icon (no blank button) and spin a ring around it. */
+.control-btn-play.is-loading,
+.control-btn-play.is-loading:disabled {
+  position: relative;
+  opacity: 1;
+  cursor: progress;
+}
+.control-btn-play.is-loading::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border: 2px solid transparent;
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  pointer-events: none;
+}
+
+/* Reorderable library tabs */
+.view-tabs .view-tab[draggable='true'] { cursor: grab; }
+.view-tabs .view-tab.dragging { opacity: 0.4; }
+.view-tabs .view-tab.drag-over { box-shadow: inset 2px 0 0 var(--accent); }
+.view-tabs .view-tab-reset { opacity: 0.6; padding-left: 8px; padding-right: 8px; }
+.view-tabs .view-tab-reset:hover { opacity: 1; }
+
+/* Folder view keyboard selection (Finder-style) */
+.folder-browse-tree { outline: none; }
+.folder-browse-node.is-selected,
+.folder-browse-track.is-selected {
+  background: rgba(var(--tint), 0.08);
+}
+.folder-browse-node.is-selected,
+.folder-browse-track.is-selected {
+  background: rgba(var(--accent-rgb), 0.2);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* Audiobook skip buttons + sleep timer */
+.audiobook-controls { position: relative; display: flex; align-items: center; gap: 2px; margin-left: 6px; }
+.audiobook-skip-btn { font-size: 11px; font-variant-numeric: tabular-nums; min-width: 34px; }
+.audiobook-sleep-btn { display: inline-flex; align-items: center; gap: 4px; }
+.audiobook-sleep-btn.active { color: var(--accent); }
+.audiobook-sleep-label { font-size: 10px; font-variant-numeric: tabular-nums; }
+.audiobook-sleep-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  min-width: 150px;
+  padding: 6px;
+  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.12));
+  border-radius: var(--radius-md, 8px);
+  background: var(--bg-secondary);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+.audiobook-sleep-menu button {
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  padding: 7px 10px;
+  text-align: left;
+  font-size: 12px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.audiobook-sleep-menu button:hover:not(:disabled) { background: rgba(var(--tint), 0.08); }
+.audiobook-sleep-menu button:disabled { opacity: 0.4; cursor: default; }
+.audiobook-sleep-menu .audiobook-sleep-off { color: var(--text-secondary); border-top: 1px solid var(--glass-border, rgba(255, 255, 255, 0.1)); border-radius: 0 0 6px 6px; margin-top: 4px; }
+
+/* Folder rows: keep the shuffle / add-to-playlist buttons away from the title (they were easy to misclick). */
+.folder-browse-actions {
+  margin-left: auto;
+  margin-right: 10px;
+  gap: 12px;
+  padding-left: 16px;
+}

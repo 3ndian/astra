@@ -10,6 +10,8 @@ import LocalApiPairingModal from '../settings/LocalApiPairingModal'
 import KeybindSettings from '../settings/KeybindSettings'
 import SettingsTransferWizard from '../settings/SettingsTransferWizard'
 import ImportedListeningDataCard from '../settings/ImportedListeningDataCard'
+import CustomThemeEditor from '../settings/CustomThemeEditor'
+import { deriveCustomTokens, previewHexes } from '../../../shared/theme/customTheme'
 import SettingsSegmentedControl, { type SettingsSegmentedOption } from '../settings/SettingsSegmentedControl'
 import { renderPairingQrSvg } from '../../utils/pairingQr'
 import { usePresence } from '../../hooks/usePresence'
@@ -370,6 +372,9 @@ export default function SettingsView() {
   const { rescan, forceRescanAll, backfillReplayGainMetadata, isScanning, isCancelingScan, cancelScan, scanProgress, scanStage } = useLibraryStore()
   const {
     presetId,
+    customTheme,
+    savedCustomThemes,
+    activateSavedCustomTheme,
     customAccent,
     accentSource,
     coverArtAccentMethod,
@@ -589,7 +594,7 @@ export default function SettingsView() {
     () => THEME_PRESET_LIST.find((preset) => preset.id === 'default')?.accent ?? DEFAULT_THEME_ACCENT,
     []
   )
-  const fallbackAccent = customAccent ?? selectedPreset.accent
+  const fallbackAccent = customTheme?.accent ?? customAccent ?? selectedPreset.accent
   const canStartSleepTimer = Boolean(
     currentTrack &&
     (playbackState === 'playing' || playbackState === 'paused')
@@ -1548,6 +1553,17 @@ export default function SettingsView() {
     <div className="settings-view">
       <div className="settings-shell">
         <div className="settings-header">
+          <div className="settings-back-row">
+          <button
+            type="button"
+            className="settings-back-btn"
+            onClick={() => useUIStore.getState().setActiveView('library')}
+            aria-label="Back to library"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6" /></svg>
+            <span>Back to library</span>
+          </button>
+          </div>
           <div>
             <p className="settings-kicker">System Controls</p>
             <h2>Settings</h2>
@@ -1604,15 +1620,40 @@ export default function SettingsView() {
                 <button
                   key={preset.id}
                   type="button"
-                  className={`settings-theme-card ${presetId === preset.id ? 'active' : ''}`}
+                  className={`settings-theme-card ${!customTheme && presetId === preset.id ? 'active' : ''}`}
                   onClick={() => setPreset(preset.id as ThemePresetId)}
                 >
+                  <span className="custom-theme-swatches" aria-hidden="true">
+                    <i style={{ background: preset.tokens.bgPrimary }} />
+                    <i style={{ background: preset.tokens.bgTertiary }} />
+                    <i style={{ background: preset.accent }} />
+                  </span>
                   <span className="settings-theme-card-title">{preset.label}</span>
                   <span className="settings-theme-card-description">{preset.description}</span>
                 </button>
               ))}
+              {savedCustomThemes.map((theme) => {
+                const preview = previewHexes(deriveCustomTokens(theme))
+                return (
+                  <button
+                    key={theme.id}
+                    type="button"
+                    className={`settings-theme-card ${customTheme?.id === theme.id ? 'active' : ''}`}
+                    onClick={() => activateSavedCustomTheme(theme.id)}
+                  >
+                    <span className="custom-theme-swatches" aria-hidden="true">
+                      <i style={{ background: preview.bgPrimary }} />
+                      <i style={{ background: preview.bgTertiary }} />
+                      <i style={{ background: theme.accent }} />
+                    </span>
+                    <span className="settings-theme-card-title">{theme.name}</span>
+                    <span className="settings-theme-card-description">Custom theme</span>
+                  </button>
+                )
+              })}
             </div>
             <div className="settings-cards">
+              <CustomThemeEditor />
               <div className="settings-card">
                 <div className="settings-card-label">Accent</div>
                 <div className="settings-grid">
@@ -1671,6 +1712,7 @@ export default function SettingsView() {
                       />
                     </div>
                   )}
+                  {!customTheme && (
                   <div className="settings-field settings-field-inline">
                     <span className="settings-field-label">
                       {accentSource === 'cover-art' ? 'Fallback Accent' : 'Preset Accent'}
@@ -1683,6 +1725,7 @@ export default function SettingsView() {
                       <span className="settings-chip">Using Preset Accent</span>
                     )}
                   </div>
+                  )}
                   <div className="settings-field settings-field-inline">
                     <span className="settings-field-label">Theme</span>
                     <button

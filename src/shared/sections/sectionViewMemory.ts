@@ -8,6 +8,8 @@ export interface SectionViewMemoryEntry {
   libraryViewMode?: string
   /** The open playlist, when the page was a playlist. */
   playlistId?: number | null
+  /** Whether the visualizer strip at the top was shown in this section. */
+  analyzerVisible?: boolean
 }
 
 export type SectionViewMemory = Record<string, SectionViewMemoryEntry>
@@ -29,6 +31,7 @@ export function sanitizeMemory(raw: unknown): SectionViewMemory {
     if (typeof record.playlistId === 'number' && Number.isInteger(record.playlistId)) {
       entry.playlistId = record.playlistId
     }
+    if (typeof record.analyzerVisible === 'boolean') entry.analyzerVisible = record.analyzerVisible
     result[sectionId] = entry
   }
   return result

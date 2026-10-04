@@ -6,6 +6,8 @@ export const MAX_PINNED_SECTIONS = 3
 export interface SectionStyleInput {
   id: string
   kind: 'music' | 'audiobook' | 'custom'
+  /** A colour the user chose (#rrggbb); wins over the automatic one. */
+  color?: string
 }
 
 const MUSIC_COLOR = '#9b8cff'
@@ -13,6 +15,7 @@ const AUDIOBOOK_COLOR = '#e0a458'
 const CUSTOM_COLORS = ['#5fc9b0', '#e06c8a', '#5fa8d3', '#d98c5f', '#b48ead', '#8fbf5f']
 
 export function sectionColor(section: SectionStyleInput): string {
+  if (section.color && /^#[0-9a-f]{6}$/i.test(section.color)) return section.color
   if (section.kind === 'music') return MUSIC_COLOR
   if (section.kind === 'audiobook') return AUDIOBOOK_COLOR
   let hash = 0

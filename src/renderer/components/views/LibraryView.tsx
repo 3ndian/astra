@@ -33,6 +33,10 @@ import FolderTreeView from '../library/FolderTreeView'
 import GenreGrid, { type GenreGridViewportAPI } from '../library/GenreGrid'
 import YearAlbumPreview from '../library/YearAlbumPreview'
 import YearGrid, { type YearGridViewportAPI } from '../library/YearGrid'
+import { useWantedPlaceholders } from '../../hooks/useWantedPlaceholders'
+import { useWantedStore } from '../../stores/wantedStore'
+import { useSectionsStore } from '../../stores/sectionsStore'
+import { useSpotifyStore } from '../../stores/spotifyStore'
 
 type SortDirection = 'asc' | 'desc'
 type ArtistAlbumRailMode = 'albums' | 'singles' | 'featured'
@@ -282,6 +286,13 @@ export default function LibraryView() {
   useHorizontalWheelScroll(artistAlbumRailRef)
 
   const trimmedSearchQuery = searchQuery.trim()
+  const placeholderSectionId = useSectionsStore((state) => state.activeSectionId)
+  const placeholderSpotifyEnabled = useSpotifyStore((state) => state.enabled)
+  const showWantedInTrackList = useWantedStore((state) => state.showInTrackList)
+  const setShowWantedInTrackList = useWantedStore((state) => state.setShowInTrackList)
+  const placeholdersActive =
+    showWantedInTrackList && placeholderSpotifyEnabled && placeholderSectionId === 'music'
+  const wantedPlaceholders = useWantedPlaceholders(placeholdersActive, trimmedSearchQuery)
   const hasSearchQuery = trimmedSearchQuery.length > 0
   const inDetailView = Boolean(selectedAlbum || selectedArtist || selectedGenre || selectedYear !== null)
   const isAlbumRootView = viewMode === 'albums' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null
@@ -1614,6 +1625,9 @@ export default function LibraryView() {
         jumpToTrackRequest={libraryTrackRevealRequest}
         onJumpToTrackRequestConsumed={clearLibraryTrackRevealRequest}
         searchQuery={trimmedSearchQuery}
+        placeholders={!selectedAlbum && !selectedArtist && placeholdersActive ? wantedPlaceholders.rows : undefined}
+        placeholderThumbs={wantedPlaceholders.thumbs}
+        onHidePlaceholders={() => setShowWantedInTrackList(false)}
       />
     )
   }

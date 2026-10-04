@@ -20,6 +20,8 @@ export interface SectionConfig {
   discordPresence: boolean
   /** Count this section toward listening stats. */
   listeningStats: boolean
+  /** Chosen colour for the section's sidebar icon (#rrggbb). Absent = automatic. */
+  color?: string
 }
 
 export interface SectionRegistry {
@@ -62,6 +64,12 @@ export function createDefaultRegistry(now: number): SectionRegistry {
   }
 }
 
+export function normalizeSectionColor(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const match = /^#([0-9a-fA-F]{6})$/.exec(value.trim())
+  return match ? `#${match[1].toLowerCase()}` : null
+}
+
 function normalizeName(value: unknown): string {
   if (typeof value !== 'string') return ''
   return value.replace(/\s+/g, ' ').trim().slice(0, SECTION_NAME_MAX_LENGTH)
@@ -76,6 +84,7 @@ function normalizeSection(raw: unknown, now: number): SectionConfig | null {
   const kind: SectionKind =
     typeof record.kind === 'string' && SECTION_KINDS.has(record.kind) ? (record.kind as SectionKind) : 'custom'
   const defaults = defaultFlagsForKind(kind)
+  const color = normalizeSectionColor(record.color)
   return {
     id: record.id,
     name,
@@ -83,7 +92,8 @@ function normalizeSection(raw: unknown, now: number): SectionConfig | null {
     createdAt: typeof record.createdAt === 'number' && Number.isFinite(record.createdAt) ? record.createdAt : now,
     scrobble: typeof record.scrobble === 'boolean' ? record.scrobble : defaults.scrobble,
     discordPresence: typeof record.discordPresence === 'boolean' ? record.discordPresence : defaults.discordPresence,
-    listeningStats: typeof record.listeningStats === 'boolean' ? record.listeningStats : defaults.listeningStats
+    listeningStats: typeof record.listeningStats === 'boolean' ? record.listeningStats : defaults.listeningStats,
+    ...(color ? { color } : {})
   }
 }
 
@@ -181,6 +191,22 @@ export function updateSectionFlag(
   const existing = registry.sections.find((section) => section.id === id)
   if (!existing) return { ok: false, error: 'Section not found.' }
   const section = { ...existing, [flag]: Boolean(value) }
+  return {
+    ok: true,
+    section,
+    registry: { ...registry, sections: registry.sections.map((entry) => (entry.id === id ? section : entry)) }
+  }
+}
+
+/** Sets a section's icon colour; null goes back to the automatic colour. */
+export function setSectionColor(registry: SectionRegistry, id: string, color: string | null): SectionResult {
+  const existing = registry.sections.find((section) => section.id === id)
+  if (!existing) return { ok: false, error: 'Section not found.' }
+  const normalized = color === null ? null : normalizeSectionColor(color)
+  if (color !== null && !normalized) return { ok: false, error: 'That is not a valid colour.' }
+  const { color: _previous, ...rest } = existing
+  void _previous
+  const section: SectionConfig = normalized ? { ...rest, color: normalized } : rest
   return {
     ok: true,
     section,

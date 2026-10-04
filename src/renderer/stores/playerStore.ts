@@ -1,3 +1,4 @@
+import { getResumeStart } from '../utils/audiobookResume'
 import { create } from 'zustand'
 import { audioEngine, isSupersededAudioLoadError } from '../audio/AudioEngine'
 import type { Track, PlaybackState } from '../types/audio'
@@ -2698,7 +2699,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       const loadStart = performance.now()
       const loadRequestId = beginLoadRequest()
       const manualStart = Boolean(options.manualStart)
-      const startTime = Number.isFinite(options.startTime) ? Math.max(0, Number(options.startTime)) : 0
+      // Audiobooks pick up where they were left unless the caller asked for a specific start.
+      const startTime = Number.isFinite(options.startTime)
+        ? Math.max(0, Number(options.startTime))
+        : getResumeStart(track)
       pendingManualLoadCueTrack = null
       // Initialize listeners if needed
       if (!listenersInitialized) {

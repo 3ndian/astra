@@ -7,6 +7,7 @@ import { matchesFuzzyFields, rankFuzzyMatches } from '../../utils/fuzzySearch'
 import { highlightSearchMatch } from '../../utils/searchHighlight'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import PlaylistCover from '../playlists/PlaylistCover'
+import { resolveFolderNav, type FolderNavRow } from '../../../shared/library/folderNav'
 
 interface FolderTreeViewProps {
   tracks: DbTrack[]
@@ -30,6 +31,7 @@ interface FolderRow {
   guideMask: boolean[]
   isLast: boolean
   isRoot: boolean
+  parentPath: string | null
 }
 
 interface TrackRow {
@@ -38,6 +40,7 @@ interface TrackRow {
   folderTracks: DbTrack[]
   guideMask: boolean[]
   isLast: boolean
+  parentPath: string
 }
 
 type VisibleRow = FolderRow | TrackRow
@@ -73,6 +76,8 @@ interface RowSharedProps {
   expandedNodes: Set<string>
   playlistPopupFolderPath: string | null
   searchQuery: string
+  selectedKey: string | null
+  onSelectRow: (key: string) => void
 }
 
 const FOLDER_ROW_HEIGHT = 32
@@ -184,7 +189,9 @@ function FolderTreeRowRenderer({
   onToggleExpand,
   expandedNodes,
   playlistPopupFolderPath,
-  searchQuery
+  searchQuery,
+  selectedKey,
+  onSelectRow
 }: RowComponentProps<RowSharedProps>): ReactElement | null {
   const row = rows[index]
   if (!row) return null
@@ -197,8 +204,11 @@ function FolderTreeRowRenderer({
     return (
       <div {...ariaAttributes} style={style}>
         <div
-          className={`folder-browse-node ${isRoot ? 'is-root' : ''}`}
-          onClick={() => onToggleExpand(node.fullPath)}
+          className={`folder-browse-node ${isRoot ? 'is-root' : ''} ${selectedKey === `f:${node.fullPath}` ? 'is-selected' : ''}`.trim()}
+          onClick={() => {
+            onSelectRow(`f:${node.fullPath}`)
+            onToggleExpand(node.fullPath)
+          }}
         >
           {!isRoot && (
             <span className="folder-tree-guide">
@@ -264,8 +274,11 @@ function FolderTreeRowRenderer({
   return (
     <div {...ariaAttributes} style={style}>
       <div
-        className={`folder-browse-track ${isActive ? 'is-active' : ''}`}
-        onClick={() => onPlayTrack(track, folderTracks)}
+        className={`folder-browse-track ${isActive ? 'is-active' : ''} ${selectedKey === `t:${track.path}` ? 'is-selected' : ''}`.trim()}
+        onClick={() => {
+          onSelectRow(`t:${track.path}`)
+          onPlayTrack(track, folderTracks)
+        }}
       >
         <span className="folder-tree-guide">
           {guideMask.map((hasLine, guideIndex) => (
@@ -321,6 +334,7 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
   const hasRestoredScrollRef = useRef(restoreScrollTopRef.current <= 0)
 
   const trimmedSearchQuery = searchQuery.trim()
+  const [selectedKey, setSelectedKey] = useState<string | null>(null)
 
   const filteredTracks = useMemo(() => {
     if (!trimmedSearchQuery) return tracks
@@ -355,8 +369,8 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
   const visibleRows = useMemo(() => {
     const rows: VisibleRow[] = []
 
-    function flattenNode(node: FolderTreeNode, guideMask: boolean[], isLast: boolean, isRoot: boolean) {
-      rows.push({ type: 'folder', node, guideMask, isLast, isRoot })
+    function flattenNode(node: FolderTreeNode, guideMask: boolean[], isLast: boolean, isRoot: boolean, parentPath: string | null) {
+      rows.push({ type: 'folder', node, guideMask, isLast, isRoot, parentPath })
 
       if (!expandedNodes.has(node.fullPath)) return
 
@@ -366,7 +380,7 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
 
       sortedChildren.forEach(([, child], childIndex) => {
         const childIsLast = childIndex === sortedChildren.length - 1 && node.tracks.length === 0
-        flattenNode(child, childMask, childIsLast, false)
+        flattenNode(child, childMask, childIsLast, false, node.fullPath)
       })
 
       node.tracks.forEach((track, trackIndex) => {
@@ -376,13 +390,14 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
           track,
           folderTracks: node.tracks,
           guideMask: childMask,
-          isLast: isLastItem
+          isLast: isLastItem,
+          parentPath: node.fullPath
         })
       })
     }
 
     tree.forEach((root, rootIndex) => {
-      flattenNode(root, [], rootIndex === tree.length - 1, true)
+      flattenNode(root, [], rootIndex === tree.length - 1, true, null)
     })
 
     return rows
@@ -547,6 +562,28 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
     setFolderViewExpandedPaths(next)
   }, [closeFolderPlaylistPopup, expandedNodes, setFolderViewExpandedPaths])
 
+  const navRows = useMemo<FolderNavRow[]>(() => visibleRows.map((row) => (
+    row.type === 'folder'
+      ? {
+          key: `f:${row.node.fullPath}`,
+          kind: 'folder' as const,
+          parentKey: row.parentPath === null ? null : `f:${row.parentPath}`,
+          expanded: expandedNodes.has(row.node.fullPath)
+        }
+      : {
+          key: `t:${row.track.path}`,
+          kind: 'track' as const,
+          parentKey: `f:${row.parentPath}`
+        }
+  )), [expandedNodes, visibleRows])
+
+  // Keep the keyboard selection on screen.
+  useEffect(() => {
+    if (selectedKey === null) return
+    const index = navRows.findIndex((row) => row.key === selectedKey)
+    if (index >= 0) listRef.current?.scrollToRow({ index, align: 'auto', behavior: 'auto' })
+  }, [navRows, selectedKey])
+
   const handlePlayTrack = useCallback(async (track: DbTrack, folderTracks: DbTrack[]) => {
     const queueTrackPaths = folderTracks.map((candidate) => candidate.path)
     const index = folderTracks.findIndex((candidate) => candidate.path === track.path)
@@ -571,6 +608,56 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
       console.error('Failed to shuffle folder playback:', error)
     }
   }, [startPlaybackContextByPaths])
+
+  const handleTreeKeyDown = useCallback((event: KeyboardEvent) => {
+    if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return
+    // Only take over the keys once a row has been clicked; until then the app's own shortcuts
+    // (arrow keys = seek / volume) keep working.
+    if (selectedKey === null || !navRows.some((row) => row.key === selectedKey)) return
+    const target = event.target as HTMLElement | null
+    const tag = target?.tagName
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable) return
+    // Enter on a focused button (shuffle / playlist) should still press that button.
+    if (event.key === 'Enter' && tag === 'BUTTON') return
+    if (folderPlaylistPopup || createPlaylistTarget) return
+
+    if (event.key === 'Escape') {
+      setSelectedKey(null)
+      return
+    }
+
+    const action = resolveFolderNav(navRows, selectedKey, event.key)
+    if (action.type === 'none') return
+    // The app's global shortcuts (arrow keys = seek / volume) listen on the same document.
+    event.preventDefault()
+    event.stopPropagation()
+
+    if (action.type === 'select') {
+      setSelectedKey(action.key)
+    } else if (action.type === 'expand' || action.type === 'collapse') {
+      setSelectedKey(action.key)
+      toggleExpand(action.key.slice(2))
+    } else if (action.type === 'play') {
+      const row = visibleRows.find((candidate) => candidate.type === 'track' && `t:${candidate.track.path}` === action.key)
+      if (row && row.type === 'track') void handlePlayTrack(row.track, row.folderTracks)
+    }
+  }, [createPlaylistTarget, folderPlaylistPopup, handlePlayTrack, navRows, selectedKey, toggleExpand, visibleRows])
+
+  // Capture phase so we run before the global shortcut handler. Clicking anywhere outside the
+  // tree drops the selection, which hands the arrow keys back to seek / volume.
+  useEffect(() => {
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null
+      if (target?.closest('.folder-browse-tree, .folder-playlist-popup')) return
+      setSelectedKey(null)
+    }
+    document.addEventListener('keydown', handleTreeKeyDown, true)
+    document.addEventListener('pointerdown', handlePointerDown, true)
+    return () => {
+      document.removeEventListener('keydown', handleTreeKeyDown, true)
+      document.removeEventListener('pointerdown', handlePointerDown, true)
+    }
+  }, [handleTreeKeyDown])
 
   const handleOpenPlaylistPopup = useCallback((event: React.MouseEvent<HTMLButtonElement>, node: FolderTreeNode) => {
     event.stopPropagation()
@@ -731,8 +818,11 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
     onToggleExpand: toggleExpand,
     expandedNodes,
     playlistPopupFolderPath: folderPlaylistPopup?.folderPath ?? null,
-    searchQuery: trimmedSearchQuery
+    searchQuery: trimmedSearchQuery,
+    selectedKey,
+    onSelectRow: setSelectedKey
   }), [
+    selectedKey,
     currentTrackPath,
     expandedNodes,
     folderPlaylistPopup?.folderPath,
@@ -752,7 +842,7 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
       }
     </div>
   ) : (
-    <div className="folder-browse-tree">
+    <div className="folder-browse-tree" aria-label="Folders. Use the arrow keys to browse, Enter to play.">
       <List
         className="folder-browse-virtualized"
         defaultHeight={TRACK_ROW_HEIGHT * 8}

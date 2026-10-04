@@ -6,7 +6,7 @@ export const DEFAULT_SPECTRUM_HEAT_PALETTE: SpectrumHeatPalette = 'classic'
 
 export const DEFAULT_SPECTRUM_BAR_DENSITY = 10
 export const MIN_SPECTRUM_BAR_DENSITY = 4
-export const MAX_SPECTRUM_BAR_DENSITY = 24
+export const MAX_SPECTRUM_BAR_DENSITY = 48
 export const DEFAULT_SPECTRUM_BAR_GAP_PERCENT = 25
 export const MIN_SPECTRUM_BAR_GAP_PERCENT = 0
 export const MAX_SPECTRUM_BAR_GAP_PERCENT = 70

@@ -781,6 +781,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   scopePopout: {
     open: (scope: ScopeKind) => ipcRenderer.invoke('scope-popout:open', scope),
     recall: (scope: ScopeKind) => ipcRenderer.invoke('scope-popout:recall', scope),
+    reset: (scope: ScopeKind) => ipcRenderer.invoke('scope-popout:reset', scope),
     getState: () => ipcRenderer.invoke('scope-popout:getState'),
     publishChunk: (chunk: ScopePopoutChunk) => ipcRenderer.send('scope-popout:publishChunk', chunk),
     onState: (callback: (state: ScopePopoutState) => void) => {
@@ -1323,6 +1324,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('sections:rename', id, name),
     setFlag: (id: string, flag: SectionFlagKey, value: boolean): Promise<SectionsMutationResult> =>
       ipcRenderer.invoke('sections:setFlag', id, flag, value),
+    setColor: (id: string, color: string | null): Promise<SectionsMutationResult> =>
+      ipcRenderer.invoke('sections:setColor', id, color),
     switchTo: (id: string): Promise<SectionsMutationResult> => ipcRenderer.invoke('sections:switch', id),
     remove: (id: string): Promise<SectionsMutationResult> => ipcRenderer.invoke('sections:delete', id),
     onRegistryChanged: (callback: (payload: SectionsPayload) => void) => {
@@ -1674,6 +1677,7 @@ declare global {
       scopePopout: {
         open: (scope: ScopeKind) => Promise<ScopePopoutState>
         recall: (scope: ScopeKind) => Promise<ScopePopoutState>
+        reset: (scope: ScopeKind) => Promise<ScopePopoutState>
         getState: () => Promise<ScopePopoutState>
         publishChunk: (chunk: ScopePopoutChunk) => void
         onState: (callback: (state: ScopePopoutState) => void) => () => void
@@ -1942,6 +1946,7 @@ declare global {
         create: (input: { name: string; kind?: SectionKind }) => Promise<SectionsMutationResult>
         rename: (id: string, name: string) => Promise<SectionsMutationResult>
         setFlag: (id: string, flag: SectionFlagKey, value: boolean) => Promise<SectionsMutationResult>
+        setColor: (id: string, color: string | null) => Promise<SectionsMutationResult>
         switchTo: (id: string) => Promise<SectionsMutationResult>
         remove: (id: string) => Promise<SectionsMutationResult>
         onRegistryChanged: (callback: (payload: SectionsPayload) => void) => () => void

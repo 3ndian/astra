@@ -7,11 +7,12 @@ function track(discNumber: number | null | undefined): TrackListDiscTrackLike {
 }
 
 function summarizeRows(rows: readonly TrackListVirtualRow[]): string[] {
-  return rows.map((row) => (
-    row.kind === 'disc-header'
-      ? `disc:${row.discNumber}`
-      : `track:${row.trackIndex}`
-  ))
+  return rows.map((row) => {
+    if (row.kind === 'disc-header') return `disc:${row.discNumber}`
+    if (row.kind === 'track') return `track:${row.trackIndex}`
+    if (row.kind === 'placeholder-header') return `placeholders:${row.count}`
+    return `placeholder:${row.placeholderIndex}`
+  })
 }
 
 test('buildTrackListRows inserts headers for multi-disc albums', () => {
@@ -92,4 +93,26 @@ test('buildTrackListRows can be disabled', () => {
     'track:0',
     'track:1'
   ])
+})
+
+test('buildTrackListRows appends a not-downloaded group after the tracks', () => {
+  assert.deepEqual(summarizeRows(buildTrackListRows([track(1)], true, 2)), [
+    'track:0',
+    'placeholders:2',
+    'placeholder:0',
+    'placeholder:1'
+  ])
+})
+
+test('buildTrackListRows puts placeholders after disc headers and works with no tracks', () => {
+  assert.deepEqual(summarizeRows(buildTrackListRows([track(1), track(2)], true, 1)), [
+    'disc:1',
+    'track:0',
+    'disc:2',
+    'track:1',
+    'placeholders:1',
+    'placeholder:0'
+  ])
+  assert.deepEqual(summarizeRows(buildTrackListRows([], true, 1)), ['placeholders:1', 'placeholder:0'])
+  assert.deepEqual(summarizeRows(buildTrackListRows([track(1)], true, 0)), ['track:0'])
 })

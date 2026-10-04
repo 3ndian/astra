@@ -7,6 +7,8 @@ import TransportBar from './components/layout/TransportBar'
 import SpotifyTransportBar from './components/layout/SpotifyTransportBar'
 import SpotifyHandoffPrompt from './components/layout/SpotifyHandoffPrompt'
 import { startSpotifyWatcher, useSpotifyStore } from './stores/spotifyStore'
+import { startResumeTracker } from './utils/audiobookResume'
+import { startSleepEndOfFileWatcher } from './stores/sleepEndOfFileStore'
 import QueuePanel from './components/queue/QueuePanel'
 import QueuePanelBoundary from './components/queue/QueuePanelBoundary'
 import CollectionQueueContextMenu from './components/queue/CollectionQueueContextMenu'
@@ -113,6 +115,8 @@ function App() {
     (state) => state.activeSource === 'spotify' && state.status.track !== null && (state.status.state === 'playing' || state.status.state === 'paused')
   )
   useEffect(() => startSpotifyWatcher(), [])
+  useEffect(() => startResumeTracker(), [])
+  useEffect(() => startSleepEndOfFileWatcher(), [])
   useRuntimeAppIconSync()
 
   const showQueue = useUIStore((s) => s.showQueue)
@@ -441,7 +445,8 @@ function App() {
           sectionViewMemory = rememberSectionView(sectionViewMemory, lastSectionId, {
             view: useUIStore.getState().activeView,
             libraryViewMode: useLibraryStore.getState().viewMode,
-            playlistId: usePlaylistStore.getState().selectedPlaylistId
+            playlistId: usePlaylistStore.getState().selectedPlaylistId,
+            analyzerVisible: useUIStore.getState().isAnalyzerRackVisible
           })
           try {
             window.localStorage.setItem(SECTION_VIEW_MEMORY_KEY, JSON.stringify(sectionViewMemory))
@@ -471,6 +476,11 @@ function App() {
               await usePlaylistStore.getState().selectPlaylist(plan.playlistId)
             }
             useUIStore.getState().setActiveView(plan.view as AppView)
+            if (typeof remembered.analyzerVisible === 'boolean') {
+              const ui = useUIStore.getState()
+              if (remembered.analyzerVisible && !ui.isAnalyzerRackVisible) ui.showAnalyzerRack()
+              if (!remembered.analyzerVisible && ui.isAnalyzerRackVisible) ui.hideAnalyzerRack()
+            }
           }
         } catch (error) {
           console.error(`Failed to load library section "${payload.activeSectionId}":`, error)

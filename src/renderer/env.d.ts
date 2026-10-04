@@ -292,6 +292,7 @@ declare global {
             scopePopout: {
                 open: (scope: ScopeKind) => Promise<ScopePopoutState>
                 recall: (scope: ScopeKind) => Promise<ScopePopoutState>
+                reset: (scope: ScopeKind) => Promise<ScopePopoutState>
                 getState: () => Promise<ScopePopoutState>
                 publishChunk: (chunk: ScopePopoutChunk) => void
                 onState: (callback: (state: ScopePopoutState) => void) => () => void
@@ -671,6 +672,7 @@ declare global {
                 create: (input: { name: string; kind?: SectionKind }) => Promise<SectionsMutationResult>
                 rename: (id: string, name: string) => Promise<SectionsMutationResult>
                 setFlag: (id: string, flag: SectionFlagKey, value: boolean) => Promise<SectionsMutationResult>
+                setColor: (id: string, color: string | null) => Promise<SectionsMutationResult>
                 switchTo: (id: string) => Promise<SectionsMutationResult>
                 remove: (id: string) => Promise<SectionsMutationResult>
                 onRegistryChanged: (callback: (payload: SectionsPayload) => void) => () => void

@@ -99,3 +99,18 @@ test('data dirs: default keeps legacy root, others are namespaced, bad ids throw
   assert.deepEqual(sectionDataSubdir('books'), ['sections', 'books'])
   assert.throws(() => sectionDataSubdir('../x'))
 })
+
+test('section colour can be set, cleared and is validated', async () => {
+  const { createDefaultRegistry, setSectionColor, normalizeRegistry } = await import('./sections.ts')
+  const registry = createDefaultRegistry(1)
+  const set = setSectionColor(registry, 'music', '#ABCDEF')
+  assert.equal(set.ok, true)
+  if (set.ok) {
+    assert.equal(set.section.color, '#abcdef')
+    const cleared = setSectionColor(set.registry, 'music', null)
+    assert.equal(cleared.ok && cleared.section.color, undefined)
+    assert.equal(normalizeRegistry(JSON.parse(JSON.stringify(set.registry)), 2).sections[0].color, '#abcdef')
+  }
+  assert.equal(setSectionColor(registry, 'music', 'red').ok, false)
+  assert.equal(setSectionColor(registry, 'nope', '#112233').ok, false)
+})

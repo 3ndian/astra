@@ -1,5 +1,13 @@
 import { create } from 'zustand'
 import { useVisualizerSettingsStore } from './visualizerSettingsStore'
+import {
+  createCustomTheme,
+  deriveCustomTokens,
+  normalizeHex as normalizeCustomHex,
+  sanitizeCustomTheme,
+  type CustomColorKey,
+  type CustomTheme
+} from '../../shared/theme/customTheme'
 
 export type ThemePresetId = 'default' | 'graphite' | 'midnight' | 'studio' | 'crimson' | 'light'
 export type AccentSource = 'theme' | 'cover-art'
@@ -134,6 +142,7 @@ interface ThemePresetDefinition {
 
 interface SavedThemeSettings {
   presetId: ThemePresetId
+  customTheme: CustomTheme | null
   customAccent: string | null
   accentSource: AccentSource
   coverArtAccentMethod: CoverArtAccentMethod
@@ -145,7 +154,20 @@ export interface ThemeSettingsState {
   accentSource: AccentSource
   coverArtAccentMethod: CoverArtAccentMethod
   coverArtAccent: string | null
+  /** The active custom theme (colours derived from one accent), or null when a preset is in use. */
+  customTheme: CustomTheme | null
+  savedCustomThemes: CustomTheme[]
   resolvedTokens: ResolvedThemeTokens
+  startCustomTheme: () => void
+  /** Starts another custom theme (fresh derivation settings) even while one is active. */
+  newCustomTheme: () => void
+  updateCustomTheme: (patch: Partial<Omit<CustomTheme, 'id' | 'overrides'>>) => void
+  setCustomThemeOverride: (key: CustomColorKey, hexOrNull: string | null) => void
+  resetCustomThemeOverrides: () => void
+  exitCustomTheme: () => void
+  saveCustomTheme: (name: string, asNew?: boolean) => void
+  activateSavedCustomTheme: (id: string) => void
+  deleteSavedCustomTheme: (id: string) => void
   setPreset: (presetId: ThemePresetId) => void
   setCustomAccent: (accentHex: string) => void
   usePresetAccent: () => void
@@ -157,6 +179,7 @@ export interface ThemeSettingsState {
 }
 
 export const THEME_STORAGE_KEY = 'astra-theme-settings-v1'
+const CUSTOM_THEMES_STORAGE_KEY = 'astra-custom-themes-v1'
 const DEFAULT_PRESET_ID: ThemePresetId = 'default'
 const DEFAULT_ACCENT_SOURCE: AccentSource = 'theme'
 const DEFAULT_COVER_ART_ACCENT_METHOD: CoverArtAccentMethod = 'dominant'
@@ -395,8 +418,22 @@ function resolveThemeTokens(
   presetId: ThemePresetId,
   customAccent: string | null,
   accentSource: AccentSource,
-  coverArtAccent: string | null
+  coverArtAccent: string | null,
+  customTheme: CustomTheme | null = null
 ): ResolvedThemeTokens {
+  if (customTheme) {
+    const coverActive = accentSource === 'cover-art' && Boolean(coverArtAccent)
+    const effectiveAccent = coverActive && coverArtAccent ? coverArtAccent : customTheme.accent
+    const surfaceAccent = coverActive && customTheme.followCoverArt ? coverArtAccent : null
+    return {
+      ...deriveCustomTokens(customTheme, surfaceAccent),
+      ...DARK_SURFACE_DEFAULTS,
+      isLight: false,
+      accent: effectiveAccent,
+      accentHover: deriveAccentHover(effectiveAccent, false),
+      accentGlow: deriveAccentGlow(effectiveAccent),
+    }
+  }
   const preset = THEME_PRESETS[presetId] ?? THEME_PRESETS.default
   const themeAccent = customAccent ?? preset.accent
   const effectiveAccent = accentSource === 'cover-art' && coverArtAccent
@@ -483,10 +520,12 @@ function persistThemeSettings(
   presetId: ThemePresetId,
   customAccent: string | null,
   accentSource: AccentSource,
-  coverArtAccentMethod: CoverArtAccentMethod
+  coverArtAccentMethod: CoverArtAccentMethod,
+  customTheme: CustomTheme | null = null
 ): void {
   localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify({
     presetId,
+    customTheme,
     customAccent,
     accentSource,
     coverArtAccentMethod,
@@ -500,6 +539,7 @@ function readSavedThemeSettings(): SavedThemeSettings | null {
   try {
     const parsed = JSON.parse(raw) as {
       presetId?: unknown
+      customTheme?: unknown
       customAccent?: unknown
       accentSource?: unknown
       coverArtAccentMethod?: unknown
@@ -534,12 +574,34 @@ function readSavedThemeSettings(): SavedThemeSettings | null {
 
     return {
       presetId,
+      customTheme: sanitizeCustomTheme(parsed.customTheme),
       customAccent,
       accentSource,
       coverArtAccentMethod,
     }
   } catch {
     return null
+  }
+}
+
+function readSavedCustomThemes(): CustomTheme[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(CUSTOM_THEMES_STORAGE_KEY) ?? '[]') as unknown
+    if (!Array.isArray(raw)) return []
+    return raw
+      .map((entry) => sanitizeCustomTheme(entry))
+      .filter((theme): theme is CustomTheme => theme !== null)
+      .slice(0, 12)
+  } catch {
+    return []
+  }
+}
+
+function persistSavedCustomThemes(themes: CustomTheme[]): void {
+  try {
+    localStorage.setItem(CUSTOM_THEMES_STORAGE_KEY, JSON.stringify(themes))
+  } catch {
+    // keep in memory only
   }
 }
 
@@ -557,6 +619,7 @@ function easeInOutSine(value: number): number {
 
 interface ThemeMutation {
   presetId: ThemePresetId
+  customTheme?: CustomTheme | null
   customAccent: string | null
   accentSource: AccentSource
   coverArtAccentMethod: CoverArtAccentMethod
@@ -583,9 +646,10 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
       nextState.presetId,
       normalizedCustomAccent,
       nextState.accentSource,
-      normalizedCoverArtAccent
+      normalizedCoverArtAccent,
+      nextState.customTheme ?? null
     )
-    const isLight = Boolean(THEME_PRESETS[nextState.presetId]?.isLight)
+    const isLight = !nextState.customTheme && Boolean(THEME_PRESETS[nextState.presetId]?.isLight)
 
     const previousAccent = normalizeHexColor(get().resolvedTokens.accent) ?? targetTokens.accent
     const initialAccent = previousAccent
@@ -605,6 +669,7 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
 
     set({
       presetId: nextState.presetId,
+      customTheme: nextState.customTheme ?? null,
       customAccent: normalizedCustomAccent,
       accentSource: nextState.accentSource,
       coverArtAccentMethod: nextState.coverArtAccentMethod,
@@ -617,7 +682,8 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
         nextState.presetId,
         normalizedCustomAccent,
         nextState.accentSource,
-        nextState.coverArtAccentMethod
+        nextState.coverArtAccentMethod,
+        nextState.customTheme ?? null
       )
     }
 
@@ -722,11 +788,139 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
     accentSource: DEFAULT_ACCENT_SOURCE,
     coverArtAccentMethod: DEFAULT_COVER_ART_ACCENT_METHOD,
     coverArtAccent: null,
+    customTheme: null,
+    savedCustomThemes: readSavedCustomThemes(),
     resolvedTokens: defaultTokens,
+    startCustomTheme: () => {
+      const state = get()
+      if (state.customTheme) return
+      const preset = THEME_PRESETS[state.presetId] ?? THEME_PRESETS.default
+      const seedAccent = normalizeCustomHex(state.customAccent ?? preset.accent) ?? DEFAULT_ACCENT
+      const theme = createCustomTheme(`custom-${Date.now().toString(36)}`, 'My theme', seedAccent)
+      applyAndSet({
+        presetId: state.presetId,
+        customTheme: theme,
+        customAccent: state.customAccent,
+        accentSource: state.accentSource,
+        coverArtAccentMethod: state.coverArtAccentMethod,
+        coverArtAccent: state.coverArtAccent,
+      }, true)
+    },
+    newCustomTheme: () => {
+      const state = get()
+      const seedAccent = state.customTheme?.accent
+        ?? normalizeCustomHex(state.customAccent ?? (THEME_PRESETS[state.presetId] ?? THEME_PRESETS.default).accent)
+        ?? DEFAULT_ACCENT
+      const taken = new Set(state.savedCustomThemes.map((theme) => theme.name))
+      let name = 'My theme'
+      for (let n = 2; taken.has(name) && n < 100; n += 1) name = `My theme ${n}`
+      const theme = createCustomTheme(`custom-${Date.now().toString(36)}`, name, seedAccent)
+      applyAndSet({
+        presetId: state.presetId,
+        customTheme: theme,
+        customAccent: state.customAccent,
+        accentSource: state.accentSource,
+        coverArtAccentMethod: state.coverArtAccentMethod,
+        coverArtAccent: state.coverArtAccent,
+      }, true)
+    },
+    updateCustomTheme: (patch) => {
+      const state = get()
+      if (!state.customTheme) return
+      const merged = sanitizeCustomTheme({ ...state.customTheme, ...patch })
+      if (!merged) return
+      applyAndSet({
+        presetId: state.presetId,
+        customTheme: merged,
+        customAccent: state.customAccent,
+        accentSource: state.accentSource,
+        coverArtAccentMethod: state.coverArtAccentMethod,
+        coverArtAccent: state.coverArtAccent,
+      }, true)
+    },
+    setCustomThemeOverride: (key, hexOrNull) => {
+      const state = get()
+      if (!state.customTheme) return
+      const overrides = { ...state.customTheme.overrides }
+      const hex = hexOrNull === null ? null : normalizeCustomHex(hexOrNull)
+      if (hex) overrides[key] = hex
+      else delete overrides[key]
+      applyAndSet({
+        presetId: state.presetId,
+        customTheme: { ...state.customTheme, overrides },
+        customAccent: state.customAccent,
+        accentSource: state.accentSource,
+        coverArtAccentMethod: state.coverArtAccentMethod,
+        coverArtAccent: state.coverArtAccent,
+      }, true)
+    },
+    resetCustomThemeOverrides: () => {
+      const state = get()
+      if (!state.customTheme) return
+      applyAndSet({
+        presetId: state.presetId,
+        customTheme: { ...state.customTheme, overrides: {} },
+        customAccent: state.customAccent,
+        accentSource: state.accentSource,
+        coverArtAccentMethod: state.coverArtAccentMethod,
+        coverArtAccent: state.coverArtAccent,
+      }, true)
+    },
+    exitCustomTheme: () => {
+      const state = get()
+      applyAndSet({
+        presetId: state.presetId,
+        customTheme: null,
+        customAccent: state.customAccent,
+        accentSource: state.accentSource,
+        coverArtAccentMethod: state.coverArtAccentMethod,
+        coverArtAccent: state.coverArtAccent,
+      }, true)
+    },
+    saveCustomTheme: (name, asNew = false) => {
+      const state = get()
+      if (!state.customTheme) return
+      const cleanName = name.replace(/\s+/g, ' ').trim().slice(0, 40) || 'My theme'
+      const workingId = asNew ? `custom-${Date.now().toString(36)}` : state.customTheme.id
+      const existingIndex = state.savedCustomThemes.findIndex((theme) => theme.id === workingId)
+      const saved = { ...state.customTheme, id: workingId, name: cleanName, overrides: { ...state.customTheme.overrides } }
+      const next = existingIndex >= 0
+        ? state.savedCustomThemes.map((theme, index) => (index === existingIndex ? saved : theme))
+        : [...state.savedCustomThemes, saved].slice(-12)
+      persistSavedCustomThemes(next)
+      set({ savedCustomThemes: next })
+      applyAndSet({
+        presetId: state.presetId,
+        customTheme: saved,
+        customAccent: state.customAccent,
+        accentSource: state.accentSource,
+        coverArtAccentMethod: state.coverArtAccentMethod,
+        coverArtAccent: state.coverArtAccent,
+      }, true)
+    },
+    activateSavedCustomTheme: (id) => {
+      const state = get()
+      const theme = state.savedCustomThemes.find((candidate) => candidate.id === id)
+      if (!theme) return
+      applyAndSet({
+        presetId: state.presetId,
+        customTheme: { ...theme, overrides: { ...theme.overrides } },
+        customAccent: state.customAccent,
+        accentSource: state.accentSource,
+        coverArtAccentMethod: state.coverArtAccentMethod,
+        coverArtAccent: state.coverArtAccent,
+      }, true)
+    },
+    deleteSavedCustomTheme: (id) => {
+      const next = get().savedCustomThemes.filter((theme) => theme.id !== id)
+      persistSavedCustomThemes(next)
+      set({ savedCustomThemes: next })
+    },
     setPreset: (presetId) => {
       const state = get()
       applyAndSet({
         presetId,
+        customTheme: null,
         customAccent: state.customAccent,
         accentSource: state.accentSource,
         coverArtAccentMethod: state.coverArtAccentMethod,
@@ -738,8 +932,13 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
       if (!normalized) return
 
       const state = get()
+      if (state.customTheme) {
+        get().updateCustomTheme({ accent: normalized })
+        return
+      }
       applyAndSet({
         presetId: state.presetId,
+        customTheme: state.customTheme,
         customAccent: normalized,
         accentSource: state.accentSource,
         coverArtAccentMethod: state.coverArtAccentMethod,
@@ -750,6 +949,7 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
       const state = get()
       applyAndSet({
         presetId: state.presetId,
+        customTheme: state.customTheme,
         customAccent: null,
         accentSource: state.accentSource,
         coverArtAccentMethod: state.coverArtAccentMethod,
@@ -760,6 +960,7 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
       const state = get()
       applyAndSet({
         presetId: state.presetId,
+        customTheme: state.customTheme,
         customAccent: state.customAccent,
         accentSource: source,
         coverArtAccentMethod: state.coverArtAccentMethod,
@@ -770,6 +971,7 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
       const state = get()
       applyAndSet({
         presetId: state.presetId,
+        customTheme: state.customTheme,
         customAccent: state.customAccent,
         accentSource: state.accentSource,
         coverArtAccentMethod: method,
@@ -783,6 +985,7 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
 
       applyAndSet({
         presetId: state.presetId,
+        customTheme: state.customTheme,
         customAccent: state.customAccent,
         accentSource: state.accentSource,
         coverArtAccentMethod: state.coverArtAccentMethod,
@@ -792,6 +995,7 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
     resetToDefault: () => {
       applyAndSet({
         presetId: DEFAULT_PRESET_ID,
+        customTheme: null,
         customAccent: null,
         accentSource: DEFAULT_ACCENT_SOURCE,
         coverArtAccentMethod: DEFAULT_COVER_ART_ACCENT_METHOD,
@@ -813,6 +1017,7 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
 
       applyAndSet({
         presetId: saved.presetId,
+        customTheme: saved.customTheme,
         customAccent: saved.customAccent,
         accentSource: saved.accentSource,
         coverArtAccentMethod: saved.coverArtAccentMethod,

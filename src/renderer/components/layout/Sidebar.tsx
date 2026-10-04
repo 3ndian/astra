@@ -10,6 +10,7 @@ import { formatPlaylistImportStatus } from '../../utils/playlistImportStatus'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import PlaylistCover from '../playlists/PlaylistCover'
 import SectionSwitcher from './SectionSwitcher'
+import SidebarCover from './SidebarCover'
 import { useSectionsStore } from '../../stores/sectionsStore'
 import { useSpotifyStore } from '../../stores/spotifyStore'
 import { usePresence } from '../../hooks/usePresence'
@@ -190,6 +191,8 @@ export default function Sidebar() {
     [playlists, favoriteTracks]
   )
   const overflowPresence = usePresence(isOverflowOpen && sidebarOverflowPlaylists.length > 0)
+  const isSidebarExpanded = useUIStore((state) => state.isSidebarExpanded)
+  const toggleSidebarExpanded = useUIStore((state) => state.toggleSidebarExpanded)
   const activeSectionId = useSectionsStore((state) => state.activeSectionId)
   const spotifyEnabled = useSpotifyStore((state) => state.enabled)
   const navItems = useMemo(
@@ -619,7 +622,7 @@ export default function Sidebar() {
 
   return (
     <aside
-      className="sidebar"
+      className={`sidebar ${isSidebarExpanded ? 'sidebar-expanded' : ''}`.trim()}
       data-controller-region="true"
       data-controller-region-id="sidebar"
       data-controller-group="sidebar-items"
@@ -643,6 +646,7 @@ export default function Sidebar() {
               data-sidebar-tooltip={item.label}
             >
               {item.icon}
+              <span className="sidebar-nav-label">{item.label}</span>
             </button>
           ))}
         </nav>
@@ -732,10 +736,24 @@ export default function Sidebar() {
         </div>
       </div>
 
+      {isSidebarExpanded && <SidebarCover />}
+
       <div className="sidebar-bottom-actions">
         <button
+          type="button"
+          className="sidebar-icon-btn sidebar-expand-btn"
+          onClick={toggleSidebarExpanded}
+          aria-label={isSidebarExpanded ? 'Collapse the left pane' : 'Expand the left pane with a big cover'}
+          aria-pressed={isSidebarExpanded}
+          data-sidebar-tooltip={isSidebarExpanded ? 'Collapse' : 'Expand'}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            {isSidebarExpanded ? <path d="M15 6l-6 6 6 6" /> : <path d="M9 6l6 6-6 6" />}
+          </svg>
+        </button>
+        <button
           className={`sidebar-icon-btn nav-btn sidebar-settings-btn ${activeView === 'settings' ? 'active' : ''}`}
-          onClick={() => setActiveView('settings')}
+          onClick={() => setActiveView(activeView === 'settings' ? 'library' : 'settings')}
           aria-label="Settings"
           data-sidebar-tooltip="Settings"
         >

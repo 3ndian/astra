@@ -14,6 +14,8 @@ function formatAdded(ms: number): string {
 }
 
 export default function WantedView() {
+  const showInTrackList = useWantedStore((state) => state.showInTrackList)
+  const setShowInTrackList = useWantedStore((state) => state.setShowInTrackList)
   const [rows, setRows] = useState<WantedTrackRow[]>([])
   const [sort, setSort] = useState<WantedSort>('added')
   const [dir, setDir] = useState<'asc' | 'desc'>('desc')
@@ -89,6 +91,14 @@ export default function WantedView() {
           {copied ? 'Copied' : 'Copy list'}
         </button>
       </div>
+      <label className="wanted-show-toggle">
+        <input
+          type="checkbox"
+          checked={showInTrackList}
+          onChange={(event) => setShowInTrackList(event.target.checked)}
+        />
+        <span>Also show these greyed out at the end of the Music track list</span>
+      </label>
       <p className="wanted-note">
         Songs you added from Spotify. They can't be played or queued, and each one disappears from this list
         by itself once you import the file into Music.

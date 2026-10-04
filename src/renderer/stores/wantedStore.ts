@@ -1,7 +1,20 @@
 import { create } from 'zustand'
 import type { WantedAddRequest } from '../../types/spotify'
 
+const SHOW_KEY = 'astra-wanted-in-tracklist-v1'
+
+function readShow(): boolean {
+  try {
+    return window.localStorage.getItem(SHOW_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
 interface WantedStoreState {
+  /** Show the greyed "Not downloaded" group at the end of the Music track list (default off). */
+  showInTrackList: boolean
+  setShowInTrackList: (show: boolean) => void
   /** Spotify track ids currently on the "Not downloaded" list. */
   ids: Set<string>
   adding: Set<string>
@@ -11,6 +24,15 @@ interface WantedStoreState {
 }
 
 export const useWantedStore = create<WantedStoreState>((set, get) => ({
+  showInTrackList: readShow(),
+  setShowInTrackList: (show) => {
+    try {
+      window.localStorage.setItem(SHOW_KEY, show ? '1' : '0')
+    } catch {
+      // storage unavailable; the choice just won't persist
+    }
+    set({ showInTrackList: show })
+  },
   ids: new Set(),
   adding: new Set(),
   errorMessage: '',

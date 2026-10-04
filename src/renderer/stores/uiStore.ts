@@ -253,6 +253,24 @@ function readAnalyzerRackVisibilityPreference(): boolean {
   }
 }
 
+const SIDEBAR_EXPANDED_STORAGE_KEY = 'astra-sidebar-expanded-v1'
+
+function readSidebarExpandedPreference(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_EXPANDED_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function persistSidebarExpandedPreference(expanded: boolean): void {
+  try {
+    localStorage.setItem(SIDEBAR_EXPANDED_STORAGE_KEY, expanded ? '1' : '0')
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
 function persistAnalyzerRackVisibilityPreference(visible: boolean): void {
   try {
     localStorage.setItem(ANALYZER_RACK_VISIBILITY_STORAGE_KEY, visible ? '1' : '0')
@@ -435,6 +453,7 @@ function readLaunchInZoneModeFlag(): boolean {
 const initialWaveformTimeDisplayMode = readWaveformTimeDisplayModePreference()
 const initialAnalyzerHeightPx = readAnalyzerHeightPreference()
 const initialAnalyzerRackVisible = readAnalyzerRackVisibilityPreference()
+const initialSidebarExpanded = readSidebarExpandedPreference()
 const initialUIScalePercent = readUIScalePreference()
 const initialHomeGreetingTextMode = readHomeGreetingTextModePreference()
 const initialActivityIndicatorExperimentEnabled = readActivityIndicatorExperimentPreference()
@@ -467,6 +486,8 @@ interface UIStore {
   fullscreenLyricsVisible: boolean
   isAnalyzerEditMode: boolean
   isAnalyzerRackVisible: boolean
+  /** Wide left pane with the big cover (the old-Spotify layout). */
+  isSidebarExpanded: boolean
   isFullscreen: boolean
   openZoneDisplayOnLaunch: boolean
   parallaxExperimentEnabled: boolean
@@ -509,6 +530,7 @@ interface UIStore {
   showAnalyzerRack: () => void
   hideAnalyzerRack: () => void
   toggleAnalyzerRack: () => void
+  toggleSidebarExpanded: () => void
   setFullscreen: (fs: boolean) => void
   setOpenZoneDisplayOnLaunch: (enabled: boolean) => void
   setParallaxExperimentEnabled: (enabled: boolean) => void
@@ -570,6 +592,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   fullscreenLyricsVisible: false,
   isAnalyzerEditMode: false,
   isAnalyzerRackVisible: initialAnalyzerRackVisible,
+  isSidebarExpanded: initialSidebarExpanded,
   isFullscreen: false,
   openZoneDisplayOnLaunch: initialOpenZoneDisplayOnLaunch,
   parallaxExperimentEnabled: initialParallaxExperimentEnabled,
@@ -705,6 +728,11 @@ export const useUIStore = create<UIStore>((set, get) => ({
       isAnalyzerRackVisible: nextVisible,
       isAnalyzerEditMode: nextVisible ? s.isAnalyzerEditMode : false,
     }
+  }),
+  toggleSidebarExpanded: () => set((s) => {
+    const next = !s.isSidebarExpanded
+    persistSidebarExpandedPreference(next)
+    return { isSidebarExpanded: next }
   }),
   setFullscreen: (fs) => set({ isFullscreen: fs }),
   setOpenZoneDisplayOnLaunch: (enabled) => {

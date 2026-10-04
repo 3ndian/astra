@@ -18,6 +18,7 @@ interface SectionsStore {
   createSection: (name: string, kind?: SectionKind) => Promise<SectionConfig | null>
   renameSection: (id: string, name: string) => Promise<boolean>
   setSectionFlag: (id: string, flag: SectionFlagKey, value: boolean) => Promise<boolean>
+  setSectionColor: (id: string, color: string | null) => Promise<boolean>
   switchSection: (id: string) => Promise<boolean>
   deleteSection: (id: string) => Promise<boolean>
 }
@@ -70,6 +71,16 @@ export const useSectionsStore = create<SectionsStore>((set, get) => ({
 
   setSectionFlag: async (id, flag, value) => {
     const result = await window.electronAPI.sections.setFlag(id, flag, value)
+    if (!result.success) {
+      set({ errorMessage: result.error })
+      return false
+    }
+    set({ ...applyPayload(result), errorMessage: '' })
+    return true
+  },
+
+  setSectionColor: async (id, color) => {
+    const result = await window.electronAPI.sections.setColor(id, color)
     if (!result.success) {
       set({ errorMessage: result.error })
       return false

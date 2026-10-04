@@ -31,6 +31,7 @@ import {
   renameSection,
   setActiveSection,
   updateSectionFlag,
+  setSectionColor,
   DEFAULT_SECTION_ID,
   type SectionFlagKey,
   type SectionKind,
@@ -141,6 +142,12 @@ import {
   loadLyricsPopoutWindowPrefs,
   saveLyricsPopoutWindowPrefs,
 } from './services/lyricsPopoutWindowPrefs'
+import {
+  getDisplayWorkAreas as getScopeDisplayWorkAreas,
+  loadScopeWindowPrefs,
+  saveScopeWindowPrefs
+} from './services/scopePopoutWindowPrefs'
+import { resolveScopeWindowBounds, type ScopeWindowPrefs } from '../shared/scopePopout/windowBounds'
 import {
   MAIN_WINDOW_DEFAULT_HEIGHT,
   MAIN_WINDOW_DEFAULT_WIDTH,
@@ -336,6 +343,8 @@ let scopePopoutState: ScopePopoutState = { ...DEFAULT_SCOPE_POPOUT_STATE }
 let mainWindowPrefs: MainWindowPrefs | null = null
 let miniWindowPrefs: MiniPlayerWindowPrefs | null = null
 let lyricsPopoutWindowPrefs: LyricsPopoutWindowPrefs | null = null
+let scopeWindowPrefs: ScopeWindowPrefs | null = null
+const scopeWindowPersistTimers: Partial<Record<ScopeKind, ReturnType<typeof setTimeout>>> = {}
 let latestMiniPlayerSnapshot: MiniPlayerSnapshot | null = null
 let latestMiniPlayerQueueSnapshot: MiniPlayerQueueSnapshot | null = null
 let latestMiniVisualizerChunk: MiniPlayerVisualizerStreamChunk | null = null
@@ -2880,11 +2889,21 @@ async function createScopePopoutWindow(scope: ScopeKind): Promise<void> {
   }
 
   const defaults = SCOPE_POPOUT_DEFAULTS[scope]
-  const position = resolveScopePopoutPosition(scope)
+  scopeWindowPrefs = scopeWindowPrefs ?? await loadScopeWindowPrefs()
+  // Reopen where it was last time, as long as that spot still exists on a connected display.
+  const savedBounds = resolveScopeWindowBounds(scopeWindowPrefs[scope], getScopeDisplayWorkAreas(), {
+    minWidth: defaults.minWidth,
+    minHeight: defaults.minHeight,
+    defaultWidth: defaults.width,
+    defaultHeight: defaults.height
+  })
+  const position = savedBounds.x !== undefined && savedBounds.y !== undefined
+    ? { x: savedBounds.x, y: savedBounds.y }
+    : resolveScopePopoutPosition(scope)
 
   const scopeWindow = new BrowserWindow({
-    width: defaults.width,
-    height: defaults.height,
+    width: savedBounds.width,
+    height: savedBounds.height,
     minWidth: defaults.minWidth,
     minHeight: defaults.minHeight,
     frame: false,
@@ -2915,6 +2934,12 @@ async function createScopePopoutWindow(scope: ScopeKind): Promise<void> {
     scopeWindow.show()
   })
 
+  scopeWindow.on('move', () => scheduleScopeWindowPersist(scope))
+  scopeWindow.on('resize', () => scheduleScopeWindowPersist(scope))
+  scopeWindow.on('close', () => {
+    void persistScopeWindowBounds(scope)
+  })
+
   scopeWindow.on('closed', () => {
     scopePopoutWindows[scope] = null
     setScopePopoutOpenState(scope, false)
@@ -2939,6 +2964,59 @@ async function createScopePopoutWindow(scope: ScopeKind): Promise<void> {
       query: { window: 'scope-popout', scope }
     })
   }
+}
+
+async function persistScopeWindowBounds(scope: ScopeKind): Promise<void> {
+  const timer = scopeWindowPersistTimers[scope]
+  if (timer !== undefined) {
+    clearTimeout(timer)
+    delete scopeWindowPersistTimers[scope]
+  }
+  const scopeWindow = getScopePopoutWindow(scope)
+  if (!scopeWindow || scopeWindow.isMinimized() || scopeWindow.isFullScreen()) return
+  const bounds = scopeWindow.getBounds()
+  scopeWindowPrefs = { ...(scopeWindowPrefs ?? await loadScopeWindowPrefs()), [scope]: bounds }
+  try {
+    await saveScopeWindowPrefs(scopeWindowPrefs)
+  } catch (error) {
+    console.warn('Failed to persist scope popout window prefs:', error)
+  }
+}
+
+function scheduleScopeWindowPersist(scope: ScopeKind): void {
+  const existing = scopeWindowPersistTimers[scope]
+  if (existing !== undefined) clearTimeout(existing)
+  scopeWindowPersistTimers[scope] = setTimeout(() => {
+    delete scopeWindowPersistTimers[scope]
+    void persistScopeWindowBounds(scope)
+  }, 400)
+}
+
+/** Puts a detached visualizer back at its default size and position on a visible display. */
+async function resetScopePopoutWindow(scope: ScopeKind): Promise<void> {
+  const defaults = SCOPE_POPOUT_DEFAULTS[scope]
+  const remaining = { ...(scopeWindowPrefs ?? await loadScopeWindowPrefs()) }
+  delete remaining[scope]
+  scopeWindowPrefs = remaining
+  try {
+    await saveScopeWindowPrefs(remaining)
+  } catch (error) {
+    console.warn('Failed to clear scope popout window prefs:', error)
+  }
+
+  const scopeWindow = getScopePopoutWindow(scope)
+  if (!scopeWindow) return
+  if (scopeWindow.isMinimized()) scopeWindow.restore()
+  const position = resolveScopePopoutPosition(scope)
+  scopeWindow.setBounds({
+    x: position.x ?? scopeWindow.getBounds().x,
+    y: position.y ?? scopeWindow.getBounds().y,
+    width: defaults.width,
+    height: defaults.height
+  })
+  scopeWindow.show()
+  scopeWindow.focus()
+  await persistScopeWindowBounds(scope)
 }
 
 function recallScopePopoutWindow(scope: ScopeKind): void {
@@ -5365,6 +5443,14 @@ ipcMain.handle('scope-popout:recall', async (_event, rawScope: unknown) => {
   return getScopePopoutState()
 })
 
+ipcMain.handle('scope-popout:reset', async (_event, rawScope: unknown) => {
+  const scope = normalizeScopeKind(rawScope)
+  if (scope) {
+    await resetScopePopoutWindow(scope)
+  }
+  return getScopePopoutState()
+})
+
 ipcMain.handle('scope-popout:getState', () => {
   return getScopePopoutState()
 })
@@ -7262,6 +7348,13 @@ ipcMain.handle('sections:setFlag', async (_event, id: unknown, flag: unknown, va
     return { success: false, error: 'Unknown section setting.' }
   }
   const result = updateSectionFlag(getSectionRegistry(), String(id ?? ''), flag as SectionFlagKey, Boolean(value))
+  if (!result.ok) return { success: false, error: result.error }
+  await commitSectionRegistry(result.registry)
+  return { success: true, ...sectionsPayload() }
+})
+
+ipcMain.handle('sections:setColor', async (_event, id: unknown, color: unknown) => {
+  const result = setSectionColor(getSectionRegistry(), String(id ?? ''), typeof color === 'string' ? color : null)
   if (!result.ok) return { success: false, error: result.error }
   await commitSectionRegistry(result.registry)
   return { success: true, ...sectionsPayload() }

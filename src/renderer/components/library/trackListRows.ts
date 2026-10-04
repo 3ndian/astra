@@ -5,6 +5,8 @@ export interface TrackListDiscTrackLike {
 export type TrackListVirtualRow =
   | { kind: 'disc-header'; discNumber: number }
   | { kind: 'track'; trackIndex: number }
+  | { kind: 'placeholder-header'; count: number }
+  | { kind: 'placeholder'; placeholderIndex: number }
 
 function normalizeDiscNumber(value: number | null | undefined): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return 1
@@ -20,7 +22,23 @@ function shouldShowDiscHeaders(tracks: readonly TrackListDiscTrackLike[]): boole
   return false
 }
 
+/** Appends the greyed "Not downloaded" group (header + one row each) after the real tracks. */
 export function buildTrackListRows(
+  tracks: readonly TrackListDiscTrackLike[],
+  showDiscHeaders: boolean,
+  placeholderCount = 0
+): TrackListVirtualRow[] {
+  const rows = buildTrackRows(tracks, showDiscHeaders)
+  if (placeholderCount > 0) {
+    rows.push({ kind: 'placeholder-header', count: placeholderCount })
+    for (let placeholderIndex = 0; placeholderIndex < placeholderCount; placeholderIndex += 1) {
+      rows.push({ kind: 'placeholder', placeholderIndex })
+    }
+  }
+  return rows
+}
+
+function buildTrackRows(
   tracks: readonly TrackListDiscTrackLike[],
   showDiscHeaders: boolean
 ): TrackListVirtualRow[] {

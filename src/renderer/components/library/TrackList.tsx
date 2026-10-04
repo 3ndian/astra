@@ -15,6 +15,7 @@ import { useOpenAlbumInLibrary } from '../../hooks/useOpenAlbumInLibrary'
 import { Track } from '../../types/audio'
 import type { TrackSourceType } from '../../../types/subsonic'
 import { buildTrackListRows, type TrackListVirtualRow } from './trackListRows'
+import type { WantedTrackRow } from '../../../types/spotify'
 import { shouldSuppressTrackRowDrag } from './trackDragTarget'
 import AlbumArtwork from './AlbumArtwork'
 import ArtistNameLinks from './ArtistNameLinks'
@@ -110,11 +111,18 @@ interface TrackListProps {
   enableDefaultOrderReset?: boolean
   onDefaultOrderReset?: () => void
   searchQuery?: string
+  /** Greyed "Not downloaded" rows appended after the tracks (display only, never playable). */
+  placeholders?: readonly WantedTrackRow[]
+  placeholderThumbs?: Readonly<Record<number, string>>
+  onHidePlaceholders?: () => void
 }
 
 interface TrackListRowSharedProps {
   rows: TrackListVirtualRow[]
   tracks: DbTrack[]
+  placeholders: readonly WantedTrackRow[]
+  placeholderThumbs: Readonly<Record<number, string>>
+  onHidePlaceholders?: () => void
   showArtist: boolean
   showAlbum: boolean
   showTracklistBpmKey: boolean
@@ -167,6 +175,8 @@ interface TrackListRowSharedProps {
   selectedTrackPaths: Set<string>
 }
 
+const NO_PLACEHOLDERS: readonly WantedTrackRow[] = []
+const NO_PLACEHOLDER_THUMBS: Readonly<Record<number, string>> = {}
 const TRACK_ROW_HEIGHT_FALLBACK_PX = 48
 const TRACK_DISC_HEADER_HEIGHT_FALLBACK_PX = 30
 const TRACK_LIST_OVERSCAN_COUNT = 8
@@ -292,7 +302,7 @@ function getTrackListVirtualRowHeightPx(
   trackRowHeight: number,
   discHeaderHeight: number
 ): number {
-  if (row?.kind === 'disc-header') return discHeaderHeight
+  if (row?.kind === 'disc-header' || row?.kind === 'placeholder-header') return discHeaderHeight
   return trackRowHeight
 }
 
@@ -402,6 +412,9 @@ function TrackListRowRenderer({
   style,
   rows,
   tracks,
+  placeholders,
+  placeholderThumbs,
+  onHidePlaceholders,
   showArtist,
   showAlbum,
   showTracklistBpmKey,
@@ -457,6 +470,62 @@ function TrackListRowRenderer({
         <div className="track-disc-header" role="separator" aria-label={`Disc ${row.discNumber}`}>
           <span className="track-disc-header-label">Disc {row.discNumber}</span>
           <span className="track-disc-header-rule" aria-hidden="true" />
+        </div>
+      </div>
+    )
+  }
+
+  if (row.kind === 'placeholder-header') {
+    return (
+      <div className="track-list-item track-list-disc-header-item" style={style as CSSProperties} {...ariaAttributes}>
+        <div className="track-disc-header track-placeholder-header" role="separator" aria-label="Not downloaded">
+          <span className="track-disc-header-label">Not downloaded ({row.count})</span>
+          <span className="track-disc-header-rule" aria-hidden="true" />
+          {onHidePlaceholders && (
+            <button type="button" className="track-placeholder-hide" onClick={onHidePlaceholders}>Hide</button>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  if (row.kind === 'placeholder') {
+    const wanted = placeholders[row.placeholderIndex]
+    if (!wanted) return null
+    const thumb = placeholderThumbs[wanted.id]
+    return (
+      <div className="track-list-item track-list-placeholder-item" style={style as CSSProperties} {...ariaAttributes}>
+        <div
+          className="track-row track-row-placeholder"
+          aria-disabled="true"
+          title="Not in your library yet. Add the file and it will move into the list."
+        >
+          <div className="track-col track-col-num" />
+          <div className="track-col track-col-title">
+            <div className="track-title-cell">
+              <div className="track-artwork-thumb">
+                {thumb ? <img src={thumb} alt="" draggable={false} /> : <span aria-hidden="true">&#9835;</span>}
+              </div>
+              <span className="track-title">{highlightSearchMatch(wanted.title, searchQuery)}</span>
+            </div>
+          </div>
+          {showArtist && <div className="track-col track-col-artist">{wanted.artist}</div>}
+          {showAlbum && <div className="track-col track-col-album">{wanted.album}</div>}
+          {showTracklistGenre && <div className="track-col track-col-genre" />}
+          {showTracklistBpmKey && <div className="track-col track-col-bpm" />}
+          {showTracklistBpmKey && <div className="track-col track-col-key" />}
+          {ratingsEnabled && <div className="track-col track-col-rating" />}
+          <div className="track-col track-col-codec" />
+          {showAddedDate && (
+            <div className="track-col track-col-added">
+              <span className="track-added">{new Date(wanted.addedAtMs).toLocaleDateString(undefined, { month: 'numeric', day: 'numeric', year: '2-digit' })}</span>
+            </div>
+          )}
+          {showTracklistPlayCount && <div className="track-col track-col-plays" />}
+          <div className="track-col track-col-duration">
+            <span className="track-duration">{formatDuration(wanted.durationMs / 1000)}</span>
+          </div>
+          <div className="track-col track-col-actions" />
         </div>
       </div>
     )
@@ -814,7 +883,10 @@ export default function TrackList({
   onSortColumnToggle,
   enableDefaultOrderReset = false,
   onDefaultOrderReset,
-  searchQuery = ''
+  searchQuery = '',
+  placeholders = NO_PLACEHOLDERS,
+  placeholderThumbs = NO_PLACEHOLDER_THUMBS,
+  onHidePlaceholders
 }: TrackListProps) {
   const currentTrack = usePlayerStore((state) => state.currentTrack)
   const playbackState = usePlayerStore((state) => state.playbackState)
@@ -887,8 +959,8 @@ export default function TrackList({
   const consumedJumpRequestIdRef = useRef<number | null>(null)
 
   const virtualRows = useMemo(
-    () => buildTrackListRows(tracks, showDiscHeaders),
-    [showDiscHeaders, tracks]
+    () => buildTrackListRows(tracks, showDiscHeaders, placeholders.length),
+    [placeholders.length, showDiscHeaders, tracks]
   )
   const virtualRowIndexByTrackPath = useMemo(() => {
     const indexByPath = new Map<string, number>()
@@ -2030,6 +2102,9 @@ export default function TrackList({
   const rowProps = useMemo<TrackListRowSharedProps>(() => ({
     rows: virtualRows,
     tracks,
+    placeholders,
+    placeholderThumbs,
+    onHidePlaceholders,
     showArtist,
     showAlbum,
     showTracklistBpmKey,
@@ -2078,6 +2153,9 @@ export default function TrackList({
   }), [
     virtualRows,
     tracks,
+    placeholders,
+    placeholderThumbs,
+    onHidePlaceholders,
     showArtist,
     showAlbum,
     showTracklistBpmKey,

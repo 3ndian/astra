@@ -34,3 +34,8 @@ test('colours are stable per section', () => {
   assert.equal(sectionColor(books), '#e0a458')
   assert.equal(sectionColor(game), sectionColor({ ...game }))
 })
+
+test('a chosen colour wins over the automatic one', () => {
+  assert.equal(sectionColor({ id: 'music', kind: 'music', color: '#112233' }), '#112233')
+  assert.equal(sectionColor({ id: 'music', kind: 'music', color: 'blue' }), '#9b8cff')
+})

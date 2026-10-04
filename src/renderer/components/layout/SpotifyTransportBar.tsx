@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useSpotifyStore } from '../../stores/spotifyStore'
+import { useUIStore } from '../../stores/uiStore'
 
 function formatClock(totalSeconds: number): string {
   const safe = Math.max(0, Math.floor(totalSeconds))
@@ -12,6 +13,7 @@ export default function SpotifyTransportBar() {
   const status = useSpotifyStore((state) => state.status)
   const statusReceivedAt = useSpotifyStore((state) => state.statusReceivedAt)
   const sendCommand = useSpotifyStore((state) => state.sendCommand)
+  const isSidebarExpanded = useUIStore((state) => state.isSidebarExpanded)
 
   const [position, setPosition] = useState(status.positionSeconds)
   const [scrubbing, setScrubbing] = useState(false)
@@ -58,7 +60,7 @@ export default function SpotifyTransportBar() {
   }
 
   return (
-    <div className="transport-bar spotify-transport-bar">
+    <div className={`transport-bar spotify-transport-bar ${isSidebarExpanded ? 'spotify-bar-aligned' : ''}`.trim()}>
       <div className="spotify-bar-track">
         <div className="spotify-bar-cover">
           {status.artworkDataUrl ? <img src={status.artworkDataUrl} alt="Album art" /> : <div className="artwork-placeholder">&#9835;</div>}

@@ -35,4 +35,8 @@ test('saved data is cleaned on load', () => {
     odd: { view: 'home' }
   })
   assert.deepEqual(sanitizeMemory(null), {})
+  assert.deepEqual(sanitizeMemory({ a: { view: 'home', analyzerVisible: false }, b: { view: 'home', analyzerVisible: 'no' } }), {
+    a: { view: 'home', analyzerVisible: false },
+    b: { view: 'home' }
+  })
 })
