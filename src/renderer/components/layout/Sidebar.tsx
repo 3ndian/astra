@@ -9,6 +9,7 @@ import { buildPlaylistDisplaySections } from '../../utils/playlistSystem'
 import { formatPlaylistImportStatus } from '../../utils/playlistImportStatus'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import PlaylistCover from '../playlists/PlaylistCover'
+import SectionSwitcher from './SectionSwitcher'
 import { usePresence } from '../../hooks/usePresence'
 import type { DynamicPlaylistRulesV1 } from '../../../shared/playlists/dynamicPlaylist'
 
@@ -43,6 +44,18 @@ const baseNavItems: { id: AppView; label: string; icon: ReactNode }[] = [
         <path d="M10 20V4" />
         <path d="M16 20v-7" />
         <path d="M22 20H2" />
+      </svg>
+    ),
+  },
+  {
+    id: 'spotify',
+    label: 'Spotify',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="9" />
+        <path d="M7.5 9.5c3-1 6.5-.7 9 .8" />
+        <path d="M8 12.6c2.5-.7 5.2-.4 7.5.9" />
+        <path d="M8.6 15.5c2-.5 4-.2 5.8.7" />
       </svg>
     ),
   },
@@ -602,6 +615,7 @@ export default function Sidebar() {
       onBlur={handleSidebarTooltipBlur}
     >
       <div className="sidebar-scroll-area" data-controller-scroll>
+        <SectionSwitcher />
         <nav className="sidebar-nav" data-controller-tabstrip="sidebar-nav">
           {navItems.map((item) => (
             <button

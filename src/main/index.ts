@@ -7,6 +7,23 @@ import { execFile, execFileSync, spawn, type ChildProcessWithoutNullStreams, typ
 import { createHash, randomBytes, randomUUID } from 'crypto'
 import * as mm from 'music-metadata'
 import * as library from './services/library'
+import { loadSectionRegistry, saveSectionRegistry } from './services/sectionsStore'
+import { saveSidecarLrc } from './services/lyricsSidecarWriter'
+import { createSidecarLookup } from './services/lyricsSidecarLocation'
+import { SpotifyBridge } from './services/spotifyBridge'
+import type { SpotifyCommand } from '../types/spotify'
+import {
+  addSection,
+  getActiveSection,
+  removeSection,
+  renameSection,
+  setActiveSection,
+  updateSectionFlag,
+  DEFAULT_SECTION_ID,
+  type SectionFlagKey,
+  type SectionKind,
+  type SectionRegistry
+} from '../shared/sections/sections'
 import type { DynamicPlaylistRulesV1 } from '../shared/playlists/dynamicPlaylist'
 import type {
   ListeningSessionCheckpoint,
@@ -260,6 +277,12 @@ import { parseListeningImportFile } from '../shared/stats/listeningImportFile'
 
 // Check if running in development
 const isDev = process.env.NODE_ENV === 'development'
+// Dev runs get their own data folder so testing never touches an installed Astra's library,
+// settings or saved logins. (On macOS "astra" and "Astra" are the same folder, so without this
+// a dev build shares the installed app's data.) Set ASTRA_DEV_SHARED_DATA=1 to opt out.
+if (isDev && process.env.ASTRA_DEV_SHARED_DATA !== '1') {
+  app.setPath('userData', join(app.getPath('appData'), 'Astra-Dev'))
+}
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('enable-features', 'GlobalShortcutsPortal')
 }
@@ -284,6 +307,8 @@ const DIRTY_ENV_FALSE_VALUES = new Set(['0', 'false', 'no', 'clean'])
 let cachedBuildMetadata: ResolvedBuildMetadata | null = null
 
 let mainWindow: BrowserWindow | null = null
+let sectionRegistry: SectionRegistry | null = null
+let sectionSwitchInFlight: Promise<unknown> | null = null
 let miniWindow: BrowserWindow | null = null
 let lyricsPopoutWindow: BrowserWindow | null = null
 const scopePopoutWindows: Record<ScopeKind, BrowserWindow | null> = {
@@ -1263,7 +1288,41 @@ const lastFmService = new LastFmService({
   }
 })
 
+// Optional "Lyrics folder": sidecar .lrc files saved here (mirroring the library's folder layout)
+// instead of beside the audio. App-wide setting stored in the default DB's app_meta.
+const LYRICS_SIDECAR_FOLDER_META_KEY = 'lyrics_sidecar_folder_v1'
+let lyricsSidecarFolderCache: string | null | undefined
+
+function getLyricsSidecarFolder(): string | null {
+  if (lyricsSidecarFolderCache !== undefined) return lyricsSidecarFolderCache
+  try {
+    const stored = library.getAppMeta(LYRICS_SIDECAR_FOLDER_META_KEY)
+    lyricsSidecarFolderCache = stored && stored.trim() ? stored : null
+    return lyricsSidecarFolderCache
+  } catch {
+    // DB not ready yet; don't cache so a later call can retry.
+    return null
+  }
+}
+
+async function setLyricsSidecarFolder(folder: string | null): Promise<void> {
+  await library.setAppMeta(LYRICS_SIDECAR_FOLDER_META_KEY, folder ?? '')
+  lyricsSidecarFolderCache = folder
+}
+
+function getLyricsLibraryRoots(): string[] {
+  try {
+    return library.getLibraryFolders().map((folder) => folder.path)
+  } catch {
+    return []
+  }
+}
+
 const lyricsService = new LyricsService({
+  sidecarLookup: createSidecarLookup({
+    getLyricsRoot: getLyricsSidecarFolder,
+    getLibraryRoots: getLyricsLibraryRoots
+  }),
   enabled: lyricsOnlineEnabled,
   appVersion: app.getVersion(),
   lrclibBaseUrl: lyricsLrclibBaseUrl,
@@ -1339,7 +1398,7 @@ const SCOPE_POPOUT_DEFAULTS: Record<ScopeKind, {
 }
 
 // Supported audio formats
-const AUDIO_EXTENSIONS = ['mp3', 'flac', 'wav', 'ogg', 'aac', 'm4a', 'opus', 'wma', 'aiff', 'alac', 'ape', 'wv', 'iamf', 'mp4']
+const AUDIO_EXTENSIONS = ['mp3', 'flac', 'wav', 'ogg', 'aac', 'm4a', 'opus', 'wma', 'aiff', 'alac', 'ape', 'wv', 'iamf', 'mp4', 'm4b']
 const AUDIO_EXTENSION_SET = new Set(AUDIO_EXTENSIONS.map((extension) => `.${extension}`))
 const AUDIO_FILTERS = [
   {
@@ -4902,6 +4961,17 @@ app.whenReady().then(async () => {
 
   // Initialize library database
   await library.initDatabase()
+  sectionRegistry = await loadSectionRegistry()
+  if (sectionRegistry.activeId !== DEFAULT_SECTION_ID) {
+    try {
+      await library.switchLibrarySection(sectionRegistry.activeId)
+    } catch (error) {
+      console.warn('Failed to open the last active library section, falling back to Music:', error)
+      sectionRegistry = { ...sectionRegistry, activeId: DEFAULT_SECTION_ID }
+      await library.switchLibrarySection(DEFAULT_SECTION_ID)
+    }
+  }
+  library.setActiveLibrarySectionKind(getActiveSection(sectionRegistry).kind)
   companionApiReferenceSigner = await loadCompanionApiReferenceSigner()
   try {
     const orphanedRemoteDeleted = await library.cleanupOrphanedRemoteTracks()
@@ -5203,7 +5273,8 @@ ipcMain.on('mini-player:publishSnapshot', (_event, snapshot: MiniPlayerSnapshot)
   latestMiniPlayerSnapshot = mergedSnapshot
   localApiService.publishSnapshot(mergedSnapshot)
   phoneRemoteService.publishSnapshot(mergedSnapshot)
-  lastFmService.publishSnapshot(mergedSnapshot)
+  // Sections like Audiobooks opt out of scrobbling: Last.fm sees "nothing playing" instead.
+  lastFmService.publishSnapshot(activeSectionAllows('scrobble') ? mergedSnapshot : null)
   if (miniWindow && !miniWindow.isDestroyed()) {
     miniWindow.webContents.send('mini-player:snapshot', mergedSnapshot)
   }
@@ -5614,6 +5685,58 @@ ipcMain.handle('lyrics:refreshForTrack', async (_event, rawQuery: unknown) => {
     }
   }
   return lyricsService.getForTrack(query, { forceRefresh: true })
+})
+
+// Saves the track's current lyrics as a .lrc sidecar: in the Lyrics folder when one is set,
+// otherwise beside the audio file. Never modifies the audio file and never overwrites an existing sidecar.
+ipcMain.handle('lyrics:saveSidecar', async (_event, rawQuery: unknown) => {
+  const query = normalizeLyricsTrackQuery(rawQuery)
+  if (!query) return { status: 'skipped' as const, reason: 'no-lyrics' as const }
+  const lookup = await lyricsService.getForTrack(query)
+  if (lookup.status !== 'hit') return { status: 'skipped' as const, reason: 'no-lyrics' as const }
+  const lyricsRoot = getLyricsSidecarFolder()
+  return saveSidecarLrc(query.path, lookup.lyrics, {
+    lyricsFolder: lyricsRoot ? { root: lyricsRoot, libraryRoots: getLyricsLibraryRoots() } : null
+  })
+})
+
+const spotifyBridge = new SpotifyBridge()
+
+function normalizeSpotifyCommand(raw: unknown): SpotifyCommand | null {
+  if (!raw || typeof raw !== 'object') return null
+  const record = raw as { kind?: unknown; seconds?: unknown }
+  if (record.kind === 'playpause' || record.kind === 'next' || record.kind === 'previous') {
+    return { kind: record.kind }
+  }
+  if (record.kind === 'seek' && typeof record.seconds === 'number' && Number.isFinite(record.seconds)) {
+    return { kind: 'seek', seconds: Math.max(0, record.seconds) }
+  }
+  return null
+}
+
+ipcMain.handle('spotify:getStatus', () => spotifyBridge.getStatus())
+ipcMain.handle('spotify:command', async (_event, raw: unknown) => {
+  const command = normalizeSpotifyCommand(raw)
+  if (!command) return spotifyBridge.getStatus()
+  return spotifyBridge.sendCommand(command)
+})
+
+ipcMain.handle('lyrics:getSidecarFolder', () => ({ folder: getLyricsSidecarFolder() }))
+
+ipcMain.handle('lyrics:chooseSidecarFolder', async () => {
+  if (!mainWindow) return { folder: getLyricsSidecarFolder() }
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Choose Lyrics Folder',
+    properties: ['openDirectory', 'createDirectory']
+  })
+  if (result.canceled || result.filePaths.length === 0) return { folder: getLyricsSidecarFolder() }
+  await setLyricsSidecarFolder(result.filePaths[0])
+  return { folder: result.filePaths[0] }
+})
+
+ipcMain.handle('lyrics:clearSidecarFolder', async () => {
+  await setLyricsSidecarFolder(null)
+  return { folder: null }
 })
 
 ipcMain.handle('lyrics:getTrackOverride', (_event, rawTrackPath: unknown) => {
@@ -6923,6 +7046,114 @@ ipcMain.handle('library:getTrackOverrideSnapshots', (_event, trackPaths: string[
 ipcMain.handle('library:restoreTrackOverrides', async (_event, overrides: Record<string, library.TrackOverrideSnapshot | null>) => {
   return library.restoreTrackOverrides(overrides)
 })
+
+// ---- Library sections -------------------------------------------------------------------
+// Each section is a fully separate library (own database, folders, playlists, stats), so e.g.
+// audiobooks can never end up in the music queue or shuffle.
+
+// Whether the active section allows a given outward-facing feature (scrobbling, Discord, stats).
+// Defaults to allowed until the registry has loaded.
+function activeSectionAllows(flag: SectionFlagKey): boolean {
+  return sectionRegistry ? getActiveSection(sectionRegistry)[flag] : true
+}
+
+function getSectionRegistry(): SectionRegistry {
+  if (!sectionRegistry) {
+    throw new Error('Library sections are not initialized yet.')
+  }
+  return sectionRegistry
+}
+
+function sectionsPayload(): { registry: SectionRegistry; activeSectionId: string } {
+  const registry = getSectionRegistry()
+  return { registry, activeSectionId: library.getActiveLibrarySectionId() }
+}
+
+async function commitSectionRegistry(next: SectionRegistry): Promise<void> {
+  sectionRegistry = next
+  await saveSectionRegistry(next)
+  sendToWindow(mainWindow, 'sections:registryChanged', sectionsPayload())
+}
+
+ipcMain.handle('sections:get', () => sectionsPayload())
+
+ipcMain.handle('sections:create', async (_event, input: { name?: unknown; kind?: unknown }) => {
+  const kind: SectionKind | undefined =
+    input?.kind === 'music' || input?.kind === 'audiobook' || input?.kind === 'custom' ? input.kind : undefined
+  const result = addSection(getSectionRegistry(), { name: String(input?.name ?? ''), kind }, Date.now())
+  if (!result.ok) return { success: false, error: result.error }
+  await commitSectionRegistry(result.registry)
+  return { success: true, section: result.section, ...sectionsPayload() }
+})
+
+ipcMain.handle('sections:rename', async (_event, id: unknown, name: unknown) => {
+  const result = renameSection(getSectionRegistry(), String(id ?? ''), String(name ?? ''))
+  if (!result.ok) return { success: false, error: result.error }
+  await commitSectionRegistry(result.registry)
+  return { success: true, ...sectionsPayload() }
+})
+
+ipcMain.handle('sections:setFlag', async (_event, id: unknown, flag: unknown, value: unknown) => {
+  if (flag !== 'scrobble' && flag !== 'discordPresence' && flag !== 'listeningStats') {
+    return { success: false, error: 'Unknown section setting.' }
+  }
+  const result = updateSectionFlag(getSectionRegistry(), String(id ?? ''), flag as SectionFlagKey, Boolean(value))
+  if (!result.ok) return { success: false, error: result.error }
+  await commitSectionRegistry(result.registry)
+  return { success: true, ...sectionsPayload() }
+})
+
+ipcMain.handle('sections:switch', async (_event, id: unknown) => {
+  if (sectionSwitchInFlight) {
+    return { success: false, error: 'A section switch is already in progress.' }
+  }
+  const targetId = String(id ?? '')
+  const result = setActiveSection(getSectionRegistry(), targetId)
+  if (!result.ok) return { success: false, error: result.error }
+  if (library.getActiveLibrarySectionId() === targetId) {
+    return { success: true, ...sectionsPayload() }
+  }
+
+  const run = (async () => {
+    // Stop any scan running against the section we are leaving.
+    if (activeLibraryScanAbortController && !activeLibraryScanAbortController.signal.aborted) {
+      activeLibraryScanAbortController.abort()
+    }
+    await library.switchLibrarySection(targetId)
+    library.setActiveLibrarySectionKind(result.section.kind)
+    await commitSectionRegistry(result.registry)
+    // The renderer stops playback, clears the queue, and reloads library state on this event.
+    sendToWindow(mainWindow, 'sections:switched', sectionsPayload())
+  })()
+  sectionSwitchInFlight = run
+  try {
+    await run
+    return { success: true, ...sectionsPayload() }
+  } catch (error) {
+    console.error('Failed to switch library section:', error)
+    return { success: false, error: error instanceof Error ? error.message : 'Failed to switch section.' }
+  } finally {
+    sectionSwitchInFlight = null
+  }
+})
+
+ipcMain.handle('sections:delete', async (_event, id: unknown) => {
+  const targetId = String(id ?? '')
+  if (library.getActiveLibrarySectionId() === targetId) {
+    return { success: false, error: 'Switch to another section before deleting this one.' }
+  }
+  const result = removeSection(getSectionRegistry(), targetId)
+  if (!result.ok) return { success: false, error: result.error }
+  try {
+    await library.deleteLibrarySectionData(targetId)
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Failed to delete section data.' }
+  }
+  await commitSectionRegistry(result.registry)
+  return { success: true, ...sectionsPayload() }
+})
+
+ipcMain.handle('sections:getActive', () => getActiveSection(getSectionRegistry()))
 
 // Get library folders
 ipcMain.handle('library:getFolders', () => {
@@ -8278,6 +8509,9 @@ ipcMain.handle('library:getListeningHistoryStatus', () => {
 })
 
 ipcMain.handle('library:checkpointListeningSession', async (_event, checkpoint: ListeningSessionCheckpoint) => {
+  if (!activeSectionAllows('listeningStats')) {
+    return { accepted: false, qualifiedNow: false, status: library.getListeningHistoryStatus() }
+  }
   return library.checkpointListeningSession(checkpoint)
 })
 

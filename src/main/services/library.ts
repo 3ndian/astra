@@ -42,6 +42,7 @@ import {
   serializeArtistNames
 } from '../../shared/library/artistCredits'
 import { buildTrackSyncKey, normalizeSyncKeyPart } from '../../shared/sync/identity'
+import { DEFAULT_SECTION_ID, sectionDataSubdir } from '../../shared/sections/sections'
 import type {
   SyncFavorite,
   SyncKeyTombstone,
@@ -157,6 +158,19 @@ const AUDIO_EXTENSIONS = new Set([
   // files with an IAMF audio track are indexed — see extractMetadata).
   '.iamf', '.mp4'
 ])
+// Audiobook containers are only indexed in audiobook sections, so a stray .m4b in a music
+// folder can never end up in the music library (and thus never in a party queue).
+const AUDIOBOOK_ONLY_EXTENSIONS = new Set(['.m4b'])
+let activeSectionAcceptsAudiobooks = false
+
+export function setActiveLibrarySectionKind(kind: 'music' | 'audiobook' | 'custom'): void {
+  activeSectionAcceptsAudiobooks = kind === 'audiobook'
+}
+
+function isIndexableAudioExtension(ext: string): boolean {
+  return AUDIO_EXTENSIONS.has(ext) || (activeSectionAcceptsAudiobooks && AUDIOBOOK_ONLY_EXTENSIONS.has(ext))
+}
+
 const FOLDER_ARTWORK_BASENAME_PRIORITY = [
   'cover',
   'folder',
@@ -698,6 +712,28 @@ let dbPath: string = ''
 let artworkDir: string = ''
 let playlistCoverDir: string = ''
 let artistImageDir: string = ''
+
+// Library sections. Every section has its own database and image caches. The default
+// ("music") section keeps the legacy layout in the userData root. Its connection stays open
+// while another section is active because app-wide settings (Last.fm login, API tokens,
+// device pairings, ...) live in its app_meta table and must not be per-section.
+let activeSectionId: string = DEFAULT_SECTION_ID
+let defaultSectionDb: LibrarySqliteDatabase | null = null
+
+// app_meta keys that describe a section's own library contents. Everything else in app_meta
+// is application-wide and is always read from / written to the default section's database.
+const SECTION_SCOPED_META_KEYS: ReadonlySet<string> = new Set([
+  'listening_history_generation_v1',
+  'listening_history_started_at_v1',
+  'track_play_origins_backfilled_v1',
+  'library_latest_sync_summary_v1',
+  'listening_import_sources_v1'
+])
+
+function metaDatabaseForKey(key: string): LibrarySqliteDatabase | null {
+  if (SECTION_SCOPED_META_KEYS.has(key)) return db
+  return defaultSectionDb ?? db
+}
 let replayGainScanEnabled: boolean = true
 const SCAN_PARALLEL_MIN_FILES = 250
 const SCAN_PARALLEL_MIN_WORKERS = 2
@@ -1913,15 +1949,17 @@ function collectEligibleAlbumIdentityKeys(
 }
 
 // Initialize database
-export async function initDatabase(): Promise<void> {
-  const userDataPath = app.getPath('userData')
-  dbPath = join(userDataPath, 'library.db')
-  artworkDir = join(userDataPath, 'artwork')
-  playlistCoverDir = join(userDataPath, 'playlist-covers')
-  artistImageDir = join(userDataPath, 'artist-images')
+export async function initDatabase(sectionId: string = DEFAULT_SECTION_ID): Promise<void> {
+  const sectionRoot = join(app.getPath('userData'), ...sectionDataSubdir(sectionId))
+  activeSectionId = sectionId
+  dbPath = join(sectionRoot, 'library.db')
+  artworkDir = join(sectionRoot, 'artwork')
+  playlistCoverDir = join(sectionRoot, 'playlist-covers')
+  artistImageDir = join(sectionRoot, 'artist-images')
 
   // Create artwork and custom image directories.
   try {
+    await mkdir(sectionRoot, { recursive: true })
     await mkdir(artworkDir, { recursive: true })
     await mkdir(playlistCoverDir, { recursive: true })
     await mkdir(artistImageDir, { recursive: true })
@@ -2554,15 +2592,64 @@ export async function initDatabase(): Promise<void> {
   // folder reorganization in an older Astra version.
   reconcileMissingTrackReferencesByMetadata()
 
+  if (sectionId === DEFAULT_SECTION_ID) {
+    defaultSectionDb = db
+  }
+
   await saveDatabase()
+}
+
+export function getActiveLibrarySectionId(): string {
+  return activeSectionId
+}
+
+// Switch the library to another section. Closes the previous section's database (but never the
+// default section's, which holds app-wide settings) and opens the target. Callers are
+// responsible for stopping playback and cancelling scans first, and for telling the renderer to
+// reload its library state afterwards.
+export async function switchLibrarySection(sectionId: string): Promise<void> {
+  if (sectionId === activeSectionId && db) return
+
+  if (db && db !== defaultSectionDb) {
+    db.close()
+  }
+  db = null
+  invalidateLibraryTrackSnapshot()
+
+  if (sectionId === DEFAULT_SECTION_ID && defaultSectionDb) {
+    const sectionRoot = app.getPath('userData')
+    activeSectionId = DEFAULT_SECTION_ID
+    dbPath = join(sectionRoot, 'library.db')
+    artworkDir = join(sectionRoot, 'artwork')
+    playlistCoverDir = join(sectionRoot, 'playlist-covers')
+    artistImageDir = join(sectionRoot, 'artist-images')
+    db = defaultSectionDb
+    return
+  }
+
+  await initDatabase(sectionId)
+}
+
+// Delete a section's on-disk data (database and image caches). The default section cannot be
+// deleted, and the section must not be the active one.
+export async function deleteLibrarySectionData(sectionId: string): Promise<void> {
+  if (sectionId === DEFAULT_SECTION_ID) throw new Error('The default section cannot be deleted.')
+  if (sectionId === activeSectionId) throw new Error('Switch to another section before deleting this one.')
+  const sectionRoot = join(app.getPath('userData'), ...sectionDataSubdir(sectionId))
+  await rm(sectionRoot, { recursive: true, force: true })
 }
 
 // Close database
 export function closeDatabase(): void {
   if (db) {
     db.close()
-    db = null
   }
+  if (defaultSectionDb && defaultSectionDb !== db) {
+    defaultSectionDb.close()
+  }
+  db = null
+  defaultSectionDb = null
+  activeSectionId = DEFAULT_SECTION_ID
   invalidateLibraryTrackSnapshot()
 }
 
@@ -2571,15 +2658,17 @@ export function setReplayGainScanEnabled(enabled: boolean): void {
 }
 
 export function getAppMeta(key: string): string | null {
-  if (!db) return null
-  const row = db.get<{ value?: unknown }>('SELECT value FROM app_meta WHERE key = ? LIMIT 1', [key])
+  const metaDb = metaDatabaseForKey(key)
+  if (!metaDb) return null
+  const row = metaDb.get<{ value?: unknown }>('SELECT value FROM app_meta WHERE key = ? LIMIT 1', [key])
   return typeof row?.value === 'string' ? row.value : null
 }
 
 export async function setAppMeta(key: string, value: string): Promise<void> {
-  if (!db) return
+  const metaDb = metaDatabaseForKey(key)
+  if (!metaDb) return
   const now = Date.now()
-  db.run(
+  metaDb.run(
     `INSERT INTO app_meta (key, value, updated_at)
      VALUES (?, ?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
@@ -5867,7 +5956,7 @@ export async function listFolderSubdirectories(
           if (ce.isDirectory()) hasChildDirs = true
           else if (ce.isFile()) {
             const ext = extname(ce.name).toLowerCase()
-            if (AUDIO_EXTENSIONS.has(ext)) audioCount++
+            if (isIndexableAudioExtension(ext)) audioCount++
           }
         }
       } catch {
@@ -6445,7 +6534,7 @@ async function collectAudioFiles(
         await walk(fullPath)
       } else if (entry.isFile()) {
         const ext = extname(entry.name).toLowerCase()
-        if (AUDIO_EXTENSIONS.has(ext)) {
+        if (isIndexableAudioExtension(ext)) {
           files.push(fullPath)
         }
       }
@@ -8365,8 +8454,9 @@ function finiteTimestamp(value: unknown, fallback: number): number {
 }
 
 function writeAppMetaValue(key: string, value: string, updatedAt: number = Date.now()): void {
-  if (!db) return
-  db.run(
+  const metaDb = metaDatabaseForKey(key)
+  if (!metaDb) return
+  metaDb.run(
     `INSERT INTO app_meta (key, value, updated_at)
      VALUES (?, ?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,

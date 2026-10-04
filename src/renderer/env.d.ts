@@ -1,5 +1,6 @@
 /// <reference types="vite/client" />
 
+import type { SectionFlagKey, SectionKind, SectionsMutationResult, SectionsPayload } from '../types/sections'
 import { VisualizerDSP } from './audio/native/visualizer-dsp'
 import type {
     MiniPlayerCommand,
@@ -58,10 +59,13 @@ import type {
     LyricsManualImportResult,
     LyricsLookupResult,
     LyricsOffsetSetResult,
+    LyricsSidecarFolderState,
+    LyricsSidecarSaveResult,
     LyricsStatus,
     LyricsTrackOverride,
     LyricsTrackQuery
 } from '../types/lyrics'
+import type { SpotifyCommand, SpotifyStatus } from '../types/spotify'
 import type {
     JellyfinSource,
     JellyfinSourceCreateInput,
@@ -465,12 +469,20 @@ declare global {
                 resetToDefaults: () => Promise<LastFmStatus>
                 onStatus: (callback: (status: LastFmStatus) => void) => () => void
             }
+            spotify: {
+                getStatus: () => Promise<SpotifyStatus>
+                command: (command: SpotifyCommand) => Promise<SpotifyStatus>
+            }
             lyrics: {
                 getStatus: () => Promise<LyricsStatus>
                 setEnabled: (enabled: boolean) => Promise<LyricsStatus>
                 setLrclibBaseUrl: (baseUrl: string) => Promise<LyricsStatus>
                 getForTrack: (query: LyricsTrackQuery) => Promise<LyricsLookupResult>
                 refreshForTrack: (query: LyricsTrackQuery) => Promise<LyricsLookupResult>
+                saveSidecar: (query: LyricsTrackQuery) => Promise<LyricsSidecarSaveResult>
+                getSidecarFolder: () => Promise<LyricsSidecarFolderState>
+                chooseSidecarFolder: () => Promise<LyricsSidecarFolderState>
+                clearSidecarFolder: () => Promise<LyricsSidecarFolderState>
                 getTrackOverride: (trackPath: string) => Promise<LyricsTrackOverride>
                 importManualLyrics: (trackPaths: string[], lyricsText: string, format?: LyricsFormat) => Promise<LyricsManualImportResult>
                 clearManualLyrics: (trackPaths: string[]) => Promise<LyricsManualClearResult>
@@ -633,6 +645,16 @@ declare global {
             signalShare: {
                 copyPng: (bytes: Uint8Array) => Promise<boolean>
                 savePng: (bytes: Uint8Array, suggestedFileName: string) => Promise<string | null>
+            }
+            sections: {
+                get: () => Promise<SectionsPayload>
+                create: (input: { name: string; kind?: SectionKind }) => Promise<SectionsMutationResult>
+                rename: (id: string, name: string) => Promise<SectionsMutationResult>
+                setFlag: (id: string, flag: SectionFlagKey, value: boolean) => Promise<SectionsMutationResult>
+                switchTo: (id: string) => Promise<SectionsMutationResult>
+                remove: (id: string) => Promise<SectionsMutationResult>
+                onRegistryChanged: (callback: (payload: SectionsPayload) => void) => () => void
+                onSwitched: (callback: (payload: SectionsPayload) => void) => () => void
             }
             library: {
                 getTracks: () => Promise<DbTrack[]>

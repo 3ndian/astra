@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { usePlayerStore } from '../stores/playerStore'
+import { isSectionFlagEnabled } from '../stores/sectionsStore'
 import { useDiscordSettingsStore } from '../stores/discordSettingsStore'
 
 type PlayerSnapshot = ReturnType<typeof usePlayerStore.getState>
@@ -541,7 +542,8 @@ function buildPresenceUpdate(
   coverArtByTrackPath: Map<string, string>
 ): DiscordPresenceSnapshot {
   const { currentTrack, playbackState } = state
-  if (!currentTrack || playbackState === 'stopped') {
+  // Sections such as Audiobooks can opt out of showing on Discord.
+  if (!currentTrack || playbackState === 'stopped' || !isSectionFlagEnabled('discordPresence')) {
     return {
       key: 'stopped',
       payload: {

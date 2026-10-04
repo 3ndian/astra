@@ -31,6 +31,7 @@ import LyricsEditorPanel from './components/lyrics/LyricsEditorPanel'
 import SignalShareModal from './components/signal/SignalShareModal'
 import { useUIStore } from './stores/uiStore'
 import { useLibraryStore } from './stores/libraryStore'
+import { useSectionsStore } from './stores/sectionsStore'
 import { useRatingsStore } from './stores/ratingsStore'
 import { useAudioSettingsStore } from './stores/audioSettingsStore'
 import { useDiscordSettingsStore } from './stores/discordSettingsStore'
@@ -324,6 +325,7 @@ function App() {
     void usePhoneRemoteSettingsStore.getState().init()
     void useParallaxStore.getState().init()
     void useLastFmSettingsStore.getState().init()
+    void useSectionsStore.getState().init()
     void useLyricsStore.getState().init()
     void useSubsonicSettingsStore.getState().init()
     void useJellyfinSettingsStore.getState().init()
@@ -409,8 +411,24 @@ function App() {
       void useLibraryStore.getState().loadFavorites()
       void usePlaylistStore.getState().loadPlaylists()
     })
+    // Switching library sections swaps the whole library underneath us: stop playback, drop
+    // the queue, and reload everything from the newly opened section.
+    const unsubscribeSectionSwitched = window.electronAPI.sections.onSwitched((payload) => {
+      void (async () => {
+        usePlayerStore.getState().resetPlaybackForSectionSwitch()
+        useUIStore.getState().setActiveView('home')
+        try {
+          await useLibraryStore.getState().loadLibrary()
+          await usePlaylistStore.getState().loadPlaylists()
+          await useRatingsStore.getState().loadRatings()
+        } catch (error) {
+          console.error(`Failed to load library section "${payload.activeSectionId}":`, error)
+        }
+      })()
+    })
     return () => {
       didUnmount = true
+      unsubscribeSectionSwitched()
       unsubscribeFileCreatedAtBackfill()
       unsubscribeBackfill()
       unsubscribeExternalLibraryMutation()

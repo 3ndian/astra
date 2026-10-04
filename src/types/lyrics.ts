@@ -111,3 +111,16 @@ export interface LyricsOffsetSetResult {
   updated: number
   offsetMs: number
 }
+
+// Result of saving fetched lyrics as a `.lrc` sidecar file next to the audio file.
+// Astra never modifies the audio file itself, and never overwrites an existing sidecar.
+export type LyricsSidecarSaveResult =
+  | { status: 'saved'; path: string; kind: 'synced' | 'plain' }
+  | { status: 'exists'; path: string }
+  | { status: 'skipped'; reason: 'no-lyrics' | 'not-local' | 'audio-missing' | 'already-sidecar' | 'outside-library' }
+  | { status: 'error'; message: string }
+
+// Where Astra keeps lyrics sidecar files. Null folder = beside each audio file (default).
+export interface LyricsSidecarFolderState {
+  folder: string | null
+}

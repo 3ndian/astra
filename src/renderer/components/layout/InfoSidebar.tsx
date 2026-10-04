@@ -42,6 +42,14 @@ export default function InfoSidebar() {
   const loadLyricsForTrack = useLyricsStore((s) => s.loadForTrack)
   const refreshLyricsForTrack = useLyricsStore((s) => s.refreshForTrack)
   const lyricsDisplaySettings = useLyricsDisplaySettingsStore((s) => s.settings)
+  const [sidecarSaving, setSidecarSaving] = useState(false)
+  const [lyricsMenuOpen, setLyricsMenuOpen] = useState(false)
+  const [sidecarMessage, setSidecarMessage] = useState<string | null>(null)
+
+  useEffect(() => {
+    setSidecarMessage(null)
+    setLyricsMenuOpen(false)
+  }, [currentTrack?.path])
 
   const lyricsQuery = useMemo(() => buildLyricsQuery(currentTrack), [currentTrack])
   const activeLyricsResult = useMemo(() => (
@@ -100,6 +108,38 @@ export default function InfoSidebar() {
   const refreshLyrics = () => {
     if (!lyricsQuery) return
     void refreshLyricsForTrack(lyricsQuery)
+  }
+
+  const lyricsSource = activeLyricsResult && activeLyricsResult.status === 'hit'
+    ? activeLyricsResult.lyrics.source
+    : null
+  const canSaveSidecar = Boolean(currentTrack && lyricsSource && lyricsSource !== 'lrc' && lyricsSource !== 'xlrc')
+
+  const saveSidecar = async () => {
+    if (!lyricsQuery || sidecarSaving) return
+    setSidecarSaving(true)
+    setSidecarMessage(null)
+    try {
+      const result = await window.electronAPI.lyrics.saveSidecar(lyricsQuery)
+      if (result.status === 'saved') {
+        setSidecarMessage('Saved .lrc')
+        void loadLyricsForTrack(lyricsQuery)
+      } else if (result.status === 'exists') {
+        setSidecarMessage('A .lrc already exists')
+      } else if (result.status === 'skipped') {
+        setSidecarMessage(
+          result.reason === 'outside-library'
+            ? 'Track is outside your library folders'
+            : 'Nothing to save'
+        )
+      } else {
+        setSidecarMessage('Could not save .lrc')
+      }
+    } catch {
+      setSidecarMessage('Could not save .lrc')
+    } finally {
+      setSidecarSaving(false)
+    }
   }
 
   const handleLyricsLineSeek = useCallback((seekTimeSeconds: number) => {
@@ -187,6 +227,58 @@ export default function InfoSidebar() {
     )
   }
 
+  const lyricsPanel = (
+      <div className="info-lyrics-panel info-tab-enter-right">
+        <div className="info-sidebar-actions">
+          {followPaused && hasSyncedLyrics && (
+            <button
+              type="button"
+              className="info-lyrics-recenter-btn"
+              onClick={handleRecenter}
+            >
+              Recenter
+            </button>
+          )}
+          <div className="info-lyrics-menu">
+            <button
+              type="button"
+              className="info-lyrics-menu-btn"
+              onClick={() => setLyricsMenuOpen((open) => !open)}
+              aria-label="Lyrics options"
+              aria-haspopup="menu"
+              aria-expanded={lyricsMenuOpen}
+              title="Lyrics options"
+            >
+              {lyricsIsLoading || sidecarSaving ? '…' : '⋯'}
+            </button>
+            {lyricsMenuOpen && (
+              <div className="info-lyrics-menu-popover" role="menu">
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => { setLyricsMenuOpen(false); refreshLyrics() }}
+                  disabled={!currentTrack || lyricsIsLoading}
+                >
+                  Refresh lyrics
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => { setLyricsMenuOpen(false); void saveSidecar() }}
+                  disabled={!canSaveSidecar || sidecarSaving}
+                  title="Save these lyrics as a .lrc file (never modifies the audio file)"
+                >
+                  Save as .lrc
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+        {sidecarMessage && <p className="info-lyrics-meta">{sidecarMessage}</p>}
+        {renderLyricsContent()}
+      </div>
+  )
+
   return (
     <aside className={`info-sidebar${activeTab === 'lyrics' ? ' info-sidebar-lyrics-active' : ''}`}>
       <div className="info-sidebar-header">
@@ -234,30 +326,7 @@ export default function InfoSidebar() {
         </button>
       </div>
 
-      {activeTab === 'lyrics' ? (
-        <div className="info-lyrics-panel">
-          <div className="info-sidebar-actions">
-            {followPaused && hasSyncedLyrics && (
-              <button
-                type="button"
-                className="info-lyrics-recenter-btn"
-                onClick={handleRecenter}
-              >
-                Recenter
-              </button>
-            )}
-            <button
-              type="button"
-              className="info-lyrics-refresh-btn"
-              onClick={refreshLyrics}
-              disabled={!currentTrack || lyricsIsLoading}
-            >
-              {lyricsIsLoading ? 'Loading...' : 'Refresh'}
-            </button>
-          </div>
-          {renderLyricsContent()}
-        </div>
-      ) : currentTrack ? (
+      {currentTrack ? (
         <>
           <div className="info-sidebar-artwork">
             {currentTrack.artworkHash ? (
@@ -284,7 +353,9 @@ export default function InfoSidebar() {
             </div>
           </div>
 
-          <div className="info-sidebar-meta">
+          {activeTab === 'lyrics' ? lyricsPanel : (
+          <>
+          <div className="info-sidebar-meta info-tab-enter-left">
             <div className="info-meta-row">
               <span className="info-meta-label">Album</span>
               {currentTrack.album.trim().length > 0 ? (
@@ -327,7 +398,7 @@ export default function InfoSidebar() {
             )}
           </div>
 
-          <div className="info-sidebar-technical">
+          <div className="info-sidebar-technical info-tab-enter-left info-tab-enter-delay-1">
             {currentTrack.format && (
               <div className="info-tech-item">
                 <div className="info-tech-label">Codec</div>
@@ -372,7 +443,7 @@ export default function InfoSidebar() {
             )}
           </div>
 
-          <div className="info-sidebar-path">
+          <div className="info-sidebar-path info-tab-enter-left info-tab-enter-delay-2">
             <div className="info-path-header">
               <div className="info-tech-label">File Path</div>
               <button
@@ -389,7 +460,11 @@ export default function InfoSidebar() {
             </div>
             <div className="info-path-value">{currentTrack.path}</div>
           </div>
+          </>
+          )}
         </>
+      ) : activeTab === 'lyrics' ? (
+        lyricsPanel
       ) : (
         <div className="info-sidebar-empty">
           <p>No track selected</p>

@@ -12,6 +12,8 @@
     "test": "node ./scripts/node/run-tests.cjs",
     "test:node": "node ./scripts/node/run-tests.cjs --node",
     "test:electron": "node ./scripts/node/run-tests.cjs --electron",
+    "test:lyrics-sidecar": "node --experimental-strip-types --experimental-default-type=module --loader ./scripts/node/resolve-ts-loader.mjs --test src/shared/lyrics/sidecarExport.test.ts src/main/services/lyricsSidecarWriter.test.ts src/main/services/lyricsSidecarLocation.test.ts",
+    "test:spotify": "node --experimental-strip-types --experimental-default-type=module --test src/shared/spotify/spotifyStatus.test.ts",
     "test:album-eligibility": "node --experimental-strip-types --experimental-default-type=module --test src/shared/library/albumEligibility.test.ts",
     "test:album-grouping": "node --experimental-strip-types --experimental-default-type=module --test src/shared/library/albumGrouping.test.ts",
     "test:artist-images": "node --experimental-strip-types --experimental-default-type=module --test src/shared/library/artistImages.test.ts",
@@ -198,6 +200,9 @@
       "icon": "resources/icon.icns",
       "category": "public.app-category.music",
       "hardenedRuntime": true,
+      "extendInfo": {
+        "NSAppleEventsUsageDescription": "Astra uses this to show and control what is playing in the Spotify app."
+      },
       "entitlements": "resources/entitlements.mac.plist",
       "entitlementsInherit": "resources/entitlements.mac.inherit.plist"
     },

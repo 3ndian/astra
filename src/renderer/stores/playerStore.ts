@@ -173,6 +173,9 @@ interface PlayerStore {
   moveUpcomingItem: (queueId: string, toIndex: number) => void
   removeUpcomingItem: (queueId: string) => void
   clearAllQueues: () => void
+  // Stops playback and drops the current track, queue and history entirely. Used when the
+  // active library section changes so nothing from the old section can keep playing or queue up.
+  resetPlaybackForSectionSwitch: () => void
   playNext: () => Promise<void>
   playPrevious: () => Promise<void>
   playQueuedItem: (queueId: string, options?: { manualStart?: boolean }) => Promise<void>
@@ -2304,6 +2307,38 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         queueContextLabel: currentItem?.contextLabel ?? null,
         playbackHistory: [],
         currentTrackSource: currentItem?.origin ?? (state.currentTrack ? 'standalone' : 'standalone')
+      })
+    },
+
+    resetPlaybackForSectionSwitch: () => {
+      invalidateLoadRequest()
+      pendingManualLoadCueTrack = null
+      finalizeRecentPlaySession()
+      clearBufferedNextTrack()
+      audioEngine.stop()
+      set({
+        currentTrack: null,
+        currentTrackSource: 'standalone',
+        playbackState: 'stopped',
+        currentTime: 0,
+        duration: 0,
+        waveformData: null,
+        waveformBufferedRatio: 1,
+        waveformAnalyzedRatio: 1,
+        remoteLoadProgress: null,
+        loadingStatus: null,
+        remoteBufferedSeconds: 0,
+        remoteStreamSessionId: null,
+        restoredTrackNeedsLoad: false,
+        restoredPlaybackTime: null,
+        queueItems: [],
+        baseUpcomingQueueIds: [],
+        upcomingQueueIds: [],
+        currentQueueItemId: null,
+        queueSourcePlaylistId: null,
+        queueSourceContext: null,
+        queueContextLabel: null,
+        playbackHistory: []
       })
     },
 

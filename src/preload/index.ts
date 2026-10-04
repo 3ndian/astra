@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webFrame } from 'electron'
+import type { SectionFlagKey, SectionKind, SectionsMutationResult, SectionsPayload } from '../types/sections'
 import { join } from 'path'
 import { readFile } from 'fs/promises'
 import { getHeapSpaceStatistics } from 'v8'
@@ -67,10 +68,13 @@ import type {
   LyricsManualImportResult,
   LyricsLookupResult,
   LyricsOffsetSetResult,
+  LyricsSidecarFolderState,
+  LyricsSidecarSaveResult,
   LyricsStatus,
   LyricsTrackOverride,
   LyricsTrackQuery
 } from '../types/lyrics'
+import type { SpotifyCommand, SpotifyStatus } from '../types/spotify'
 import type {
   JellyfinSource,
   JellyfinSourceCreateInput,
@@ -1112,6 +1116,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
+  spotify: {
+    getStatus: (): Promise<SpotifyStatus> => ipcRenderer.invoke('spotify:getStatus'),
+    command: (command: SpotifyCommand): Promise<SpotifyStatus> => ipcRenderer.invoke('spotify:command', command)
+  },
+
   lyrics: {
     getStatus: (): Promise<LyricsStatus> => ipcRenderer.invoke('lyrics:getStatus'),
     setEnabled: (enabled: boolean): Promise<LyricsStatus> => ipcRenderer.invoke('lyrics:setEnabled', enabled),
@@ -1120,6 +1129,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getForTrack: (query: LyricsTrackQuery): Promise<LyricsLookupResult> => ipcRenderer.invoke('lyrics:getForTrack', query),
     refreshForTrack: (query: LyricsTrackQuery): Promise<LyricsLookupResult> =>
       ipcRenderer.invoke('lyrics:refreshForTrack', query),
+    saveSidecar: (query: LyricsTrackQuery): Promise<LyricsSidecarSaveResult> =>
+      ipcRenderer.invoke('lyrics:saveSidecar', query),
+    getSidecarFolder: (): Promise<LyricsSidecarFolderState> => ipcRenderer.invoke('lyrics:getSidecarFolder'),
+    chooseSidecarFolder: (): Promise<LyricsSidecarFolderState> => ipcRenderer.invoke('lyrics:chooseSidecarFolder'),
+    clearSidecarFolder: (): Promise<LyricsSidecarFolderState> => ipcRenderer.invoke('lyrics:clearSidecarFolder'),
     getTrackOverride: (trackPath: string): Promise<LyricsTrackOverride> =>
       ipcRenderer.invoke('lyrics:getTrackOverride', trackPath),
     importManualLyrics: (trackPaths: string[], lyricsText: string, format?: LyricsFormat): Promise<LyricsManualImportResult> =>
@@ -1273,6 +1287,29 @@ contextBridge.exposeInMainWorld('electronAPI', {
     copyPng: (bytes: Uint8Array) => ipcRenderer.invoke('signal-share:copy-png', bytes) as Promise<boolean>,
     savePng: (bytes: Uint8Array, suggestedFileName: string) =>
       ipcRenderer.invoke('signal-share:save-png', bytes, suggestedFileName) as Promise<string | null>
+  },
+
+  // Library sections (separate libraries: music, audiobooks, custom)
+  sections: {
+    get: (): Promise<SectionsPayload> => ipcRenderer.invoke('sections:get'),
+    create: (input: { name: string; kind?: SectionKind }): Promise<SectionsMutationResult> =>
+      ipcRenderer.invoke('sections:create', input),
+    rename: (id: string, name: string): Promise<SectionsMutationResult> =>
+      ipcRenderer.invoke('sections:rename', id, name),
+    setFlag: (id: string, flag: SectionFlagKey, value: boolean): Promise<SectionsMutationResult> =>
+      ipcRenderer.invoke('sections:setFlag', id, flag, value),
+    switchTo: (id: string): Promise<SectionsMutationResult> => ipcRenderer.invoke('sections:switch', id),
+    remove: (id: string): Promise<SectionsMutationResult> => ipcRenderer.invoke('sections:delete', id),
+    onRegistryChanged: (callback: (payload: SectionsPayload) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: SectionsPayload) => callback(payload)
+      ipcRenderer.on('sections:registryChanged', handler)
+      return () => ipcRenderer.removeListener('sections:registryChanged', handler)
+    },
+    onSwitched: (callback: (payload: SectionsPayload) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: SectionsPayload) => callback(payload)
+      ipcRenderer.on('sections:switched', handler)
+      return () => ipcRenderer.removeListener('sections:switched', handler)
+    }
   },
 
   // Library operations
@@ -1771,12 +1808,20 @@ declare global {
         resetToDefaults: () => Promise<LastFmStatus>
         onStatus: (callback: (status: LastFmStatus) => void) => () => void
       }
+      spotify: {
+        getStatus: () => Promise<SpotifyStatus>
+        command: (command: SpotifyCommand) => Promise<SpotifyStatus>
+      }
       lyrics: {
         getStatus: () => Promise<LyricsStatus>
         setEnabled: (enabled: boolean) => Promise<LyricsStatus>
         setLrclibBaseUrl: (baseUrl: string) => Promise<LyricsStatus>
         getForTrack: (query: LyricsTrackQuery) => Promise<LyricsLookupResult>
         refreshForTrack: (query: LyricsTrackQuery) => Promise<LyricsLookupResult>
+        saveSidecar: (query: LyricsTrackQuery) => Promise<LyricsSidecarSaveResult>
+        getSidecarFolder: () => Promise<LyricsSidecarFolderState>
+        chooseSidecarFolder: () => Promise<LyricsSidecarFolderState>
+        clearSidecarFolder: () => Promise<LyricsSidecarFolderState>
         getTrackOverride: (trackPath: string) => Promise<LyricsTrackOverride>
         importManualLyrics: (trackPaths: string[], lyricsText: string, format?: LyricsFormat) => Promise<LyricsManualImportResult>
         clearManualLyrics: (trackPaths: string[]) => Promise<LyricsManualClearResult>
@@ -1853,6 +1898,18 @@ declare global {
       signalShare: {
         copyPng: (bytes: Uint8Array) => Promise<boolean>
         savePng: (bytes: Uint8Array, suggestedFileName: string) => Promise<string | null>
+      }
+
+      // Library sections (separate libraries: music, audiobooks, custom)
+      sections: {
+        get: () => Promise<SectionsPayload>
+        create: (input: { name: string; kind?: SectionKind }) => Promise<SectionsMutationResult>
+        rename: (id: string, name: string) => Promise<SectionsMutationResult>
+        setFlag: (id: string, flag: SectionFlagKey, value: boolean) => Promise<SectionsMutationResult>
+        switchTo: (id: string) => Promise<SectionsMutationResult>
+        remove: (id: string) => Promise<SectionsMutationResult>
+        onRegistryChanged: (callback: (payload: SectionsPayload) => void) => () => void
+        onSwitched: (callback: (payload: SectionsPayload) => void) => () => void
       }
 
       // Library operations

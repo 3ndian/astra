@@ -535,6 +535,7 @@ export default function SettingsView() {
     lyricsDisplaySettings.translationLanguagePriority.join(', ')
   ))
   const [lyricsLrclibBaseUrlInput, setLyricsLrclibBaseUrlInput] = useState(LRCLIB_OFFICIAL_BASE_URL)
+  const [lyricsSidecarFolder, setLyricsSidecarFolder] = useState<string | null>(null)
   const [showBitPerfectWarning, setShowBitPerfectWarning] = useState(false)
   const [dontShowBitPerfectWarningAgain, setDontShowBitPerfectWarningAgain] = useState(false)
   const [bitPerfectWarningDismissed, setBitPerfectWarningDismissed] = useState(() => {
@@ -725,6 +726,14 @@ export default function SettingsView() {
   useEffect(() => {
     setLyricsTranslationPriorityInput(lyricsDisplaySettings.translationLanguagePriority.join(', '))
   }, [lyricsDisplaySettings.translationLanguagePriority])
+
+  useEffect(() => {
+    let cancelled = false
+    void window.electronAPI.lyrics.getSidecarFolder().then((state) => {
+      if (!cancelled) setLyricsSidecarFolder(state.folder)
+    }).catch(() => undefined)
+    return () => { cancelled = true }
+  }, [])
 
   useEffect(() => {
     if (!lyricsStatus?.lrclibBaseUrl) return
@@ -2345,6 +2354,31 @@ export default function SettingsView() {
                       spellCheck={false}
                     />
                   </label>
+                  <div className="settings-field">
+                    <span className="settings-field-label">Lyrics Folder (.lrc files)</span>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <span style={{ opacity: 0.8, wordBreak: 'break-all' }}>
+                        {lyricsSidecarFolder ?? 'Not set: saved next to each audio file'}
+                      </span>
+                      <button
+                        className="settings-btn"
+                        onClick={() => void window.electronAPI.lyrics.chooseSidecarFolder().then((state) => setLyricsSidecarFolder(state.folder))}
+                      >
+                        Choose...
+                      </button>
+                      {lyricsSidecarFolder && (
+                        <button
+                          className="settings-btn"
+                          onClick={() => void window.electronAPI.lyrics.clearSidecarFolder().then((state) => setLyricsSidecarFolder(state.folder))}
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                    <span style={{ opacity: 0.6, fontSize: 12 }}>
+                      Mirrors your library's folder layout. Audio files are never modified.
+                    </span>
+                  </div>
                   <div className="settings-field settings-field-inline">
                     <span className="settings-field-label">Word Timing</span>
                     <button
