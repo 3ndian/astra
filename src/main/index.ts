@@ -147,6 +147,8 @@ import {
   loadScopeWindowPrefs,
   saveScopeWindowPrefs
 } from './services/scopePopoutWindowPrefs'
+import { registerMilkdropIpc } from './services/milkdropPresets'
+import { normalizeSpotifyPlaylistEntryRequest } from '../shared/spotify/playlistEntry'
 import { resolveScopeWindowBounds, type ScopeWindowPrefs } from '../shared/scopePopout/windowBounds'
 import {
   MAIN_WINDOW_DEFAULT_HEIGHT,
@@ -5443,6 +5445,8 @@ ipcMain.handle('scope-popout:recall', async (_event, rawScope: unknown) => {
   return getScopePopoutState()
 })
 
+registerMilkdropIpc(() => mainWindow)
+
 ipcMain.handle('scope-popout:reset', async (_event, rawScope: unknown) => {
   const scope = normalizeScopeKind(rawScope)
   if (scope) {
@@ -8933,6 +8937,18 @@ ipcMain.handle('library:getPlaylistTrackEntries', (_event, playlistId: number) =
 ipcMain.handle('library:addToPlaylist', async (_event, playlistId: number, trackPaths: string[]) => {
   await library.addToPlaylist(playlistId, trackPaths)
   publishCompanionPlaylistEvent(playlistId, 'items-changed')
+})
+
+ipcMain.handle('library:addSpotifyTrackToPlaylist', async (_event, raw: unknown) => {
+  const request = normalizeSpotifyPlaylistEntryRequest(raw)
+  if (!request) return { status: 'error', message: 'That song cannot be added.' } as const
+  try {
+    const status = await library.addSpotifyPlaceholderToPlaylist(request.playlistId, request)
+    if (status === 'added') publishCompanionPlaylistEvent(request.playlistId, 'items-changed')
+    return { status } as const
+  } catch (error) {
+    return { status: 'error', message: error instanceof Error ? error.message : 'Could not add that song.' } as const
+  }
 })
 
 ipcMain.handle('library:removeFromPlaylist', async (_event, playlistId: number, trackPath: string) => {

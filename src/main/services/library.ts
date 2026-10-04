@@ -10978,6 +10978,28 @@ export async function addToPlaylist(playlistId: number, trackPaths: string[]): P
   await addPlaylistEntries(playlistId, trackPaths.map((trackPath) => ({ trackPath })))
 }
 
+/** Saves a Spotify song into a normal playlist as a "missing" entry; it links to the real file once imported. */
+export async function addSpotifyPlaceholderToPlaylist(
+  playlistId: number,
+  entry: { spotifyTrackId: string; title: string; artist: string; album: string }
+): Promise<'added' | 'exists'> {
+  if (!db) return 'exists'
+  assertNormalPlaylist(playlistId, 'accept manual tracks')
+  const trackPath = `spotify:track:${entry.spotifyTrackId}`
+  const existing = db.get<{ id?: unknown }>(
+    'SELECT id FROM playlist_tracks WHERE playlist_id = ? AND track_path = ? LIMIT 1',
+    [playlistId, trackPath]
+  )
+  if (existing) return 'exists'
+  await addPlaylistEntries(playlistId, [{
+    trackPath,
+    fallbackTitle: entry.title,
+    fallbackArtist: entry.artist,
+    fallbackAlbum: entry.album
+  }])
+  return 'added'
+}
+
 export async function removeFromPlaylist(playlistId: number, trackPath: string): Promise<void> {
   if (!db) return
   assertNormalPlaylist(playlistId, 'remove tracks manually')

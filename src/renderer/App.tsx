@@ -446,7 +446,9 @@ function App() {
             view: useUIStore.getState().activeView,
             libraryViewMode: useLibraryStore.getState().viewMode,
             playlistId: usePlaylistStore.getState().selectedPlaylistId,
-            analyzerVisible: useUIStore.getState().isAnalyzerRackVisible
+            analyzerVisible: useUIStore.getState().isAnalyzerRackVisible,
+            folderExpanded: [...useLibraryStore.getState().folderViewExpandedPaths],
+            folderScrollTop: useLibraryStore.getState().folderViewScrollTop
           })
           try {
             window.localStorage.setItem(SECTION_VIEW_MEMORY_KEY, JSON.stringify(sectionViewMemory))
@@ -462,6 +464,9 @@ function App() {
         useUIStore.getState().setActiveView(quickPlan.view === 'library' && remembered?.view === 'playlist' ? 'home' : (quickPlan.view as AppView))
         try {
           await useLibraryStore.getState().loadLibrary()
+          // Folders view: show the folders that were open in this section (empty for a fresh section).
+          useLibraryStore.getState().setFolderViewExpandedPaths(remembered?.folderExpanded ?? [])
+          useLibraryStore.getState().setFolderViewScrollTop(remembered?.folderScrollTop ?? 0)
           await usePlaylistStore.getState().loadPlaylists()
           await useRatingsStore.getState().loadRatings()
           if (remembered) {

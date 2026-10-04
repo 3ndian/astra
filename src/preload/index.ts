@@ -79,11 +79,13 @@ import type {
   SpotifyHistoryPage,
   SpotifyHistoryQuery,
   SpotifyStatus,
+  SpotifyPlaylistEntryResult,
   WantedAddRequest,
   WantedAddResult,
   WantedQuery,
   WantedTrackRow
 } from '../types/spotify'
+import type { SpotifyPlaylistEntryRequest } from '../shared/spotify/playlistEntry'
 import type {
   JellyfinSource,
   JellyfinSourceCreateInput,
@@ -776,6 +778,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('lyrics-popout:windowState', handler)
       return () => ipcRenderer.removeListener('lyrics-popout:windowState', handler)
     }
+  },
+
+  milkdrop: {
+    list: () => ipcRenderer.invoke('milkdrop:list'),
+    importPresets: () => ipcRenderer.invoke('milkdrop:import'),
+    remove: (fileName: string) => ipcRenderer.invoke('milkdrop:remove', fileName)
   },
 
   scopePopout: {
@@ -1553,6 +1561,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getPlaylistTracks: (playlistId: number) => ipcRenderer.invoke('library:getPlaylistTracks', playlistId),
     getPlaylistTrackEntries: (playlistId: number) => ipcRenderer.invoke('library:getPlaylistTrackEntries', playlistId),
     addToPlaylist: (playlistId: number, trackPaths: string[]) => ipcRenderer.invoke('library:addToPlaylist', playlistId, trackPaths),
+    addSpotifyTrackToPlaylist: (request: SpotifyPlaylistEntryRequest) => ipcRenderer.invoke('library:addSpotifyTrackToPlaylist', request),
     removeFromPlaylist: (playlistId: number, trackPath: string) => ipcRenderer.invoke('library:removeFromPlaylist', playlistId, trackPath),
     removePlaylistEntry: (playlistId: number, entryId: number) => ipcRenderer.invoke('library:removePlaylistEntry', playlistId, entryId),
     reassociatePlaylistEntry: (playlistId: number, entryId: number, targetTrackPath: string) =>
@@ -1673,6 +1682,11 @@ declare global {
         onSnapshot: (callback: (snapshot: LyricsPopoutSnapshot) => void) => () => void
         onCommand: (callback: (command: LyricsPopoutCommand) => void) => () => void
         onWindowState: (callback: (state: LyricsPopoutWindowState) => void) => () => void
+      }
+      milkdrop: {
+        list: () => Promise<{ name: string; preset: Record<string, unknown>; fileName: string }[]>
+        importPresets: () => Promise<{ imported: number; rejected: { file: string; reason: string }[] }>
+        remove: (fileName: string) => Promise<boolean>
       }
       scopePopout: {
         open: (scope: ScopeKind) => Promise<ScopePopoutState>
@@ -2105,6 +2119,7 @@ declare global {
         getPlaylistTracks: (playlistId: number) => Promise<DbTrack[]>
         getPlaylistTrackEntries: (playlistId: number) => Promise<PlaylistTrackEntry[]>
         addToPlaylist: (playlistId: number, trackPaths: string[]) => Promise<void>
+        addSpotifyTrackToPlaylist: (request: SpotifyPlaylistEntryRequest) => Promise<SpotifyPlaylistEntryResult>
         removeFromPlaylist: (playlistId: number, trackPath: string) => Promise<void>
         removePlaylistEntry: (playlistId: number, entryId: number) => Promise<void>
         reassociatePlaylistEntry: (playlistId: number, entryId: number, targetTrackPath: string) => Promise<void>

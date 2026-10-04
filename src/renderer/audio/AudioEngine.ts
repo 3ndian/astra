@@ -4515,6 +4515,11 @@ export class AudioEngine {
     return this.context?.sampleRate ?? 48000
   }
 
+  /** The Web Audio context, or null before the first standard-path playback. Used by Milkdrop. */
+  getAudioContext(): AudioContext | null {
+    return this.context
+  }
+
   // Get post-EQ analyser node for spectrum overlay
   getEQAnalyserNode(): AnalyserNode | null {
     if (this.playbackOutputMode === 'bitperfect' || this.shouldBypassStandardAnalysisGraph()) {

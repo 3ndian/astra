@@ -145,3 +145,18 @@ without a loudness pass and without normalization (playerStore.ts, AudioEngine.t
 - Each popped-out visualizer (spectrum, spectrogram, ...) saves its size and position (`scope-popout-windows.json` in userData, debounced while moving, and on close) and reopens there. If the saved spot is no longer on a connected display, the size is kept and the position falls back to the default.
 - The "detached" placeholder in the main window gets a **Reset window** button next to Recall: puts that window back to its default size/position on the current screen, brings it to the front and forgets the saved spot (IPC `scope-popout:reset`).
 - `shared/scopePopout/windowBounds.ts` (+ test) holds the display-safety rules; `main/services/scopePopoutWindowPrefs.ts` the file I/O.
+
+## Add a Spotify song to a playlist (right-click)
+- Right-click the Spotify now-playing card or a history row: pick a playlist; the song is saved there as a "missing" playlist entry (fake path `spotify:track:<id>` + title/artist/album). It is NOT added to the library, stays greyed/unplayable, and links up automatically by metadata when the real file is imported (existing playlist reconcile).
+- Option "Also add to Not downloaded" (default on, remembered in `astra-spotify-playlist-also-wanted-v1`).
+- `shared/spotify/playlistEntry.ts` (+ test), `library.addSpotifyPlaceholderToPlaylist`, IPC `library:addSpotifyTrackToPlaylist`, `SpotifyPlaylistMenu.tsx`.
+
+## Folders view remembered per section
+- `sectionViewMemory` also stores which folders were open and the scroll position (`folderExpanded`, `folderScrollTop`); `App.tsx` saves them when you leave a section and restores them after the section's library loads (a section with no memory starts collapsed).
+
+## Milkdrop visuals (Butterchurn)
+- Fullscreen player has a "Milkdrop" toggle. It replaces the backdrop with a Butterchurn WebGL canvas driven by the post-EQ analyser. Controls fade after 3 s of no mouse movement; double-click the visual for a random preset.
+- Bundled presets come from `butterchurn-presets`; imported Butterchurn `.json` presets (single or packs) are stored in `<userData>/milkdrop-presets`.
+- Raw `.milk` files are rejected with a clear message: they need converting to Butterchurn JSON first.
+- Not available in bit-perfect mode (no Web Audio tap); a notice says so.
+- Requires: `npm install butterchurn butterchurn-presets`.

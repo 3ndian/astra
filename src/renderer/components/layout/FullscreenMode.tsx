@@ -10,6 +10,8 @@ import AlbumArtwork from '../library/AlbumArtwork'
 import WaveformSeekBar from '../player/WaveformSeekBar'
 import VolumeControl from '../player/VolumeControl'
 import FullscreenAmbientSpectrum from './FullscreenAmbientSpectrum'
+import MilkdropStage from './MilkdropStage'
+import { useMilkdropStore } from '../../stores/milkdropStore'
 import LyricsLineContent from '../lyrics/LyricsLineContent'
 import { usePlaybackClock } from '../../hooks/usePlaybackClock'
 import { getFullscreenBackdropArtworkCandidates } from '../../utils/fullscreenBackdropArtwork'
@@ -724,9 +726,28 @@ export default function FullscreenMode() {
     })
   }, [currentTrackId, prefersReducedMotion])
 
+  const milkdropEnabled = useMilkdropStore((state) => state.enabled)
+  const setMilkdropEnabled = useMilkdropStore((state) => state.setEnabled)
+  const [milkdropChromeVisible, setMilkdropChromeVisible] = useState(true)
+  const milkdropChromeTimerRef = useRef<number | null>(null)
+
+  const revealMilkdropChrome = useCallback(() => {
+    setMilkdropChromeVisible(true)
+    if (milkdropChromeTimerRef.current !== null) window.clearTimeout(milkdropChromeTimerRef.current)
+    milkdropChromeTimerRef.current = window.setTimeout(() => setMilkdropChromeVisible(false), 3000)
+  }, [])
+
+  useEffect(() => {
+    if (milkdropEnabled) revealMilkdropChrome()
+    return () => {
+      if (milkdropChromeTimerRef.current !== null) window.clearTimeout(milkdropChromeTimerRef.current)
+    }
+  }, [milkdropEnabled, revealMilkdropChrome])
+
   return (
     <div
-      className="fullscreen-overlay"
+      className={`fullscreen-overlay${milkdropEnabled ? ' milkdrop-active' : ''}${milkdropEnabled && !milkdropChromeVisible ? ' milkdrop-chrome-hidden' : ''}`}
+      onMouseMove={milkdropEnabled ? revealMilkdropChrome : undefined}
       role="dialog"
       aria-modal="true"
       aria-label="Fullscreen player"
@@ -755,10 +776,14 @@ export default function FullscreenMode() {
         <div className="fullscreen-backdrop-scrim" />
       </div>
 
-      <FullscreenAmbientSpectrum
-        className={!currentTrack ? 'is-idle' : ''}
-        opacityIntent="subtle"
-      />
+      {milkdropEnabled ? (
+        <MilkdropStage controlsVisible={milkdropChromeVisible} />
+      ) : (
+        <FullscreenAmbientSpectrum
+          className={!currentTrack ? 'is-idle' : ''}
+          opacityIntent="subtle"
+        />
+      )}
 
       <button
         className="fullscreen-close"
@@ -794,6 +819,16 @@ export default function FullscreenMode() {
                 aria-pressed={showLyricsDock}
               >
                 Lyrics
+              </button>
+              <button
+                type="button"
+                className={`fullscreen-lyrics-toggle ${milkdropEnabled ? 'active' : ''}`}
+                onClick={() => setMilkdropEnabled(!milkdropEnabled)}
+                title={milkdropEnabled ? 'Turn off Milkdrop visuals' : 'Turn on Milkdrop visuals'}
+                aria-label={milkdropEnabled ? 'Turn off Milkdrop visuals' : 'Turn on Milkdrop visuals'}
+                aria-pressed={milkdropEnabled}
+              >
+                Milkdrop
               </button>
             </div>
 

@@ -34,6 +34,8 @@ import GenreGrid, { type GenreGridViewportAPI } from '../library/GenreGrid'
 import YearAlbumPreview from '../library/YearAlbumPreview'
 import YearGrid, { type YearGridViewportAPI } from '../library/YearGrid'
 import { useWantedPlaceholders } from '../../hooks/useWantedPlaceholders'
+import { useLibraryTabOrder } from '../../hooks/useLibraryTabOrder'
+import type { LibraryTabId } from '../../../shared/library/tabOrder'
 import { useWantedStore } from '../../stores/wantedStore'
 import { useSectionsStore } from '../../stores/sectionsStore'
 import { useSpotifyStore } from '../../stores/spotifyStore'
@@ -186,6 +188,15 @@ function trackMatchesLibraryQuery(
   ])
 }
 
+const LIBRARY_TAB_LABELS: Record<LibraryTabId, string> = {
+  tracks: 'Tracks',
+  albums: 'Albums',
+  artists: 'Artists',
+  genres: 'Genres',
+  years: 'Years',
+  folders: 'Folders'
+}
+
 export default function LibraryView() {
   const trackPaths = useLibraryStore((state) => state.trackPaths)
   const fullTrackPaths = useLibraryStore((state) => state.fullTrackPaths)
@@ -287,6 +298,9 @@ export default function LibraryView() {
 
   const trimmedSearchQuery = searchQuery.trim()
   const placeholderSectionId = useSectionsStore((state) => state.activeSectionId)
+  const tabOrder = useLibraryTabOrder(placeholderSectionId)
+  const [draggingTab, setDraggingTab] = useState<LibraryTabId | null>(null)
+  const [dragOverTab, setDragOverTab] = useState<LibraryTabId | null>(null)
   const placeholderSpotifyEnabled = useSpotifyStore((state) => state.enabled)
   const showWantedInTrackList = useWantedStore((state) => state.showInTrackList)
   const setShowWantedInTrackList = useWantedStore((state) => state.setShowInTrackList)
@@ -642,8 +656,8 @@ export default function LibraryView() {
 
   const handleSelectViewMode = useCallback((mode: Parameters<typeof setViewMode>[0]) => {
     if (viewMode === mode) return
-    void runViewTransition(() => setViewMode(mode), getLibraryTabTransitionScopeClasses(viewMode, mode))
-  }, [setViewMode, viewMode])
+    void runViewTransition(() => setViewMode(mode), getLibraryTabTransitionScopeClasses(viewMode, mode, tabOrder.order))
+  }, [setViewMode, viewMode, tabOrder.order])
 
   const sourceFilteredTracks = useMemo(() => {
     if (!shouldShowSourceFilters || selectedSourceFilters.size === 0) return visibleTracks
@@ -1909,54 +1923,56 @@ export default function LibraryView() {
                   data-controller-axis="horizontal"
                   data-controller-auto-items="true"
                 >
-                  <button
-                    className={`view-tab ${viewMode === 'tracks' ? 'active' : ''}`}
-                    data-controller-tab="tracks"
-                    data-controller-key="library-tab:tracks"
-                    onClick={() => handleSelectViewMode('tracks')}
-                  >
-                    Tracks
-                  </button>
-                  <button
-                    className={`view-tab ${viewMode === 'albums' ? 'active' : ''}`}
-                    data-controller-tab="albums"
-                    data-controller-key="library-tab:albums"
-                    onClick={() => handleSelectViewMode('albums')}
-                  >
-                    Albums
-                  </button>
-                  <button
-                    className={`view-tab ${viewMode === 'artists' ? 'active' : ''}`}
-                    data-controller-tab="artists"
-                    data-controller-key="library-tab:artists"
-                    onClick={() => handleSelectViewMode('artists')}
-                  >
-                    Artists
-                  </button>
-                  <button
-                    className={`view-tab ${viewMode === 'genres' ? 'active' : ''}`}
-                    data-controller-tab="genres"
-                    data-controller-key="library-tab:genres"
-                    onClick={() => handleSelectViewMode('genres')}
-                  >
-                    Genres
-                  </button>
-                  <button
-                    className={`view-tab ${viewMode === 'years' ? 'active' : ''}`}
-                    data-controller-tab="years"
-                    data-controller-key="library-tab:years"
-                    onClick={() => handleSelectViewMode('years')}
-                  >
-                    Years
-                  </button>
-                  <button
-                    className={`view-tab ${viewMode === 'folders' ? 'active' : ''}`}
-                    data-controller-tab="folders"
-                    data-controller-key="library-tab:folders"
-                    onClick={() => handleSelectViewMode('folders')}
-                  >
-                    Folders
-                  </button>
+                  {tabOrder.order.map((tabId, tabIndex) => (
+                    <button
+                      key={tabId}
+                      className={`view-tab ${viewMode === tabId ? 'active' : ''} ${draggingTab === tabId ? 'dragging' : ''} ${dragOverTab === tabId && draggingTab !== tabId ? 'drag-over' : ''}`.trim()}
+                      data-controller-tab={tabId}
+                      data-controller-key={`library-tab:${tabId}`}
+                      onClick={() => handleSelectViewMode(tabId)}
+                      draggable
+                      title="Drag to reorder (or Alt+Left / Alt+Right)"
+                      onDragStart={(event) => {
+                        event.dataTransfer.effectAllowed = 'move'
+                        event.dataTransfer.setData('text/plain', tabId)
+                        setDraggingTab(tabId)
+                      }}
+                      onDragOver={(event) => {
+                        if (!draggingTab) return
+                        event.preventDefault()
+                        if (dragOverTab !== tabId) setDragOverTab(tabId)
+                      }}
+                      onDrop={(event) => {
+                        event.preventDefault()
+                        const from = tabOrder.order.indexOf(draggingTab as LibraryTabId)
+                        if (from >= 0) tabOrder.move(from, tabIndex)
+                        setDraggingTab(null)
+                        setDragOverTab(null)
+                      }}
+                      onDragEnd={() => {
+                        setDraggingTab(null)
+                        setDragOverTab(null)
+                      }}
+                      onKeyDown={(event) => {
+                        if (!event.altKey || (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight')) return
+                        event.preventDefault()
+                        tabOrder.move(tabIndex, tabIndex + (event.key === 'ArrowLeft' ? -1 : 1))
+                      }}
+                    >
+                      {LIBRARY_TAB_LABELS[tabId]}
+                    </button>
+                  ))}
+                  {tabOrder.isCustom && (
+                    <button
+                      type="button"
+                      className="view-tab view-tab-reset"
+                      onClick={tabOrder.reset}
+                      title="Put the tabs back in the default order"
+                      aria-label="Reset tab order"
+                    >
+                      &#8634;
+                    </button>
+                  )}
                 </div>
               )}
               <span className="track-count">{itemCount} {itemLabel}</span>

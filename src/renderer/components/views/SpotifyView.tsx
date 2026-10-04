@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import SpotifyHistoryList from './SpotifyHistoryList'
 import WantedAddButton from './WantedAddButton'
+import { useSpotifyPlaylistMenu } from './SpotifyPlaylistMenu'
 import { useSpotifyStore, type SpotifyHandoffPreference } from '../../stores/spotifyStore'
 
 function formatClock(totalSeconds: number): string {
@@ -11,6 +12,7 @@ function formatClock(totalSeconds: number): string {
 }
 
 export default function SpotifyView() {
+  const { openMenu, menu } = useSpotifyPlaylistMenu()
   const status = useSpotifyStore((state) => state.status)
   const statusReceivedAt = useSpotifyStore((state) => state.statusReceivedAt)
   const loaded = useSpotifyStore((state) => state.loaded)
@@ -88,7 +90,18 @@ export default function SpotifyView() {
       {emptyMessage && <div className="spotify-view-empty" role="status">{emptyMessage}</div>}
 
       {track && (
-        <div className="spotify-now-playing">
+        <div
+          className="spotify-now-playing"
+          title="Right-click to add this song to a playlist"
+          onContextMenu={(event) => openMenu(event, {
+            spotifyTrackId: track.id,
+            title: track.title,
+            artist: track.artist,
+            album: track.album,
+            durationMs: track.durationMs,
+            artworkUrl: track.artworkUrl
+          })}
+        >
           <div className="spotify-cover">
             {status.artworkDataUrl ? (
               <img src={status.artworkDataUrl} alt="Album art" />
@@ -150,6 +163,7 @@ export default function SpotifyView() {
       )}
 
       <SpotifyHistoryList />
+      {menu}
     </div>
   )
 }

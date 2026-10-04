@@ -91,4 +91,6 @@ export interface WantedAddRequest {
   artworkUrl: string | null
 }
 
+export type SpotifyPlaylistEntryResult = { status: 'added' | 'exists' } | { status: 'error'; message: string }
+
 export type WantedAddResult = { status: 'added' | 'exists' } | { status: 'error'; message: string }

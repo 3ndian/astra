@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { SpotifyHistoryRow, SpotifyHistorySort } from '../../../types/spotify'
 import WantedAddButton from './WantedAddButton'
+import { useSpotifyPlaylistMenu } from './SpotifyPlaylistMenu'
 
 const PAGE_SIZE = 100
 const REFRESH_MS = 10_000
@@ -23,6 +24,7 @@ const COLUMNS: Array<{ sort: SpotifyHistorySort; label: string }> = [
 ]
 
 export default function SpotifyHistoryList() {
+  const { openMenu, menu } = useSpotifyPlaylistMenu()
   const [rows, setRows] = useState<SpotifyHistoryRow[]>([])
   const [total, setTotal] = useState(0)
   const [sort, setSort] = useState<SpotifyHistorySort>('played')
@@ -100,7 +102,19 @@ export default function SpotifyHistoryList() {
       {rows.map((row) => {
         const cover = row.coverKey ? covers[row.coverKey] : null
         return (
-          <div key={row.id} className="spotify-history-row" role="row">
+          <div
+            key={row.id}
+            className="spotify-history-row"
+            role="row"
+            onContextMenu={(event) => openMenu(event, {
+              spotifyTrackId: row.trackId,
+              title: row.title,
+              artist: row.artist,
+              album: row.album,
+              durationMs: row.durationMs,
+              artworkUrl: row.coverKey
+            })}
+          >
             <div className="spotify-history-thumb">{cover ? <img src={cover} alt="" loading="lazy" /> : <span>&#9835;</span>}</div>
             <span className="spotify-history-title" title={row.title}>{row.title}</span>
             <span className="spotify-history-muted" title={row.artist}>{row.artist}</span>
@@ -126,6 +140,7 @@ export default function SpotifyHistoryList() {
           Show more ({total - rows.length} left)
         </button>
       )}
+      {menu}
     </section>
   )
 }

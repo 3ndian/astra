@@ -23,6 +23,19 @@ test('a playlist is reopened only if it still exists', () => {
   assert.deepEqual(planRestore({ view: 'playlist' }, always), { view: 'library', libraryViewMode: null, playlistId: null })
 })
 
+test('folder view state is kept and cleaned', () => {
+  const cleaned = sanitizeMemory({
+    a: { view: 'library', folderExpanded: ['/m/a', 5, '', '/m/b'], folderScrollTop: 420.4 },
+    b: { view: 'library', folderExpanded: [], folderScrollTop: -3 },
+    c: { view: 'library', folderExpanded: 'nope', folderScrollTop: 'x' }
+  })
+  assert.deepEqual(cleaned, {
+    a: { view: 'library', folderExpanded: ['/m/a', '/m/b'], folderScrollTop: 420 },
+    b: { view: 'library' },
+    c: { view: 'library' }
+  })
+})
+
 test('saved data is cleaned on load', () => {
   const cleaned = sanitizeMemory({
     music: { view: 'library', libraryViewMode: 'albums', playlistId: 3 },

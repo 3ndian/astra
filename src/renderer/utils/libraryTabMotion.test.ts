@@ -30,3 +30,9 @@ test('getLibraryTabTransitionScopeClasses includes the scoped direction class', 
     ['library-tab-transition']
   )
 })
+
+test('direction follows a custom tab order', () => {
+  const order = ['folders', 'tracks', 'albums', 'artists', 'genres', 'years'] as const
+  assert.equal(resolveLibraryTabTransitionDirection('folders', 'tracks', order), 'forward')
+  assert.equal(resolveLibraryTabTransitionDirection('tracks', 'folders', order), 'backward')
+})

@@ -10,7 +10,13 @@ export interface SectionViewMemoryEntry {
   playlistId?: number | null
   /** Whether the visualizer strip at the top was shown in this section. */
   analyzerVisible?: boolean
+  /** Folders view: which folders were open. */
+  folderExpanded?: string[]
+  /** Folders view: scroll position. */
+  folderScrollTop?: number
 }
+
+const MAX_REMEMBERED_FOLDERS = 500
 
 export type SectionViewMemory = Record<string, SectionViewMemoryEntry>
 
@@ -32,6 +38,15 @@ export function sanitizeMemory(raw: unknown): SectionViewMemory {
       entry.playlistId = record.playlistId
     }
     if (typeof record.analyzerVisible === 'boolean') entry.analyzerVisible = record.analyzerVisible
+    if (Array.isArray(record.folderExpanded)) {
+      const folders = record.folderExpanded
+        .filter((value): value is string => typeof value === 'string' && value.length > 0)
+        .slice(0, MAX_REMEMBERED_FOLDERS)
+      if (folders.length > 0) entry.folderExpanded = folders
+    }
+    if (typeof record.folderScrollTop === 'number' && Number.isFinite(record.folderScrollTop) && record.folderScrollTop > 0) {
+      entry.folderScrollTop = Math.round(record.folderScrollTop)
+    }
     result[sectionId] = entry
   }
   return result

@@ -289,6 +289,11 @@ declare global {
                 onCommand: (callback: (command: LyricsPopoutCommand) => void) => () => void
                 onWindowState: (callback: (state: LyricsPopoutWindowState) => void) => () => void
             }
+            milkdrop: {
+                list: () => Promise<{ name: string; preset: Record<string, unknown>; fileName: string }[]>
+                importPresets: () => Promise<{ imported: number; rejected: { file: string; reason: string }[] }>
+                remove: (fileName: string) => Promise<boolean>
+            }
             scopePopout: {
                 open: (scope: ScopeKind) => Promise<ScopePopoutState>
                 recall: (scope: ScopeKind) => Promise<ScopePopoutState>
