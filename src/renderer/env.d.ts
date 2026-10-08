@@ -289,6 +289,11 @@ declare global {
                 onCommand: (callback: (command: LyricsPopoutCommand) => void) => () => void
                 onWindowState: (callback: (state: LyricsPopoutWindowState) => void) => () => void
             }
+            audiobook: {
+                getBookmarks: (trackPath: string) => Promise<import('../shared/audiobook/bookmarks').Bookmark[]>
+                saveBookmarks: (trackPath: string, title: string, list: import('../shared/audiobook/bookmarks').Bookmark[]) => Promise<{ ok: true } | { ok: false; error: string }>
+                getChapters: (trackPath: string) => Promise<import('../shared/audiobook/chapters').Chapter[]>
+            }
             milkdrop: {
                 list: () => Promise<{ name: string; preset: Record<string, unknown>; fileName: string }[]>
                 importPresets: () => Promise<{ imported: number; rejected: { file: string; reason: string }[] }>

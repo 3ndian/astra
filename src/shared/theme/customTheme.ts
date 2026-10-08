@@ -39,6 +39,12 @@ export interface CustomThemeParams {
   surfaceHue: number
   /** 0 softer text, 100 stronger text. */
   textContrast: number
+  /** Smoky glass: a blurred copy of the playing cover sits behind the app. */
+  smokyGlass: boolean
+  /** Blur radius of the smoky glass cover, in px. */
+  glassBlur: number
+  /** How solid the panels are over the cover, 30 (see-through) to 95 (almost solid). */
+  glassPanelOpacity: number
 }
 
 export interface CustomTheme extends CustomThemeParams {
@@ -67,7 +73,10 @@ export const DEFAULT_CUSTOM_PARAMS: CustomThemeParams = {
   depth: 30,
   hueShift: 0,
   surfaceHue: 210,
-  textContrast: 30
+  textContrast: 30,
+  smokyGlass: false,
+  glassBlur: 60,
+  glassPanelOpacity: 62
 }
 
 const MIN_CONTRAST: Partial<Record<CustomColorKey, number>> = {
@@ -217,6 +226,9 @@ export function sanitizeCustomTheme(raw: unknown): CustomTheme | null {
     hueShift: num(record.hueShift, d.hueShift, -180, 180),
     surfaceHue: num(record.surfaceHue, d.surfaceHue, 0, 360),
     textContrast: num(record.textContrast, d.textContrast, 0, 100),
+    smokyGlass: typeof record.smokyGlass === 'boolean' ? record.smokyGlass : d.smokyGlass,
+    glassBlur: num(record.glassBlur, d.glassBlur, 10, 120),
+    glassPanelOpacity: num(record.glassPanelOpacity, d.glassPanelOpacity, 30, 95),
     overrides
   }
 }

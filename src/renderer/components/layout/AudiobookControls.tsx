@@ -10,6 +10,7 @@ import {
 } from '../../stores/sleepTimerStore'
 import { useSleepEndOfFileStore } from '../../stores/sleepEndOfFileStore'
 import { getActiveSection } from '../../../shared/sections/sections'
+import AudiobookExtras from './AudiobookExtras'
 
 export const SKIP_BACK_SECONDS = 10
 export const SKIP_FORWARD_SECONDS = 30
@@ -101,6 +102,7 @@ export default function AudiobookControls() {
       >
         <span aria-hidden="true">{SKIP_FORWARD_SECONDS}&#8635;</span>
       </button>
+      <AudiobookExtras />
       <button
         type="button"
         className={`control-btn audiobook-sleep-btn ${timerRunning ? 'active' : ''}`.trim()}

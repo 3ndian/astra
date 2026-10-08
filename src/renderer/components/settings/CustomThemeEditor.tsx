@@ -190,6 +190,34 @@ export default function CustomThemeEditor() {
             max={100}
             onChange={(value) => patch({ depth: value })}
           />
+          <label className="settings-field settings-field-inline custom-theme-check">
+            <span className="settings-field-label">Smoky glass: blurred album cover behind the app</span>
+            <input
+              type="checkbox"
+              checked={customTheme.smokyGlass}
+              onChange={(event) => patch({ smokyGlass: event.target.checked })}
+            />
+          </label>
+          {customTheme.smokyGlass && (
+            <>
+              <SliderRow
+                label="Glass blur"
+                hint="Higher is smokier, lower shows more of the cover."
+                value={customTheme.glassBlur}
+                min={10}
+                max={120}
+                onChange={(value) => patch({ glassBlur: value })}
+              />
+              <SliderRow
+                label="Panel opacity"
+                hint="Lower lets more cover show through the panels. Text stays readable."
+                value={customTheme.glassPanelOpacity}
+                min={30}
+                max={95}
+                onChange={(value) => patch({ glassPanelOpacity: value })}
+              />
+            </>
+          )}
           <SliderRow
             label="Text contrast"
             hint="Softer or stronger text. Text never goes below a readable level."

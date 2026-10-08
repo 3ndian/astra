@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import TransportResizeHandle from './TransportResizeHandle'
 import { useSpotifyStore } from '../../stores/spotifyStore'
 import { useUIStore } from '../../stores/uiStore'
 
@@ -61,6 +62,7 @@ export default function SpotifyTransportBar() {
 
   return (
     <div className={`transport-bar spotify-transport-bar ${isSidebarExpanded ? 'spotify-bar-aligned' : ''}`.trim()}>
+      <TransportResizeHandle />
       <div className="spotify-bar-track">
         <div className="spotify-bar-cover">
           {status.artworkDataUrl ? <img src={status.artworkDataUrl} alt="Album art" /> : <div className="artwork-placeholder">&#9835;</div>}

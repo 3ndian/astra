@@ -8,6 +8,8 @@ import {
   togglePinned,
   visibleRailIds
 } from '../../../shared/sections/sectionStyle'
+import { useUIStore } from '../../stores/uiStore'
+import { resetLibraryToTracks } from '../../utils/resetLibraryToTracks'
 import { selectActiveSection, useSectionsStore } from '../../stores/sectionsStore'
 
 const PINNED_STORAGE_KEY = 'astra-pinned-sections-v1'
@@ -120,7 +122,13 @@ export default function SectionSwitcher() {
   }
 
   const handleSwitch = async (section: SectionConfig) => {
-    if (section.id === activeSection.id) return
+    if (section.id === activeSection.id) {
+      // Tapping the section you are already in returns to its Tracks landing view.
+      if (useUIStore.getState().activeView !== 'library') useUIStore.getState().setActiveView('library')
+      resetLibraryToTracks()
+      close()
+      return
+    }
     const switched = await switchSection(section.id)
     if (switched) close()
   }
@@ -326,6 +334,22 @@ export default function SectionSwitcher() {
 
   return (
     <div className="section-rail">
+      <button
+        ref={buttonRef}
+        type="button"
+        className={`sidebar-icon-btn section-rail-more ${open ? 'active' : ''}`}
+        onClick={toggleOpen}
+        aria-label="All sections"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        data-sidebar-tooltip="All sections"
+        disabled={isSwitching}
+      >
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z" />
+        </svg>
+        <span className="sidebar-nav-label">All sections</span>
+      </button>
       {railSections.map((section) => {
         const isActive = section.id === activeSection.id
         return (
@@ -345,22 +369,6 @@ export default function SectionSwitcher() {
           </button>
         )
       })}
-      <button
-        ref={buttonRef}
-        type="button"
-        className={`sidebar-icon-btn section-rail-more ${open ? 'active' : ''}`}
-        onClick={toggleOpen}
-        aria-label="All sections"
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        data-sidebar-tooltip="All sections"
-        disabled={isSwitching}
-      >
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-          <path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z" />
-        </svg>
-        <span className="sidebar-nav-label">All sections</span>
-      </button>
       {popover}
     </div>
   )

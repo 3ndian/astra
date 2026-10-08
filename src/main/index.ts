@@ -148,6 +148,8 @@ import {
   saveScopeWindowPrefs
 } from './services/scopePopoutWindowPrefs'
 import { registerMilkdropIpc } from './services/milkdropPresets'
+import { registerAudiobookIpc } from './services/audiobookSidecar'
+import { formatTimings as formatSwitchTimings } from '../shared/sections/switchTiming'
 import { normalizeSpotifyPlaylistEntryRequest } from '../shared/spotify/playlistEntry'
 import { resolveScopeWindowBounds, type ScopeWindowPrefs } from '../shared/scopePopout/windowBounds'
 import {
@@ -5446,6 +5448,7 @@ ipcMain.handle('scope-popout:recall', async (_event, rawScope: unknown) => {
 })
 
 registerMilkdropIpc(() => mainWindow)
+registerAudiobookIpc()
 
 ipcMain.handle('scope-popout:reset', async (_event, rawScope: unknown) => {
   const scope = normalizeScopeKind(rawScope)
@@ -7380,11 +7383,18 @@ ipcMain.handle('sections:switch', async (_event, id: unknown) => {
     if (activeLibraryScanAbortController && !activeLibraryScanAbortController.signal.aborted) {
       activeLibraryScanAbortController.abort()
     }
+    const switchStart = performance.now()
     await library.switchLibrarySection(targetId)
+    const afterDbSwitch = performance.now()
     library.setActiveLibrarySectionKind(result.section.kind)
     await commitSectionRegistry(result.registry)
-    // The renderer stops playback, clears the queue, and reloads library state on this event.
+    const afterCommit = performance.now()
+    // The renderer reloads its library lists on this event; playback keeps going.
     sendToWindow(mainWindow, 'sections:switched', sectionsPayload())
+    console.log(formatSwitchTimings(`[section-switch] main process -> ${targetId}`, [
+      { label: 'close old db + open new db', ms: afterDbSwitch - switchStart },
+      { label: 'save section registry', ms: afterCommit - afterDbSwitch }
+    ], afterCommit - switchStart))
   })()
   sectionSwitchInFlight = run
   try {

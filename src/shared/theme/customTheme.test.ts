@@ -93,3 +93,13 @@ function hexRgb(hex: string) {
 function lightness(hex: string) {
   return rgbToHsl(hexRgb(hex)).l
 }
+
+test('smoky glass settings are clamped and default off', () => {
+  const base = { id: 'a', accent: '#336699' }
+  const plain = sanitizeCustomTheme(base)
+  assert.equal(plain?.smokyGlass, false)
+  const wild = sanitizeCustomTheme({ ...base, smokyGlass: true, glassBlur: 999, glassPanelOpacity: 1 })
+  assert.equal(wild?.smokyGlass, true)
+  assert.equal(wild?.glassBlur, 120)
+  assert.equal(wild?.glassPanelOpacity, 30)
+})

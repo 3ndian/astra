@@ -461,6 +461,10 @@ function applyNonAccentTokensToDocument(tokens: ResolvedThemeTokens): void {
   root.style.setProperty('--bg-primary', tokens.bgPrimary)
   root.style.setProperty('--bg-secondary', tokens.bgSecondary)
   root.style.setProperty('--bg-tertiary', tokens.bgTertiary)
+  // Solid copies, used by the smoky-glass mode to make the panels translucent over the cover.
+  root.style.setProperty('--bg-base-primary', tokens.bgPrimary)
+  root.style.setProperty('--bg-base-secondary', tokens.bgSecondary)
+  root.style.setProperty('--bg-base-tertiary', tokens.bgTertiary)
   root.style.setProperty('--glass-bg', tokens.glassBg)
   root.style.setProperty('--glass-border', tokens.glassBorder)
   root.style.setProperty('--glass-highlight', tokens.glassHighlight)

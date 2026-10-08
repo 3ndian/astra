@@ -11,6 +11,7 @@ import KeybindSettings from '../settings/KeybindSettings'
 import SettingsTransferWizard from '../settings/SettingsTransferWizard'
 import ImportedListeningDataCard from '../settings/ImportedListeningDataCard'
 import CustomThemeEditor from '../settings/CustomThemeEditor'
+import BackgroundVisualSettings from '../settings/BackgroundVisualSettings'
 import { deriveCustomTokens, previewHexes } from '../../../shared/theme/customTheme'
 import SettingsSegmentedControl, { type SettingsSegmentedOption } from '../settings/SettingsSegmentedControl'
 import { renderPairingQrSvg } from '../../utils/pairingQr'
@@ -1654,6 +1655,7 @@ export default function SettingsView() {
             </div>
             <div className="settings-cards">
               <CustomThemeEditor />
+              <BackgroundVisualSettings />
               <div className="settings-card">
                 <div className="settings-card-label">Accent</div>
                 <div className="settings-grid">

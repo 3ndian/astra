@@ -8,6 +8,7 @@ import {
   type SectionRegistry
 } from '../../shared/sections/sections'
 import type { SectionsPayload } from '../../types/sections'
+import { addPreEntry, markSwitchClick } from '../utils/sectionSwitchTimings'
 
 interface SectionsStore {
   registry: SectionRegistry | null
@@ -98,13 +99,18 @@ export const useSectionsStore = create<SectionsStore>((set, get) => ({
   switchSection: async (id) => {
     if (get().isSwitching || id === get().activeSectionId) return false
     set({ isSwitching: true, errorMessage: '' })
+    markSwitchClick()
     try {
+      const hookStart = performance.now()
       try {
         await beforeSwitchHook?.()
       } catch (error) {
         console.warn('Before-switch hook failed:', error)
       }
+      addPreEntry('flush listening history', performance.now() - hookStart)
+      const ipcStart = performance.now()
       const result = await window.electronAPI.sections.switchTo(id)
+      addPreEntry('main process switch (see terminal)', performance.now() - ipcStart)
       if (!result.success) {
         set({ errorMessage: result.error })
         return false

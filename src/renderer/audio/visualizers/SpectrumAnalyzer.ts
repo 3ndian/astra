@@ -28,6 +28,7 @@ import {
   normalizeHeatDb,
 } from './heatScale'
 import { CLASSIC_SPECTRUM_HEAT_COLORS } from './spectrumHeatPalette'
+import { sampleGradient } from '../../../shared/color/albumPalette'
 
 type SpectrumStereoChunk = {
   left: Float32Array
@@ -48,6 +49,8 @@ export interface SpectrumAnalyzerOptions {
   heatmapSmoothing?: number
   gradientColors?: string[]
   heatColors?: [string, string, string]
+  /** Colours spread low to high pitch across the display (album palette). Empty or unset: off. */
+  pitchColors?: string[]
   heatBaseColor?: string
   backgroundColor?: string
   showGrid?: boolean
@@ -195,6 +198,7 @@ const defaultOptions: ResolvedSpectrumAnalyzerOptions = {
   heatmapSmoothing: 0.5,
   gradientColors: ['rgba(0, 255, 255, 0)', 'rgba(0, 255, 255, 0.3)', 'rgba(138, 43, 226, 0.5)'],
   heatColors: [...CLASSIC_SPECTRUM_HEAT_COLORS],
+  pitchColors: [],
   heatBaseColor: 'transparent',
   backgroundColor: 'transparent',
   showGrid: true,
@@ -650,6 +654,8 @@ export class SpectrumAnalyzer {
           const g = this.heatLut[lutIndex * 4 + 1]
           const b = this.heatLut[lutIndex * 4 + 2]
           this.ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.88)`
+        } else if (this.options.pitchColors.length > 0) {
+          this.ctx.fillStyle = sampleGradient(this.options.pitchColors, barCount > 1 ? index / (barCount - 1) : 0)
         } else {
           this.ctx.fillStyle = this.options.lineColor
         }
@@ -1087,6 +1093,20 @@ export class SpectrumAnalyzer {
     this.ctx.lineTo(0, height)
     this.ctx.closePath()
 
+    if (this.options.pitchColors.length > 0) {
+      const pitch = this.ctx.createLinearGradient(0, 0, width, 0)
+      const pitchColors = this.options.pitchColors
+      for (let index = 0; index < pitchColors.length; index += 1) {
+        pitch.addColorStop(pitchColors.length > 1 ? index / (pitchColors.length - 1) : 0, pitchColors[index])
+      }
+      this.ctx.save()
+      this.ctx.globalAlpha = 0.38
+      this.ctx.fillStyle = pitch
+      this.ctx.fill()
+      this.ctx.restore()
+      return
+    }
+
     const gradient = this.ctx.createLinearGradient(0, height, 0, 0)
     const colors = this.options.gradientColors
     for (let index = 0; index < colors.length; index += 1) {
@@ -1109,7 +1129,16 @@ export class SpectrumAnalyzer {
     }
 
     this.ctx.lineWidth = lineWidth
-    this.ctx.strokeStyle = color
+    const pitchColors = this.options.pitchColors
+    if (pitchColors.length > 0 && color === this.options.lineColor && !this.options.heatmapFill) {
+      const stroke = this.ctx.createLinearGradient(0, 0, this.canvas.width, 0)
+      for (let index = 0; index < pitchColors.length; index += 1) {
+        stroke.addColorStop(pitchColors.length > 1 ? index / (pitchColors.length - 1) : 0, pitchColors[index])
+      }
+      this.ctx.strokeStyle = stroke
+    } else {
+      this.ctx.strokeStyle = color
+    }
     this.ctx.lineCap = 'round'
     this.ctx.lineJoin = 'round'
     this.ctx.stroke()

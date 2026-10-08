@@ -27479,7 +27479,7 @@ html[data-theme-tone="light"] .parallax-setup-status.is-good {
   display: block;
   width: 100%;
   height: 100%;
-  background: #000;
+  background: transparent;
   pointer-events: auto;
 }
 
@@ -27496,10 +27496,14 @@ html[data-theme-tone="light"] .parallax-setup-status.is-good {
   cursor: none;
 }
 
-.fullscreen-overlay.milkdrop-chrome-hidden .fullscreen-content,
-.fullscreen-overlay.milkdrop-chrome-hidden .fullscreen-close {
+.fullscreen-overlay.milkdrop-chrome-hidden .fullscreen-content {
   opacity: 0;
   pointer-events: none;
+}
+
+/* The exit button never disappears completely, so there is always a way out. */
+.fullscreen-overlay.milkdrop-chrome-hidden .fullscreen-close {
+  opacity: 0.35;
 }
 
 .milkdrop-notice {
@@ -27666,4 +27670,287 @@ html[data-theme-tone="light"] .parallax-setup-status.is-good {
   background: rgba(255, 255, 255, 0.08);
   color: rgba(255, 255, 255, 0.95);
   font-size: 12px;
+}
+
+/* Draggable expanded left pane + tighter item spacing */
+:root {
+  --sidebar-expanded-item-height: 32px;
+  --sidebar-expanded-gap: 2px;
+}
+
+.sidebar.sidebar-expanded { width: min(var(--sidebar-expanded-width), 50vw); }
+.transport-info.transport-info-aligned { width: min(var(--sidebar-expanded-width), 50vw); }
+.spotify-transport-bar.spotify-bar-aligned .spotify-bar-track { width: calc(min(var(--sidebar-expanded-width), 50vw) - 20px); }
+
+.sidebar.sidebar-resizing { transition: none !important; }
+body:has(.sidebar-resizing) { cursor: col-resize; user-select: none; }
+
+.sidebar-resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 8px;
+  z-index: 5;
+  cursor: col-resize;
+  touch-action: none;
+}
+.sidebar-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 2px;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+.sidebar-resize-handle:hover::after,
+.sidebar-resize-handle:focus-visible::after,
+.sidebar.sidebar-resizing .sidebar-resize-handle::after {
+  background: rgba(var(--accent-rgb), 0.7);
+}
+.sidebar-resize-handle:focus-visible { outline: none; }
+
+/* Expanded pane rows sit closer together than the icon-only rail. */
+.sidebar.sidebar-expanded .sidebar-nav { gap: var(--sidebar-expanded-gap); }
+.sidebar.sidebar-expanded .section-rail { gap: var(--sidebar-expanded-gap); }
+.sidebar.sidebar-expanded .sidebar-nav .nav-btn,
+.sidebar.sidebar-expanded .section-rail-btn,
+.sidebar.sidebar-expanded .section-rail-more { height: var(--sidebar-expanded-item-height); }
+
+/* Track info pane: one layout for both tabs. The header, tabs, cover and title stay pinned;
+   only the section below them scrolls (Info details or the lyrics list), so switching tabs
+   never shifts the cover. */
+.info-sidebar,
+.info-sidebar.info-sidebar-lyrics-active {
+  overflow: hidden;
+}
+
+.info-sidebar > * {
+  flex-shrink: 0;
+}
+
+.info-sidebar-artwork {
+  height: min(calc(var(--info-sidebar-width) - 40px), 38vh);
+  width: min(calc(var(--info-sidebar-width) - 40px), 38vh);
+  align-self: center;
+  transition: width 0.25s ease, height 0.25s ease;
+}
+
+.info-sidebar.info-sidebar-lyrics-active .info-sidebar-artwork {
+  width: min(calc(var(--info-sidebar-width) - 40px), 30vh);
+  height: min(calc(var(--info-sidebar-width) - 40px), 30vh);
+  align-self: center;
+}
+
+.info-sidebar > .info-sidebar-scroll,
+.info-sidebar > .info-lyrics-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.info-sidebar-scroll,
+.info-lyrics-lines {
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-gutter: stable;
+}
+
+.info-sidebar-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding-right: 4px;
+}
+
+.info-sidebar-scroll > * {
+  flex-shrink: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .info-sidebar-artwork {
+    transition: none;
+  }
+}
+
+/* Output device picker (speaker button in the transport bar) */
+.output-picker { position: relative; display: flex; align-items: center; flex: none; }
+.output-picker-btn {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.output-picker-btn:hover,
+.output-picker-btn.active { color: var(--text-primary); background: rgba(var(--tint), 0.08); }
+.output-picker-menu {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 300;
+  width: 300px;
+  max-height: 50vh;
+  overflow-y: auto;
+  padding: 6px;
+  border-radius: 12px;
+  border: 1px solid var(--glass-border);
+  background: var(--surface-overlay, var(--bg-secondary));
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+}
+.output-picker-title {
+  padding: 6px 10px 4px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.output-picker-empty { padding: 8px 10px; font-size: 12px; color: var(--text-secondary); }
+.output-picker-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.output-picker-item:hover { background: rgba(var(--tint), 0.08); }
+.output-picker-item.is-selected { color: var(--accent); }
+.output-picker-check { width: 14px; flex: none; text-align: center; }
+.output-picker-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Compact rail: the expand arrow sits at the very top (same spot as when expanded), sections below it. */
+.sidebar-top-actions {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+/* Lyrics tab: optional cover hiding for taller lyrics */
+.info-sidebar.info-sidebar-cover-hidden .info-sidebar-artwork { height: 0; width: 0; margin: 0; opacity: 0; overflow: hidden; pointer-events: none; }
+.info-sidebar-tabs { position: relative; }
+.info-sidebar-cover-toggle {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+.info-sidebar-cover-toggle:hover { color: var(--text-primary); background: rgba(var(--tint), 0.08); }
+.info-sidebar-cover-toggle[aria-pressed='true'] { color: var(--accent); }
+
+/* Smoky glass: blurred album cover behind translucent panels */
+.album-backdrop { position: absolute; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
+.album-backdrop-layer {
+  position: absolute;
+  inset: -12%;
+  background-size: cover;
+  background-position: center;
+  filter: blur(var(--backdrop-blur, 60px)) saturate(1.25);
+  transform: translateZ(0);
+  animation: album-backdrop-in 0.8s ease both;
+}
+.album-backdrop-layer::after { content: ''; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.18); }
+@keyframes album-backdrop-in { from { opacity: 0; } to { opacity: 1; } }
+.app.album-backdrop-on {
+  background: var(--bg-base-primary, #000);
+  --bg-primary: color-mix(in srgb, var(--bg-base-primary) var(--backdrop-panel-alpha, 62%), transparent);
+  --bg-secondary: color-mix(in srgb, var(--bg-base-secondary) calc(var(--backdrop-panel-alpha, 62%) + 8%), transparent);
+  --bg-tertiary: color-mix(in srgb, var(--bg-base-tertiary) calc(var(--backdrop-panel-alpha, 62%) + 12%), transparent);
+}
+@media (prefers-reduced-motion: reduce) { .album-backdrop-layer { animation: none; } }
+
+/* Milkdrop as a background behind translucent panels */
+.milkdrop-backdrop-canvas { width: 100%; height: 100%; display: block; }
+.milkdrop-backdrop::after { content: ''; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.22); pointer-events: none; }
+
+/* Audiobook: progress cue, chapters and bookmarks */
+.audiobook-extras { position: relative; display: inline-flex; align-items: center; gap: 6px; }
+.audiobook-bookmark-btn { position: relative; display: inline-flex; align-items: center; gap: 3px; }
+.audiobook-bookmark-btn.active { color: var(--accent); }
+.audiobook-bookmark-count { font-size: 10px; font-variant-numeric: tabular-nums; }
+.audiobook-cue { font-size: 10px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; white-space: nowrap; max-width: 190px; overflow: hidden; text-overflow: ellipsis; }
+.audiobook-panel {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  width: min(360px, 80vw);
+  max-height: min(420px, 60vh);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.12));
+  border-radius: var(--radius-md, 8px);
+  background: var(--surface-overlay);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+.audiobook-panel-tabs { display: flex; gap: 4px; }
+.audiobook-panel-tabs button, .audiobook-panel-add {
+  flex: 1; min-height: 28px; border: 1px solid var(--glass-border); border-radius: 6px;
+  background: rgba(var(--tint), 0.03); color: var(--text-secondary); font-size: 11px; cursor: pointer;
+}
+.audiobook-panel-tabs button.active { color: var(--text-primary); border-color: rgba(var(--accent-rgb), 0.5); }
+.audiobook-panel-tabs button:disabled { opacity: 0.4; cursor: default; }
+.audiobook-panel-add { flex: none; color: var(--accent); }
+.audiobook-panel-add:hover, .audiobook-panel-tabs button:hover:not(:disabled) { background: rgba(var(--tint), 0.08); }
+.audiobook-panel-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.audiobook-panel-empty { font-size: 11px; color: var(--text-tertiary); padding: 6px 2px; }
+.audiobook-panel-item { display: flex; align-items: flex-start; gap: 6px; }
+.audiobook-panel-time { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--accent); background: none; border: 0; cursor: pointer; padding: 5px 2px; min-width: 52px; text-align: left; }
+.audiobook-panel-note {
+  flex: 1; resize: none; min-height: 26px; padding: 4px 6px; font: inherit; font-size: 12px;
+  color: var(--text-primary); background: rgba(var(--tint), 0.04); border: 1px solid var(--glass-border); border-radius: 6px;
+}
+.audiobook-panel-delete { background: none; border: 0; color: var(--text-tertiary); font-size: 16px; cursor: pointer; padding: 2px 4px; }
+.audiobook-panel-delete:hover { color: var(--text-primary); }
+.audiobook-panel-chapter { display: flex; gap: 8px; width: 100%; text-align: left; padding: 5px 6px; border: 0; border-radius: 6px; background: none; color: var(--text-secondary); font-size: 12px; cursor: pointer; }
+.audiobook-panel-chapter:hover { background: rgba(var(--tint), 0.08); }
+.audiobook-panel-chapter.active { color: var(--text-primary); background: rgba(var(--accent-rgb), 0.14); }
+.audiobook-panel-chapter-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.audiobook-panel-error { font-size: 11px; color: #f87171; }
+
+/* Resizable player bar */
+.transport-resize-handle { position: absolute; left: 0; right: 0; top: -3px; height: 7px; z-index: 5; cursor: ns-resize; touch-action: none; }
+.transport-resize-handle::after { content: ''; position: absolute; left: 0; right: 0; top: 3px; height: 1px; background: transparent; transition: background 0.15s ease; }
+.transport-resize-handle:hover::after, .transport-resize-handle:focus-visible::after, body.is-resizing-transport .transport-resize-handle::after { background: rgba(var(--accent-rgb), 0.7); height: 2px; top: 2px; }
+body.is-resizing-transport, body.is-resizing-transport * { cursor: ns-resize !important; user-select: none !important; }
+/* Parts of the bar that give way as it gets shorter */
+.transport-bar .transport-artwork { width: clamp(48px, calc(var(--now-playing-height) - 48px), 64px); height: clamp(48px, calc(var(--now-playing-height) - 48px), 64px); }
+.transport-bar .transport-waveform-wrap,
+.transport-bar .waveform-seek-bar { height: clamp(40px, calc(var(--now-playing-height) - 40px), 62px); }
+.transport-bar .transport-file-readout {
+  padding-top: clamp(3px, calc((var(--now-playing-height) - 80px) * 0.4), 12px);
+  padding-bottom: clamp(3px, calc((var(--now-playing-height) - 80px) * 0.4), 12px);
+  row-gap: clamp(2px, calc((var(--now-playing-height) - 80px) * 0.25), 8px);
 }

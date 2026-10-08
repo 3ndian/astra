@@ -780,6 +780,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
+  audiobook: {
+    getBookmarks: (trackPath: string) => ipcRenderer.invoke('audiobook:getBookmarks', trackPath),
+    saveBookmarks: (trackPath: string, title: string, list: unknown[]) =>
+      ipcRenderer.invoke('audiobook:saveBookmarks', trackPath, title, list),
+    getChapters: (trackPath: string) => ipcRenderer.invoke('audiobook:getChapters', trackPath)
+  },
+
   milkdrop: {
     list: () => ipcRenderer.invoke('milkdrop:list'),
     importPresets: () => ipcRenderer.invoke('milkdrop:import'),
@@ -1682,6 +1689,11 @@ declare global {
         onSnapshot: (callback: (snapshot: LyricsPopoutSnapshot) => void) => () => void
         onCommand: (callback: (command: LyricsPopoutCommand) => void) => () => void
         onWindowState: (callback: (state: LyricsPopoutWindowState) => void) => () => void
+      }
+      audiobook: {
+        getBookmarks: (trackPath: string) => Promise<import('../shared/audiobook/bookmarks').Bookmark[]>
+        saveBookmarks: (trackPath: string, title: string, list: import('../shared/audiobook/bookmarks').Bookmark[]) => Promise<{ ok: true } | { ok: false; error: string }>
+        getChapters: (trackPath: string) => Promise<import('../shared/audiobook/chapters').Chapter[]>
       }
       milkdrop: {
         list: () => Promise<{ name: string; preset: Record<string, unknown>; fileName: string }[]>

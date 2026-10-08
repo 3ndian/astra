@@ -15,6 +15,7 @@ import {
   type VirtualSpeaker,
 } from '../utils/virtualSpeakerLayout'
 import type { SpatialStatus } from '../audio/AudioEngine'
+import { shouldRebindToDefault } from '../../shared/audio/outputFollow'
 import type { NativeAudioCapabilities, PlaybackOutputMode } from '../../types/nativeAudio'
 
 export interface AudioDevice {
@@ -981,6 +982,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
   }
 
   const handleMediaDeviceChange = async (): Promise<void> => {
+    const defaultBefore = resolvePhysicalDefaultDeviceId(get().availableDevices)
     await get().refreshDevices()
 
     const state = get()
@@ -996,6 +998,26 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         set({ selectedDeviceId: '' })
         localStorage.removeItem(getOutputStorageKeyForMode(state.playbackOutputMode))
         await syncDelayCompensationForActiveDevice()
+      }
+    }
+
+    // Following the system default (e.g. AirPods just connected): move playback to the new default.
+    // Pinning the audio engine to the new physical device keeps the user's "System Default" choice.
+    const afterState = get()
+    const defaultAfter = resolvePhysicalDefaultDeviceId(afterState.availableDevices)
+    if (shouldRebindToDefault(afterState.selectedDeviceId, defaultBefore, defaultAfter) && defaultAfter) {
+      try {
+        await audioEngine.setOutputDevice(defaultAfter)
+        set({
+          nativeAudioCapabilities: afterState.playbackOutputMode === 'bitperfect'
+            ? audioEngine.getNativeAudioCapabilities()
+            : afterState.nativeAudioCapabilities,
+          playbackModeStatusMessage: audioEngine.getPlaybackModeStatusMessage()
+        })
+        await get().refreshOutputChannelCount()
+        await syncDelayCompensationForActiveDevice({ resetCalibrationStatus: true })
+      } catch (error) {
+        console.warn('Could not follow the new system default output:', error)
       }
     }
   }

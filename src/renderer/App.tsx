@@ -14,6 +14,9 @@ import QueuePanelBoundary from './components/queue/QueuePanelBoundary'
 import CollectionQueueContextMenu from './components/queue/CollectionQueueContextMenu'
 import InfoSidebar from './components/layout/InfoSidebar'
 import FullscreenMode from './components/layout/FullscreenMode'
+import FullscreenBoundary from './components/layout/FullscreenBoundary'
+import AlbumBackdrop from './components/layout/AlbumBackdrop'
+import MilkdropBackdrop from './components/layout/MilkdropBackdrop'
 import ZoneDisplay from './components/layout/ZoneDisplay'
 import QuickLaunchPalette from './components/layout/QuickLaunchPalette'
 import DecodeFallbackCue from './components/layout/DecodeFallbackCue'
@@ -38,6 +41,7 @@ import { useUIStore, type AppView } from './stores/uiStore'
 import { planRestore, rememberSectionView, sanitizeMemory, type SectionViewMemory } from '../shared/sections/sectionViewMemory'
 import { useLibraryStore, type ViewMode } from './stores/libraryStore'
 import { setBeforeSectionSwitchHook, useSectionsStore } from './stores/sectionsStore'
+import { addEntry, beginCollect, endCollect } from './utils/sectionSwitchTimings'
 import { useRatingsStore } from './stores/ratingsStore'
 import { useAudioSettingsStore } from './stores/audioSettingsStore'
 import { useDiscordSettingsStore } from './stores/discordSettingsStore'
@@ -63,6 +67,7 @@ import { useLyricsPopoutBridge } from './hooks/useLyricsPopoutBridge'
 import { useScopePopoutBridge } from './hooks/useScopePopoutBridge'
 import { useMemoryDiagnosticsBridge } from './hooks/useMemoryDiagnosticsBridge'
 import { useCoverArtAccent } from './hooks/useCoverArtAccent'
+import { useAlbumPalette } from './hooks/useAlbumPalette'
 import { useRuntimeAppIconSync } from './hooks/useRuntimeAppIconSync'
 import { usePointerFocusCleanup } from './hooks/usePointerFocusCleanup'
 import { useControllerInput } from './hooks/useControllerInput'
@@ -111,6 +116,7 @@ function App() {
   useScopePopoutBridge()
   useMemoryDiagnosticsBridge()
   useCoverArtAccent()
+  useAlbumPalette()
   const spotifyBarActive = useSpotifyStore(
     (state) => state.activeSource === 'spotify' && state.status.track !== null && (state.status.state === 'playing' || state.status.state === 'paused')
   )
@@ -124,6 +130,10 @@ function App() {
   const replaceActiveView = useUIStore((s) => s.replaceActiveView)
   const showInfoSidebar = useUIStore((s) => s.showInfoSidebar)
   const isAnalyzerEditMode = useUIStore((s) => s.isAnalyzerEditMode)
+  const [smokyBackdropOn, setSmokyBackdropOn] = useState(false)
+  const [milkdropBackdropOn, setMilkdropBackdropOn] = useState(false)
+  const albumBackdropOn = smokyBackdropOn || milkdropBackdropOn
+  const isFullscreenActive = useUIStore((s) => s.isFullscreen)
   const isAnalyzerRackVisible = useUIStore((s) => s.isAnalyzerRackVisible)
   const showAnalyzerRack = useUIStore((s) => s.showAnalyzerRack)
   const hideAnalyzerRack = useUIStore((s) => s.hideAnalyzerRack)
@@ -463,13 +473,20 @@ function App() {
         const remembered = sectionViewMemory[payload.activeSectionId]
         const quickPlan = planRestore(remembered, () => false)
         useUIStore.getState().setActiveView(quickPlan.view === 'library' && remembered?.view === 'playlist' ? 'home' : (quickPlan.view as AppView))
+        beginCollect()
         try {
+          const loadStart = performance.now()
           await useLibraryStore.getState().loadLibrary()
+          addEntry('load library (all lists)', performance.now() - loadStart)
           // Folders view: show the folders that were open in this section (empty for a fresh section).
           useLibraryStore.getState().setFolderViewExpandedPaths(remembered?.folderExpanded ?? [])
           useLibraryStore.getState().setFolderViewScrollTop(remembered?.folderScrollTop ?? 0)
+          const playlistsStart = performance.now()
           await usePlaylistStore.getState().loadPlaylists()
+          addEntry('load playlists', performance.now() - playlistsStart)
+          const ratingsStart = performance.now()
           await useRatingsStore.getState().loadRatings()
+          addEntry('load ratings', performance.now() - ratingsStart)
           if (remembered) {
             const plan = planRestore(
               remembered,
@@ -490,6 +507,8 @@ function App() {
           }
         } catch (error) {
           console.error(`Failed to load library section "${payload.activeSectionId}":`, error)
+        } finally {
+          endCollect(payload.activeSectionId)
         }
       })()
     })
@@ -522,7 +541,7 @@ function App() {
   return (
     <div className="app-scale-host" style={appStyle}>
       <div
-        className={`app ${isAnalyzerEditMode ? 'is-analyzer-editing' : ''}`.trim()}
+        className={`app ${isAnalyzerEditMode ? 'is-analyzer-editing' : ''} ${albumBackdropOn ? 'album-backdrop-on' : ''}`.trim()}
       >
         <TitleBar />
         {isAnalyzerRackVisible && (
@@ -572,6 +591,8 @@ function App() {
             </svg>
           </button>
         )}
+        <AlbumBackdrop onActiveChange={setSmokyBackdropOn} />
+        <MilkdropBackdrop suspended={isFullscreenActive} onActiveChange={setMilkdropBackdropOn} />
         <div className="app-body">
           <Sidebar />
           <div className="app-content">
@@ -616,7 +637,7 @@ function App() {
         <LyricsEditorPanel />
         <SignalShareModal />
         <CollectionQueueContextMenu />
-        {isFullscreen && <FullscreenMode />}
+        {isFullscreen && <FullscreenBoundary><FullscreenMode /></FullscreenBoundary>}
         <ControllerFocusRing active={controllerInput.active} />
         <ControllerRadialMenu
           active={controllerInput.active}

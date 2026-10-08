@@ -1,6 +1,8 @@
+import { useSidebarWidth } from '../../hooks/useSidebarWidth'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FocusEvent, type PointerEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useLibraryStore } from '../../stores/libraryStore'
+import { resetLibraryToTracks } from '../../utils/resetLibraryToTracks'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { useUIStore, type AppView, type TrackDragDropTarget } from '../../stores/uiStore'
 import { useGraphStore } from '../../stores/graphStore'
@@ -192,6 +194,8 @@ export default function Sidebar() {
   )
   const overflowPresence = usePresence(isOverflowOpen && sidebarOverflowPlaylists.length > 0)
   const isSidebarExpanded = useUIStore((state) => state.isSidebarExpanded)
+  const sidebarRef = useRef<HTMLElement | null>(null)
+  const sidebarResize = useSidebarWidth(sidebarRef)
   const toggleSidebarExpanded = useUIStore((state) => state.toggleSidebarExpanded)
   const activeSectionId = useSectionsStore((state) => state.activeSectionId)
   const spotifyEnabled = useSpotifyStore((state) => state.enabled)
@@ -594,6 +598,12 @@ export default function Sidebar() {
       openFullMap()
     }
 
+    if (view === 'library' && useUIStore.getState().activeView === 'library') {
+      // Re-tapping Library while already in it resets to the Tracks landing view.
+      resetLibraryToTracks()
+      return
+    }
+
     setActiveView(view)
   }, [clearPlaylistSelection, openFullMap, setActiveView])
 
@@ -620,9 +630,25 @@ export default function Sidebar() {
     return classes.join(' ')
   }
 
+  const expandButton = (
+    <button
+      type="button"
+      className="sidebar-icon-btn sidebar-expand-btn"
+      onClick={toggleSidebarExpanded}
+      aria-label={isSidebarExpanded ? 'Collapse the left pane' : 'Expand the left pane with a big cover'}
+      aria-pressed={isSidebarExpanded}
+      data-sidebar-tooltip={isSidebarExpanded ? 'Collapse' : 'Expand'}
+    >
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        {isSidebarExpanded ? <path d="M15 6l-6 6 6 6" /> : <path d="M9 6l6 6-6 6" />}
+      </svg>
+    </button>
+  )
+
   return (
     <aside
-      className={`sidebar ${isSidebarExpanded ? 'sidebar-expanded' : ''}`.trim()}
+      ref={sidebarRef}
+      className={`sidebar ${isSidebarExpanded ? 'sidebar-expanded' : ''}${sidebarResize.isResizing ? ' sidebar-resizing' : ''}`.trim()}
       data-controller-region="true"
       data-controller-region-id="sidebar"
       data-controller-group="sidebar-items"
@@ -633,6 +659,20 @@ export default function Sidebar() {
       onFocus={handleSidebarTooltipFocus}
       onBlur={handleSidebarTooltipBlur}
     >
+      {isSidebarExpanded && (
+        <div
+          className="sidebar-resize-handle"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize left pane. Double-click to reset."
+          title="Drag to resize (double-click to reset)"
+          tabIndex={0}
+          onPointerDown={sidebarResize.startDrag}
+          onDoubleClick={sidebarResize.reset}
+          onKeyDown={sidebarResize.onKeyDown}
+        />
+      )}
+      {!isSidebarExpanded && <div className="sidebar-top-actions">{expandButton}</div>}
       <div className="sidebar-scroll-area" data-controller-scroll>
         <SectionSwitcher />
         <nav className="sidebar-nav" data-controller-tabstrip="sidebar-nav">
@@ -739,18 +779,7 @@ export default function Sidebar() {
       {isSidebarExpanded && <SidebarCover />}
 
       <div className="sidebar-bottom-actions">
-        <button
-          type="button"
-          className="sidebar-icon-btn sidebar-expand-btn"
-          onClick={toggleSidebarExpanded}
-          aria-label={isSidebarExpanded ? 'Collapse the left pane' : 'Expand the left pane with a big cover'}
-          aria-pressed={isSidebarExpanded}
-          data-sidebar-tooltip={isSidebarExpanded ? 'Collapse' : 'Expand'}
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            {isSidebarExpanded ? <path d="M15 6l-6 6 6 6" /> : <path d="M9 6l6 6-6 6" />}
-          </svg>
-        </button>
+        {isSidebarExpanded && expandButton}
         <button
           className={`sidebar-icon-btn nav-btn sidebar-settings-btn ${activeView === 'settings' ? 'active' : ''}`}
           onClick={() => setActiveView(activeView === 'settings' ? 'library' : 'settings')}

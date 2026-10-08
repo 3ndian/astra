@@ -171,3 +171,32 @@ without a loudness pass and without normalization (playerStore.ts, AudioEngine.t
 - The audio connection is kept when the analyser is briefly missing (track change), instead of disconnecting and going silent.
 - A preset only reloads when you actually change it, not when the preset list changes.
 - New Quality (Low/Medium/High) and FPS (30/60) selectors in the Milkdrop bar.
+
+## Draggable left pane
+- Drag the right edge of the expanded left pane to resize (220–520 px, never more than half the window). Double-click the edge, or press Home/Esc while it is focused, to reset; Left/Right arrows nudge it. Width is remembered.
+- The bottom player bar's info block follows the pane width.
+- Expanded rows are tighter (32 px tall, 2 px gap). Tweak `--sidebar-expanded-item-height` and `--sidebar-expanded-gap` in globals.css.
+
+## Track info pane: same layout on Info and Lyrics
+- Header, tabs, cover and title are pinned; only the section below scrolls (Info details, or the lyrics list), so the cover never shifts when you switch tabs. Cover is capped at 38% of the window height (30% on Lyrics) and resizes smoothly.
+
+## Output device: follow the system default + quick picker
+- When the OS default output changes (AirPods connect/disconnect) and the app is set to "System Default", playback moves to the new device automatically (standard and bit-perfect modes). A device picked explicitly in Settings stays pinned.
+- New speaker button next to the volume control opens a "Play on" list of outputs. When the transport info line is set to show the output, clicking it opens the same list.
+
+## Fullscreen never gets stuck on Milkdrop
+- The player UI only fades away while Milkdrop is actually drawing; if it is still loading or waiting for audio you keep the normal backdrop and controls ("Play a song to start Milkdrop").
+- The exit button stays visible (dimmed) even when the rest of the UI fades.
+
+## Left pane: expand arrow on top + fullscreen crash guard
+- Compact rail: the expand arrow now sits at the top (the same spot as when expanded), the section rail below it, then the nav icons. Settings stays at the bottom in compact and top-right when expanded.
+- Fullscreen player is wrapped in an error boundary: if it ever throws, it closes (and turns Milkdrop off) instead of leaving a blank app.
+
+## Section-switch timing logs (diagnostic only)
+- Switching sections prints a timing breakdown: in the terminal running `npm run dev` for the main process (db close/open, registry save), and in the DevTools console for the renderer (history flush, main-process wait, each list query, playlists, ratings, total). The slowest step is marked `<--`.
+
+## Album pitch colours, Milkdrop background, audiobook extras
+- Spectrum can colour bars/curve by pitch using the playing cover's palette (Analyzer edit overlay: "Album colours"). Popout scope windows are unchanged.
+- Settings, Appearance: "Visual background" draws Milkdrop behind the whole app with translucent panels.
+- Audiobook sections: progress cue (chapter, percent, time left), chapter skip, and bookmarks with notes saved as `<file>.bookmarks.md` beside the audio file. Chapters are read from the file when it has them (M4B/MP4, MP3 CHAP).
+- Fix: Milkdrop preset import/list used `window.api`; it is `window.electronAPI`.

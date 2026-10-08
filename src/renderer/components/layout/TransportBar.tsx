@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
+import TransportResizeHandle from './TransportResizeHandle'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useEQStore } from '../../stores/eqStore'
@@ -22,6 +23,7 @@ import { usePresence } from '../../hooks/usePresence'
 import EQResponsePreview from '../eq/EQResponsePreview'
 import AudioPipelineShelf from './AudioPipelineShelf'
 import TransportLyricsShelf from './TransportLyricsShelf'
+import OutputDevicePicker, { OPEN_OUTPUT_PICKER_EVENT } from './OutputDevicePicker'
 import AudiobookControls from './AudiobookControls'
 import { useLyricsPopoutStore } from '../../stores/lyricsPopoutStore'
 import { useParallaxStore } from '../../stores/parallaxStore'
@@ -349,6 +351,7 @@ export default function TransportBar() {
       data-controller-axis="horizontal"
       data-controller-auto-items="true"
     >
+      <TransportResizeHandle />
       <button
         className={`pipeline-shelf-toggle${showPipelineShelf ? ' pipeline-shelf-toggle-open' : ''}`}
         onClick={togglePipelineShelf}
@@ -467,6 +470,17 @@ export default function TransportBar() {
                     currentTrack.albumIdentityKey
                   )
                 }}
+              >
+                <span className="transport-output-line-prefix">{transportInfoLine.prefix}</span>
+                <span className="transport-output-line-value">{transportInfoLine.value}</span>
+              </button>
+            ) : transportInfoLineMode === 'output' ? (
+              <button
+                type="button"
+                className="transport-output-line transport-output-line-button"
+                title={`${transportInfoLine.title} (click to change output)`}
+                aria-label={`Output device: ${transportInfoLine.value}. Change output device`}
+                onClick={() => window.dispatchEvent(new Event(OPEN_OUTPUT_PICKER_EVENT))}
               >
                 <span className="transport-output-line-prefix">{transportInfoLine.prefix}</span>
                 <span className="transport-output-line-value">{transportInfoLine.value}</span>
@@ -594,7 +608,8 @@ export default function TransportBar() {
         {/* Waveform with floating time labels */}
         <TransportWaveformSection loadingLabel={loadingLabel} loadingPercent={loadingPercent} />
 
-        {/* Volume */}
+        {/* Output device + volume */}
+        <OutputDevicePicker />
         <VolumeControl className="transport-volume" />
       </div>
 

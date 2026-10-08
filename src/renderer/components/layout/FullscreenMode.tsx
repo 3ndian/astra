@@ -729,6 +729,7 @@ export default function FullscreenMode() {
   const milkdropEnabled = useMilkdropStore((state) => state.enabled)
   const setMilkdropEnabled = useMilkdropStore((state) => state.setEnabled)
   const [milkdropChromeVisible, setMilkdropChromeVisible] = useState(true)
+  const [milkdropRunning, setMilkdropRunning] = useState(false)
   const milkdropChromeTimerRef = useRef<number | null>(null)
 
   const revealMilkdropChrome = useCallback(() => {
@@ -746,7 +747,7 @@ export default function FullscreenMode() {
 
   return (
     <div
-      className={`fullscreen-overlay${milkdropEnabled ? ' milkdrop-active' : ''}${milkdropEnabled && !milkdropChromeVisible ? ' milkdrop-chrome-hidden' : ''}`}
+      className={`fullscreen-overlay${milkdropEnabled && milkdropRunning ? ' milkdrop-active' : ''}${milkdropEnabled && milkdropRunning && !milkdropChromeVisible ? ' milkdrop-chrome-hidden' : ''}`}
       onMouseMove={milkdropEnabled ? revealMilkdropChrome : undefined}
       role="dialog"
       aria-modal="true"
@@ -777,7 +778,7 @@ export default function FullscreenMode() {
       </div>
 
       {milkdropEnabled ? (
-        <MilkdropStage controlsVisible={milkdropChromeVisible} />
+        <MilkdropStage controlsVisible={milkdropChromeVisible} onRunningChange={setMilkdropRunning} />
       ) : (
         <FullscreenAmbientSpectrum
           className={!currentTrack ? 'is-idle' : ''}

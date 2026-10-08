@@ -35,6 +35,24 @@ export default function InfoSidebar() {
   const openArtistInLibrary = useOpenArtistInLibrary()
   const openAlbumInLibrary = useOpenAlbumInLibrary()
   const [activeTab, setActiveTab] = useState<InfoSidebarTab>('info')
+  const [coverHidden, setCoverHidden] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem('astra-lyrics-cover-hidden-v1') === '1'
+    } catch {
+      return false
+    }
+  })
+  const toggleCoverHidden = () => {
+    setCoverHidden((value) => {
+      const next = !value
+      try {
+        window.localStorage.setItem('astra-lyrics-cover-hidden-v1', next ? '1' : '0')
+      } catch {
+        // session only
+      }
+      return next
+    })
+  }
   const lyricsTrackPath = useLyricsStore((s) => s.currentTrackPath)
   const lyricsResult = useLyricsStore((s) => s.currentResult)
   const lyricsIsLoading = useLyricsStore((s) => s.isLoading)
@@ -280,7 +298,7 @@ export default function InfoSidebar() {
   )
 
   return (
-    <aside className={`info-sidebar${activeTab === 'lyrics' ? ' info-sidebar-lyrics-active' : ''}`}>
+    <aside className={`info-sidebar${activeTab === 'lyrics' ? ' info-sidebar-lyrics-active' : ''}${activeTab === 'lyrics' && coverHidden ? ' info-sidebar-cover-hidden' : ''}`}>
       <div className="info-sidebar-header">
         <span className="info-sidebar-label">NOW PLAYING</span>
         <div className="info-sidebar-header-actions">
@@ -324,6 +342,17 @@ export default function InfoSidebar() {
         >
           Lyrics
         </button>
+        {activeTab === 'lyrics' && (
+          <button
+            type="button"
+            className="info-sidebar-tab info-sidebar-cover-toggle"
+            onClick={toggleCoverHidden}
+            aria-pressed={coverHidden}
+            title={coverHidden ? 'Show album cover' : 'Hide album cover for taller lyrics'}
+          >
+            {coverHidden ? 'Show cover' : 'Hide cover'}
+          </button>
+        )}
       </div>
 
       {currentTrack ? (
@@ -354,7 +383,7 @@ export default function InfoSidebar() {
           </div>
 
           {activeTab === 'lyrics' ? lyricsPanel : (
-          <>
+          <div className="info-sidebar-scroll">
           <div className="info-sidebar-meta info-tab-enter-left">
             <div className="info-meta-row">
               <span className="info-meta-label">Album</span>
@@ -460,7 +489,7 @@ export default function InfoSidebar() {
             </div>
             <div className="info-path-value">{currentTrack.path}</div>
           </div>
-          </>
+          </div>
           )}
         </>
       ) : activeTab === 'lyrics' ? (

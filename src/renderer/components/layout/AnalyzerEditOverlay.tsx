@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react'
+import { useAlbumPaletteStore } from '../../stores/albumPaletteStore'
 import type { ScopeKind } from '../../../types/scopePopout'
 import {
   MAX_SPECTROGRAM_SCROLL_SPEED,
@@ -342,6 +343,8 @@ export default function AnalyzerEditOverlay({
   const spectrumBarCornerRadiusPx = useVisualizerSettingsStore((state) => state.spectrumBarCornerRadiusPx)
   const spectrumShowBarPeaks = useVisualizerSettingsStore((state) => state.spectrumShowBarPeaks)
   const spectrumHeatPalette = useVisualizerSettingsStore((state) => state.spectrumHeatPalette)
+  const pitchColorsEnabled = useAlbumPaletteStore((state) => state.pitchColorsEnabled)
+  const setPitchColorsEnabled = useAlbumPaletteStore((state) => state.setPitchColorsEnabled)
   const setSpectrumBarDensity = useVisualizerSettingsStore((state) => state.setSpectrumBarDensity)
   const setSpectrumBarGapPercent = useVisualizerSettingsStore((state) => state.setSpectrumBarGapPercent)
   const setSpectrumBarCornerRadiusPx = useVisualizerSettingsStore((state) => state.setSpectrumBarCornerRadiusPx)
@@ -543,6 +546,17 @@ export default function AnalyzerEditOverlay({
               >
                 Side {spectrumDisplayMode === 'bars' ? 'Curve only' : spectrumShowSideLine ? 'On' : 'Off'}
               </button>
+              {!spectrumHeatmap ? (
+                <button
+                  type="button"
+                  className={`analyzer-edit-button ${pitchColorsEnabled ? 'is-active' : ''}`.trim()}
+                  onClick={() => setPitchColorsEnabled(!pitchColorsEnabled)}
+                  aria-pressed={pitchColorsEnabled}
+                  title="Colour the spectrum by pitch using the playing album's colours"
+                >
+                  Album colours {pitchColorsEnabled ? 'On' : 'Off'}
+                </button>
+              ) : null}
               {spectrumHeatmap ? (
                 <div className="analyzer-edit-mini-control analyzer-edit-spectrum-palette-control">
                   <span className="analyzer-edit-corner-label">Heat Palette</span>

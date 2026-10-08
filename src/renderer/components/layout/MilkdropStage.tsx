@@ -25,7 +25,14 @@ function webgl2Available(): boolean {
 }
 
 /** Milkdrop-style visualizer (Butterchurn) drawn behind the fullscreen player. */
-export default function MilkdropStage({ controlsVisible }: { controlsVisible: boolean }): React.ReactElement {
+export default function MilkdropStage({
+  controlsVisible,
+  onRunningChange
+}: {
+  controlsVisible: boolean
+  /** True once the visual is actually drawing; the parent only fades its UI while this is true. */
+  onRunningChange?: (running: boolean) => void
+}): React.ReactElement {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const vizRef = useRef<ButterchurnVisualizer | null>(null)
   const connectedNodeRef = useRef<AudioNode | null>(null)
@@ -40,6 +47,7 @@ export default function MilkdropStage({ controlsVisible }: { controlsVisible: bo
   const [presets, setPresets] = useState<PresetEntry[]>([])
   const [noAudio, setNoAudio] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
+  const [waitingForAudio, setWaitingForAudio] = useState(false)
 
   const presetName = useMilkdropStore((s) => s.presetName)
   const autoCycleSeconds = useMilkdropStore((s) => s.autoCycleSeconds)
@@ -78,7 +86,7 @@ export default function MilkdropStage({ controlsVisible }: { controlsVisible: bo
 
   const loadUserPresets = useCallback(async (): Promise<PresetEntry[]> => {
     try {
-      const stored = await window.api.milkdrop.list()
+      const stored = await window.electronAPI.milkdrop.list()
       return stored.map((p) => ({ name: p.name, preset: p.preset, user: true, fileName: p.fileName }))
     } catch {
       return []
@@ -111,10 +119,12 @@ export default function MilkdropStage({ controlsVisible }: { controlsVisible: bo
 
         // Wait for the Web Audio context (it only exists once something has played).
         let context = audioEngine.getAudioContext()
+        if (!context) setWaitingForAudio(true)
         while (!context && !cancelled) {
           await new Promise((resolve) => window.setTimeout(resolve, 500))
           context = audioEngine.getAudioContext()
         }
+        setWaitingForAudio(false)
         const canvas = canvasRef.current
         if (cancelled || !context || !canvas) return
 
@@ -231,6 +241,11 @@ export default function MilkdropStage({ controlsVisible }: { controlsVisible: bo
   }, [quality])
 
   // Next / previous / shuffle / auto-cycle all stay inside the active filter.
+  useEffect(() => {
+    onRunningChange?.(status === 'ready')
+    return () => onRunningChange?.(false)
+  }, [status, onRunningChange])
+
   const go = useCallback((mode: CycleMode) => {
     if (pool.length === 0) return
     const from = poolIndex < 0 && mode === 'previous' ? 0 : poolIndex
@@ -246,7 +261,7 @@ export default function MilkdropStage({ controlsVisible }: { controlsVisible: bo
   }, [status, autoCycleSeconds, pool.length, go])
 
   const importPresets = useCallback(async () => {
-    const result = await window.api.milkdrop.importPresets()
+    const result = await window.electronAPI.milkdrop.importPresets()
     if (result.imported === 0 && result.rejected.length === 0) return
     const parts: string[] = []
     if (result.imported > 0) parts.push(`Imported ${result.imported} preset${result.imported === 1 ? '' : 's'}`)
@@ -258,7 +273,7 @@ export default function MilkdropStage({ controlsVisible }: { controlsVisible: bo
 
   const removeCurrent = useCallback(async () => {
     if (!currentEntry?.user || !currentEntry.fileName) return
-    await window.api.milkdrop.remove(currentEntry.fileName)
+    await window.electronAPI.milkdrop.remove(currentEntry.fileName)
     const user = await loadUserPresets()
     setPresets((prev) => [...prev.filter((p) => !p.user), ...user])
     setPresetName(null)
@@ -280,7 +295,11 @@ export default function MilkdropStage({ controlsVisible }: { controlsVisible: bo
 
       {status === 'unsupported' && <div className="milkdrop-notice">Milkdrop needs WebGL2, which this machine doesn&apos;t report.</div>}
       {status === 'error' && <div className="milkdrop-notice">Milkdrop couldn&apos;t start. Check that butterchurn and butterchurn-presets are installed.</div>}
-      {status === 'loading' && <div className="milkdrop-notice">Loading Milkdrop…</div>}
+      {status === 'loading' && (
+        <div className="milkdrop-notice">
+          {waitingForAudio ? 'Play a song to start Milkdrop.' : 'Loading Milkdrop…'}
+        </div>
+      )}
       {status === 'ready' && noAudio && (
         <div className="milkdrop-notice">Milkdrop can&apos;t hear the audio in bit-perfect mode. Switch to the standard output to see it react.</div>
       )}

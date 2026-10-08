@@ -1,3 +1,4 @@
+import { recordTiming } from '../utils/sectionSwitchTimings'
 import { create } from 'zustand'
 import type { TrackSourceType } from '../../types/subsonic'
 import { logMemoryDiagnosticsEvent } from '../utils/memoryDiagnostics'
@@ -977,16 +978,16 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       hasFullTrackConsumers: get().fullTrackConsumers.size > 0
     }
     await Promise.all([
-      get().loadTrackCount(),
-      get().loadTrackDuration(),
-      get().loadAlbums(),
-      shouldReloadAlbumsIncludingSingles ? get().loadAlbumsIncludingSingles() : Promise.resolve(),
-      get().loadArtists(),
-      get().loadGenres(),
-      get().loadFolders(),
-      get().loadFavorites(),
-      get().loadRecentlyPlayed(),
-      currentSelection.hasFullTrackConsumers ? get().loadFullTracks() : Promise.resolve()
+      recordTiming('list: track count', get().loadTrackCount()),
+      recordTiming('list: total duration', get().loadTrackDuration()),
+      recordTiming('list: albums', get().loadAlbums()),
+      shouldReloadAlbumsIncludingSingles ? recordTiming('list: albums incl. singles', get().loadAlbumsIncludingSingles()) : Promise.resolve(),
+      recordTiming('list: artists', get().loadArtists()),
+      recordTiming('list: genres', get().loadGenres()),
+      recordTiming('list: folders', get().loadFolders()),
+      recordTiming('list: favorites', get().loadFavorites()),
+      recordTiming('list: recently played', get().loadRecentlyPlayed()),
+      currentSelection.hasFullTrackConsumers ? recordTiming('list: full tracks', get().loadFullTracks()) : Promise.resolve()
     ])
 
     if (currentSelection.album) {

@@ -15,6 +15,7 @@ import type { SpectrogramClarityMode, SpectrogramScaleMode, SpectrogramOrientati
 import type { SpectrumDisplayMode } from '../../../types/spectrum'
 import type { VUMeterMode, VUMeterOrientation } from '../../../types/vumeter'
 import type { WaveformMode } from '../../../types/waveform'
+import { useAlbumPaletteStore } from '../../stores/albumPaletteStore'
 import { resolveSpectrumHeatColors } from '../../audio/visualizers/spectrumHeatPalette'
 
 interface VisualizerPanelProps {
@@ -178,6 +179,8 @@ function useAnalyzerSurfaceVisible(
   return isSurfaceVisible
 }
 
+const EMPTY_PITCH_COLORS: string[] = []
+
 function DockedSpectrumTile({
   lineColor,
   displayColors,
@@ -218,6 +221,9 @@ function DockedSpectrumTile({
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const visualizerRef = useRef<SpectrumAnalyzer | null>(null)
+  const pitchColorsEnabled = useAlbumPaletteStore((state) => state.pitchColorsEnabled)
+  const albumPalette = useAlbumPaletteStore((state) => state.palette)
+  const pitchColors = pitchColorsEnabled && !heatmapFill && albumPalette.length > 0 ? albumPalette : EMPTY_PITCH_COLORS
   const { applyResizeNow } = useBufferedCanvasResize(containerRef, canvasRef, {
     onResize: () => visualizerRef.current?.resize(),
   })
@@ -242,6 +248,7 @@ function DockedSpectrumTile({
         smoothing,
         heatmapSmoothing,
         heatColors,
+        pitchColors,
         barDensity,
         barGapPercent,
         barCornerRadiusPx,
@@ -279,6 +286,7 @@ function DockedSpectrumTile({
       smoothing,
       heatmapSmoothing,
       heatColors,
+      pitchColors,
       barDensity,
       barGapPercent,
       barCornerRadiusPx,
@@ -293,7 +301,7 @@ function DockedSpectrumTile({
         `${lineColor}66`
       ]
     })
-  }, [displayColors, lineColor, fftSize, displayMode, heatmapFill, tiltDbPerOctave, heatmapTiltDbPerOctave, showSideLine, smoothing, heatmapSmoothing, heatColors, barDensity, barGapPercent, barCornerRadiusPx, showBarPeaks])
+  }, [displayColors, lineColor, fftSize, displayMode, heatmapFill, tiltDbPerOctave, heatmapTiltDbPerOctave, showSideLine, smoothing, heatmapSmoothing, heatColors, pitchColors, barDensity, barGapPercent, barCornerRadiusPx, showBarPeaks])
 
   useEffect(() => {
     if (isRunning) {
