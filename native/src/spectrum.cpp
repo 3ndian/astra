@@ -14,6 +14,21 @@ constexpr float BAR_HEAT_GAMMA = 1.4f;
 constexpr double BAR_PEAK_HOLD_MS = 750.0;
 constexpr float BAR_PEAK_DECAY_DB_PER_SECOND = 18.0f;
 constexpr size_t MAX_BAR_COUNT = 512;
+
+// Same Slaney Mel mapping as the renderer and spectrogram. Evaluated only
+// when the bar geometry changes, never for each sample or rendered frame.
+double frequencyAtPosition(double t, double low, double high, const std::string& mode) {
+    if (mode == "linear") return low + t * (high - low);
+    if (mode == "mel") {
+        const double step = std::log(6.4) / 27.0;
+        auto mel = [step](double hz) {
+            return hz < 1000.0 ? hz / (200.0 / 3.0) : 15.0 + std::log(hz / 1000.0) / step;
+        };
+        const double value = mel(low) + t * (mel(high) - mel(low));
+        return value < 15.0 ? value * (200.0 / 3.0) : 1000.0 * std::exp(step * (value - 15.0));
+    }
+    return std::exp(std::log(low) + t * (std::log(high) - std::log(low)));
+}
 }
 
 Spectrum::Spectrum(size_t fftSize)
@@ -47,6 +62,8 @@ void Spectrum::setFFTSize(size_t size) {
         sideRawMagnitudes_.assign(size / 2, -100.0f);
         sideSmoothedMagnitudes_.assign(size / 2, -100.0f);
         bufferedSamples_ = 0;
+        sideBufferedSamples_ = 0;
+        sideNeedsPrime_ = sideEnabled_;
         barMappingDirty_ = true;
         resetBarState();
     }
@@ -63,6 +80,18 @@ void Spectrum::setSampleRate(float sampleRate) {
 
 void Spectrum::setSmoothing(float smoothing) {
     smoothing_ = std::clamp(smoothing, 0.0f, 0.99f);
+}
+
+void Spectrum::setSideEnabled(bool enabled) {
+    if (sideEnabled_ == enabled) {
+        return;
+    }
+
+    sideEnabled_ = enabled;
+    // Side history is meaningful only while Side is requested. Starting from
+    // silence prevents samples from a previous enablement leaking into the
+    // first newly-enabled frame without disturbing the primary spectrum.
+    resetSideState();
 }
 
 void Spectrum::applyWindow(const float* input, float* output, size_t length) {
@@ -114,7 +143,9 @@ void Spectrum::pushZeroHistory(std::vector<float>& history, size_t length) {
 void Spectrum::updateMagnitudesForHistory(
     const std::vector<float>& history,
     std::vector<float>& rawMagnitudes,
-    std::vector<float>& smoothedMagnitudes
+    std::vector<float>& smoothedMagnitudes,
+    size_t bufferedSamples,
+    bool bypassSmoothing
 ) {
     if (history.empty() || magnitudes_.empty()) {
         return;
@@ -141,7 +172,7 @@ void Spectrum::updateMagnitudesForHistory(
         db = std::clamp(db, -120.0f, 12.0f);
         rawMagnitudes[i] = db;
 
-        if (bufferedSamples_ < fftSize_) {
+        if (bypassSmoothing || bufferedSamples < fftSize_) {
             smoothedMagnitudes[i] = db;
             continue;
         }
@@ -157,15 +188,24 @@ void Spectrum::updateMagnitudesForHistory(
 }
 
 void Spectrum::updateMagnitudes() {
-    updateMagnitudesForHistory(historyBuffer_, rawMagnitudes_, smoothedMagnitudes_);
-    updateMagnitudesForHistory(sideHistoryBuffer_, sideRawMagnitudes_, sideSmoothedMagnitudes_);
+    updateMagnitudesForHistory(historyBuffer_, rawMagnitudes_, smoothedMagnitudes_, bufferedSamples_);
+    if (sideEnabled_) {
+        updateMagnitudesForHistory(
+            sideHistoryBuffer_,
+            sideRawMagnitudes_,
+            sideSmoothedMagnitudes_,
+            sideBufferedSamples_,
+            sideNeedsPrime_
+        );
+        sideNeedsPrime_ = false;
+    }
 }
 
 void Spectrum::updateSilentSideMagnitudes() {
     const float silentDb = -120.0f;
     for (size_t i = 0; i < sideSmoothedMagnitudes_.size(); i++) {
         sideRawMagnitudes_[i] = silentDb;
-        if (bufferedSamples_ < fftSize_) {
+        if (sideNeedsPrime_ || sideBufferedSamples_ < fftSize_) {
             sideSmoothedMagnitudes_[i] = silentDb;
             continue;
         }
@@ -180,10 +220,16 @@ void Spectrum::updateSilentSideMagnitudes() {
 void Spectrum::pushSamples(const float* input, size_t length) {
     if (input != nullptr && length > 0) {
         pushHistory(historyBuffer_, input, length);
-        pushZeroHistory(sideHistoryBuffer_, length);
         bufferedSamples_ = length >= fftSize_ ? fftSize_ : std::min(fftSize_, bufferedSamples_ + length);
-        updateMagnitudesForHistory(historyBuffer_, rawMagnitudes_, smoothedMagnitudes_);
-        updateSilentSideMagnitudes();
+        updateMagnitudesForHistory(historyBuffer_, rawMagnitudes_, smoothedMagnitudes_, bufferedSamples_);
+        if (sideEnabled_) {
+            pushZeroHistory(sideHistoryBuffer_, length);
+            sideBufferedSamples_ = length >= fftSize_
+                ? fftSize_
+                : std::min(fftSize_, sideBufferedSamples_ + length);
+            updateSilentSideMagnitudes();
+            sideNeedsPrime_ = false;
+        }
         magnitudeRevision_++;
         return;
     }
@@ -198,20 +244,32 @@ void Spectrum::pushStereoSamples(const float* left, const float* right, size_t l
                 const float leftValue = left[start + i];
                 const float rightValue = right[start + i];
                 historyBuffer_[i] = (leftValue + rightValue) * 0.5f;
-                sideHistoryBuffer_[i] = (leftValue - rightValue) * 0.5f;
+                if (sideEnabled_) {
+                    sideHistoryBuffer_[i] = (leftValue - rightValue) * 0.5f;
+                }
             }
             bufferedSamples_ = fftSize_;
+            if (sideEnabled_) {
+                sideBufferedSamples_ = fftSize_;
+            }
         } else {
             const size_t keep = fftSize_ - length;
             std::move(historyBuffer_.begin() + length, historyBuffer_.end(), historyBuffer_.begin());
-            std::move(sideHistoryBuffer_.begin() + length, sideHistoryBuffer_.end(), sideHistoryBuffer_.begin());
+            if (sideEnabled_) {
+                std::move(sideHistoryBuffer_.begin() + length, sideHistoryBuffer_.end(), sideHistoryBuffer_.begin());
+            }
             for (size_t i = 0; i < length; i++) {
                 const float leftValue = left[i];
                 const float rightValue = right[i];
                 historyBuffer_[keep + i] = (leftValue + rightValue) * 0.5f;
-                sideHistoryBuffer_[keep + i] = (leftValue - rightValue) * 0.5f;
+                if (sideEnabled_) {
+                    sideHistoryBuffer_[keep + i] = (leftValue - rightValue) * 0.5f;
+                }
             }
             bufferedSamples_ = std::min(fftSize_, bufferedSamples_ + length);
+            if (sideEnabled_) {
+                sideBufferedSamples_ = std::min(fftSize_, sideBufferedSamples_ + length);
+            }
         }
     }
     updateMagnitudes();
@@ -231,6 +289,7 @@ float Spectrum::binToFrequency(int bin) const {
 
 void Spectrum::configureBars(const SpectrumBarConfig& config) {
     SpectrumBarConfig next = config;
+    if (next.scaleMode != "mel" && next.scaleMode != "linear") next.scaleMode = "log";
     next.requestedBarCount = std::clamp(next.requestedBarCount, static_cast<size_t>(1), MAX_BAR_COUNT);
     if (!std::isfinite(next.minFrequency)) next.minFrequency = 20.0f;
     next.minFrequency = std::max(1.0f, next.minFrequency);
@@ -249,6 +308,7 @@ void Spectrum::configureBars(const SpectrumBarConfig& config) {
 
     const bool changed =
         next.requestedBarCount != barConfig_.requestedBarCount
+        || next.scaleMode != barConfig_.scaleMode
         || next.minFrequency != barConfig_.minFrequency
         || next.maxFrequency != barConfig_.maxFrequency
         || next.minDecibels != barConfig_.minDecibels
@@ -290,11 +350,16 @@ void Spectrum::rebuildBarMapping() {
     barCount_ = std::max<size_t>(1, std::min(barConfig_.requestedBarCount, visibleBinCount));
 
     barFrequencyEdges_.resize(barCount_ + 1);
-    const double logMin = std::log(static_cast<double>(barConfig_.minFrequency));
-    const double logMax = std::log(static_cast<double>(barConfig_.maxFrequency));
+    barCenterFrequencies_.resize(barCount_);
     for (size_t index = 0; index <= barCount_; index++) {
         const double amount = static_cast<double>(index) / static_cast<double>(barCount_);
-        barFrequencyEdges_[index] = static_cast<float>(std::exp(logMin + amount * (logMax - logMin)));
+        barFrequencyEdges_[index] = static_cast<float>(frequencyAtPosition(
+            amount, barConfig_.minFrequency, barConfig_.maxFrequency, barConfig_.scaleMode));
+        if (index < barCount_) {
+            barCenterFrequencies_[index] = static_cast<float>(frequencyAtPosition(
+                (static_cast<double>(index) + 0.5) / barCount_,
+                barConfig_.minFrequency, barConfig_.maxFrequency, barConfig_.scaleMode));
+        }
     }
 
     barHeatDb_.assign(barCount_, BAR_HEAT_MIN_DB);
@@ -376,7 +441,7 @@ const std::vector<float>& Spectrum::getBarFrameAtTime(double nowMs) {
     for (size_t index = 0; index < barCount_; index++) {
         const float lowFrequency = barFrequencyEdges_[index];
         const float highFrequency = barFrequencyEdges_[index + 1];
-        const float centerFrequency = std::sqrt(lowFrequency * highFrequency);
+        const float centerFrequency = barCenterFrequencies_[index];
         const float startBin = lowFrequency / binWidth;
         const float endBin = highFrequency / binWidth;
 
@@ -426,13 +491,19 @@ double Spectrum::currentTimeMs() {
     return std::chrono::duration<double, std::milli>(now).count();
 }
 
-void Spectrum::reset() {
-    std::fill(historyBuffer_.begin(), historyBuffer_.end(), 0.0f);
+void Spectrum::resetSideState() {
     std::fill(sideHistoryBuffer_.begin(), sideHistoryBuffer_.end(), 0.0f);
-    std::fill(rawMagnitudes_.begin(), rawMagnitudes_.end(), -100.0f);
-    std::fill(smoothedMagnitudes_.begin(), smoothedMagnitudes_.end(), -100.0f);
     std::fill(sideRawMagnitudes_.begin(), sideRawMagnitudes_.end(), -100.0f);
     std::fill(sideSmoothedMagnitudes_.begin(), sideSmoothedMagnitudes_.end(), -100.0f);
+    sideBufferedSamples_ = 0;
+    sideNeedsPrime_ = sideEnabled_;
+}
+
+void Spectrum::reset() {
+    std::fill(historyBuffer_.begin(), historyBuffer_.end(), 0.0f);
+    std::fill(rawMagnitudes_.begin(), rawMagnitudes_.end(), -100.0f);
+    std::fill(smoothedMagnitudes_.begin(), smoothedMagnitudes_.end(), -100.0f);
+    resetSideState();
     bufferedSamples_ = 0;
     magnitudeRevision_ = 0;
     barHeatRevision_ = 0;

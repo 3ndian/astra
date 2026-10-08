@@ -1,3 +1,4 @@
+import { nominalFrequencyBoundsForRange, type FrequencyScaleMode, type FrequencyRangeMode } from '../../../types/frequencyScale'
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
 import { audioEngine } from '../../audio/AudioEngine'
 import { LUFSMeter, Oscilloscope, SpectrumAnalyzer, Spectrogram, Vectorscope, VUMeter, Waveform } from '../../audio/visualizers'
@@ -50,6 +51,8 @@ interface VisualizerDisplayColors {
   backgroundColor: string
   gridColor: string
   gridMutedColor: string
+  labelColor: string
+  phaseRiskColor: string
   meterTickColor: string
   meterTextColor: string
 }
@@ -186,6 +189,8 @@ function DockedSpectrumTile({
   displayColors,
   fftSize,
   displayMode,
+  scaleMode,
+  rangeMode,
   tiltDbPerOctave,
   heatmapFill,
   heatmapTiltDbPerOctave,
@@ -203,6 +208,8 @@ function DockedSpectrumTile({
   lineColor: string
   displayColors: VisualizerDisplayColors
   fftSize: number
+  scaleMode: FrequencyScaleMode
+  rangeMode: FrequencyRangeMode
   displayMode: SpectrumDisplayMode
   tiltDbPerOctave: number
   heatmapFill: boolean
@@ -237,6 +244,7 @@ function DockedSpectrumTile({
         lineColor,
         backgroundColor: displayColors.backgroundColor,
         gridColor: displayColors.gridColor,
+        labelColor: displayColors.labelColor,
         lineWidth: 2,
         fillGradient: !heatmapFill,
         heatmapFill,
@@ -244,6 +252,8 @@ function DockedSpectrumTile({
         heatmapTiltDbPerOctave,
         fftSize,
         displayMode,
+        scaleType: scaleMode,
+        ...nominalFrequencyBoundsForRange(rangeMode),
         showSideLine,
         smoothing,
         heatmapSmoothing,
@@ -259,7 +269,6 @@ function DockedSpectrumTile({
           `${lineColor}33`,
           `${lineColor}66`
         ],
-        scaleType: 'log',
         showGrid: true
       })
     }
@@ -280,8 +289,11 @@ function DockedSpectrumTile({
       lineColor,
       backgroundColor: displayColors.backgroundColor,
       gridColor: displayColors.gridColor,
+      labelColor: displayColors.labelColor,
       fftSize,
       displayMode,
+      scaleType: scaleMode,
+      ...nominalFrequencyBoundsForRange(rangeMode),
       showSideLine,
       smoothing,
       heatmapSmoothing,
@@ -301,7 +313,7 @@ function DockedSpectrumTile({
         `${lineColor}66`
       ]
     })
-  }, [displayColors, lineColor, fftSize, displayMode, heatmapFill, tiltDbPerOctave, heatmapTiltDbPerOctave, showSideLine, smoothing, heatmapSmoothing, heatColors, pitchColors, barDensity, barGapPercent, barCornerRadiusPx, showBarPeaks])
+  }, [displayColors, lineColor, fftSize, displayMode, scaleMode, rangeMode, heatmapFill, tiltDbPerOctave, heatmapTiltDbPerOctave, showSideLine, smoothing, heatmapSmoothing, heatColors, pitchColors, barDensity, barGapPercent, barCornerRadiusPx, showBarPeaks])
 
   useEffect(() => {
     if (isRunning) {
@@ -399,12 +411,14 @@ function DockedVectorscopeTile({
   displayColors,
   vectorscopeMode,
   vectorscopeMultiband,
+  zoomDb,
   isRunning,
   frameScheduler,
 }: {
   lineColor: string
   displayColors: VisualizerDisplayColors
   vectorscopeMode: VectorscopeMode
+  zoomDb: number
   vectorscopeMultiband: boolean
   isRunning: boolean
   frameScheduler: FrameScheduler
@@ -426,10 +440,13 @@ function DockedVectorscopeTile({
         backgroundColor: displayColors.backgroundColor,
         gridMajorColor: displayColors.gridColor,
         gridMinorColor: displayColors.gridMutedColor,
+        labelColor: displayColors.labelColor,
+        phaseRiskColor: displayColors.phaseRiskColor,
         lineWidth: 1,
         showGrid: true,
         mode: vectorscopeMode,
         multiband: vectorscopeMultiband,
+        zoomDb,
       })
     }
 
@@ -450,10 +467,13 @@ function DockedVectorscopeTile({
       backgroundColor: displayColors.backgroundColor,
       gridMajorColor: displayColors.gridColor,
       gridMinorColor: displayColors.gridMutedColor,
+      labelColor: displayColors.labelColor,
+      phaseRiskColor: displayColors.phaseRiskColor,
       mode: vectorscopeMode,
       multiband: vectorscopeMultiband,
+      zoomDb,
     })
-  }, [displayColors, lineColor, vectorscopeMode, vectorscopeMultiband])
+  }, [displayColors, lineColor, vectorscopeMode, vectorscopeMultiband, zoomDb])
 
   useEffect(() => {
     if (isRunning) {
@@ -477,6 +497,7 @@ function DockedSpectrogramTile({
   scrollSpeed,
   clarityMode,
   scaleMode,
+  rangeMode,
   tiltDbPerOctave,
   contrast,
   orientation,
@@ -488,6 +509,7 @@ function DockedSpectrogramTile({
   fftSize: number
   scrollSpeed: number
   clarityMode: SpectrogramClarityMode
+  rangeMode: FrequencyRangeMode
   scaleMode: SpectrogramScaleMode
   tiltDbPerOctave: number
   contrast: number
@@ -514,6 +536,9 @@ function DockedSpectrogramTile({
         scrollSpeed,
         clarityMode,
         scaleMode,
+        ...nominalFrequencyBoundsForRange(rangeMode),
+        gridColor: displayColors.gridColor,
+        labelColor: displayColors.labelColor,
         tiltDbPerOctave,
         contrast,
         orientation,
@@ -539,11 +564,14 @@ function DockedSpectrogramTile({
       scrollSpeed,
       clarityMode,
       scaleMode,
+      ...nominalFrequencyBoundsForRange(rangeMode),
+      gridColor: displayColors.gridColor,
+      labelColor: displayColors.labelColor,
       tiltDbPerOctave,
       contrast,
       orientation,
     })
-  }, [clarityMode, displayColors, lineColor, fftSize, scrollSpeed, scaleMode, tiltDbPerOctave, contrast, orientation])
+  }, [clarityMode, displayColors, lineColor, fftSize, scrollSpeed, scaleMode, rangeMode, tiltDbPerOctave, contrast, orientation])
 
   useEffect(() => {
     if (isRunning) {
@@ -791,6 +819,7 @@ function spectrogramClarityLabelShort(mode: SpectrogramClarityMode): string {
     case 'classic': return 'CLASSIC'
     case 'sharp': return 'SHARP'
     case 'sharper': return 'SHARPER'
+    case 'reassigned': return 'REASSIGNED'
   }
 }
 
@@ -910,6 +939,10 @@ export default function VisualizerPanel({
   const spectrogramFftSize = useVisualizerSettingsStore((s) => s.spectrogramFftSize)
   const spectrogramScrollSpeed = useVisualizerSettingsStore((s) => s.spectrogramScrollSpeed)
   const spectrogramClarityMode = useVisualizerSettingsStore((s) => s.spectrogramClarityMode)
+  const spectrumScaleMode = useVisualizerSettingsStore((s) => s.spectrumScaleMode)
+  const spectrumRangeMode = useVisualizerSettingsStore((s) => s.spectrumRangeMode)
+  const spectrogramRangeMode = useVisualizerSettingsStore((s) => s.spectrogramRangeMode)
+  const vectorscopeZoomDb = useVisualizerSettingsStore((s) => s.vectorscopeZoomDb)
   const spectrogramScaleMode = useVisualizerSettingsStore((s) => s.spectrogramScaleMode)
   const spectrogramTiltDbPerOctave = useVisualizerSettingsStore((s) => s.spectrogramTiltDbPerOctave)
   const spectrogramContrast = useVisualizerSettingsStore((s) => s.spectrogramContrast)
@@ -956,6 +989,8 @@ export default function VisualizerPanel({
     backgroundColor: visualizerTheme.stageBg,
     gridColor: visualizerTheme.stageGrid,
     gridMutedColor: visualizerTheme.isLight ? 'rgba(15, 23, 42, 0.07)' : 'rgba(255, 255, 255, 0.04)',
+    labelColor: visualizerTheme.stageTextMuted,
+    phaseRiskColor: visualizerTheme.stageWarning,
     meterTickColor: visualizerTheme.stageGrid,
     meterTextColor: visualizerTheme.stageText,
   }), [visualizerTheme])
@@ -1091,7 +1126,7 @@ export default function VisualizerPanel({
     const waveformDemand = isDockedAnalyzerActive && isRunning && visibleScopeSet.has('waveform') && !scopePopoutState.waveform
     audioEngine.setVisualizerConsumerDemand('docked-deck', {
       spectrum: spectrumDemand,
-      spectrumStereo: spectrumDemand && spectrumShowSideLine,
+      spectrumStereo: spectrumDemand && spectrumDisplayMode === 'curve' && spectrumShowSideLine,
       oscilloscope: nativeVisualizersAvailable && isDockedAnalyzerActive && isRunning && visibleScopeSet.has('oscilloscope') && !scopePopoutState.oscilloscope,
       vectorscope: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('vectorscope') && !scopePopoutState.vectorscope,
       spectrogram: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('spectrogram') && !scopePopoutState.spectrogram,
@@ -1104,7 +1139,7 @@ export default function VisualizerPanel({
     return () => {
       audioEngine.clearVisualizerConsumerDemand('docked-deck')
     }
-  }, [isDockedAnalyzerActive, isRunning, mountedVisibleScopes, nativeVisualizersAvailable, scopePopoutState, spectrumShowSideLine, waveformMode])
+  }, [isDockedAnalyzerActive, isRunning, mountedVisibleScopes, nativeVisualizersAvailable, scopePopoutState, spectrumDisplayMode, spectrumShowSideLine, waveformMode])
 
   const openScopeEditor = useCallback(() => {
     openAnalyzerEditMode()
@@ -1314,6 +1349,8 @@ export default function VisualizerPanel({
           <NativeUnavailableNotice scope={scope} reason={getNativeLoadError()?.message ?? null} />
         ) : scope === 'spectrum' ? (
           <DockedSpectrumTile
+            scaleMode={spectrumScaleMode}
+            rangeMode={spectrumRangeMode}
             frameScheduler={frameScheduler}
             lineColor={lineColor}
             displayColors={displayColors}
@@ -1343,6 +1380,7 @@ export default function VisualizerPanel({
           />
         ) : scope === 'spectrogram' ? (
           <DockedSpectrogramTile
+            rangeMode={spectrogramRangeMode}
             frameScheduler={frameScheduler}
             lineColor={lineColor}
             displayColors={displayColors}
@@ -1383,6 +1421,7 @@ export default function VisualizerPanel({
           />
         ) : (
           <DockedVectorscopeTile
+            zoomDb={vectorscopeZoomDb}
             frameScheduler={frameScheduler}
             lineColor={lineColor}
             displayColors={displayColors}

@@ -1,16 +1,30 @@
 import { getResumeStart } from '../utils/audiobookResume'
 import { create } from 'zustand'
-import { audioEngine, isSupersededAudioLoadError } from '../audio/AudioEngine'
+import type { PlaybackSourceContext } from '../../types/playbackSource'
+import { normalizePlaybackSourceContext, playbackSourceKey, resolveCurrentPlaybackSource } from '../../shared/home/playbackSources'
+export type { PlaybackSourceContext } from '../../types/playbackSource'
+import {
+  audioEngine,
+  isSupersededAudioLoadError,
+  type AudioBufferReadyMetadata,
+  type AudioLoadTimings
+} from '../audio/AudioEngine'
 import type { Track, PlaybackState } from '../types/audio'
-import type { NativeAudioCapabilities } from '../../types/nativeAudio'
+import type { NativeAudioCapabilities, NativeAudioTrackLoadResult } from '../../types/nativeAudio'
 import type { ListeningHistoryStatus } from '../../types/listeningStats'
-import { parseBitPerfectFormatError, stripBitPerfectFormatTag } from '../../shared/audio/bitPerfectFormatError'
+import type { StaticTrackWaveformResult } from '../../shared/localPcmStream'
+import {
+  createNativeOutputFailureError,
+  parseBitPerfectFormatError,
+  stripBitPerfectFormatTag
+} from '../../shared/audio/bitPerfectFormatError'
 import { extractWaveformPeaks } from '../audio/waveformExtractor'
 import { useLibraryStore, type DbTrack } from './libraryStore'
 import { usePlaylistStore } from './playlistStore'
 import { resolveOutputDeviceLabel, useAudioSettingsStore, type ReplayGainMode } from './audioSettingsStore'
 import { useParallaxStore } from './parallaxStore'
 import { logMemoryDiagnosticsEvent } from '../utils/memoryDiagnostics'
+import { selectUpcomingLoudnessWarmupTracks } from '../utils/loudnessWarmup'
 import {
   type PlayerSessionSnapshot,
   type SessionPlaybackSourceContext,
@@ -38,6 +52,159 @@ interface RemoteLoadProgress {
 export type QueueItemOrigin = 'context' | 'manual'
 export type QueueTrackSource = QueueItemOrigin | 'standalone'
 type PlaybackLoadOutcome = 'loaded' | 'failed' | 'superseded'
+type PlaybackIntent = 'context' | 'queue' | 'next' | 'previous' | 'resume' | 'direct' | 'automatic'
+type PrebufferStatus = 'not_applicable' | 'miss' | 'ready' | 'in_flight' | 'in_flight_promoted'
+
+interface PlaybackAttempt {
+  id: number
+  intent: PlaybackIntent
+  commandStartedAtMs: number
+  queuePreparationMs: number
+  queueSize: number
+  loadingStateAtMs: number | null
+  selectedTrackHydrationMs: number
+  supersededLoadWaitMs: number
+  prebufferStatus: PrebufferStatus
+  completed: boolean
+  playingAtMs: number | null
+  transitionIdentity: PlaybackTransitionIdentity | null
+}
+
+interface PlaybackTransitionIdentity {
+  intentId: number
+  queueItemId: string | null
+  standaloneTrackPath: string | null
+}
+
+interface CommittedPlaybackTransition {
+  identity: PlaybackTransitionIdentity
+  track: Track
+}
+
+interface PlaybackLoadOptions {
+  manualStart?: boolean
+  startTime?: number
+  attempt?: PlaybackAttempt
+}
+
+interface PlaybackAttemptTimings {
+  backend: 'standard' | 'exclusive' | 'bitperfect' | 'remote' | 'local_progressive' | 'prebuffer'
+  loadRequestId?: number | null
+  prebufferRequestId?: number | null
+  decodeRequestId?: number | null
+  fileReadMs?: number | null
+  decodeMs?: number | null
+  decodeOnlyMs?: number | null
+  standardLoadPipelineMs?: number | null
+  decodeWorkMs?: number | null
+  loudnessMs?: number | null
+  localFilePreflightMs?: number | null
+  audioContextInitMs?: number | null
+  loudnessSource?: AudioLoadTimings['loudnessSource'] | null
+  backendStartMs?: number | null
+  validPcmBytes?: number | null
+  backingBufferBytes?: number | null
+  allocationGrowthCount?: number | null
+  transportRoute?: 'invoke' | 'message_port_stream' | null
+  mainHandlerMs?: number | null
+  binaryResolutionMs?: number | null
+  probeMs?: number | null
+  ffmpegMs?: number | null
+  pcmAllocationMs?: number | null
+  initialPcmAllocationMs?: number | null
+  growthPcmAllocationMs?: number | null
+  payloadFinalizationMs?: number | null
+  preloadInvokeMs?: number | null
+  rendererBridgeCallMs?: number | null
+  electronIpcResidualMs?: number | null
+  contextBridgeResidualMs?: number | null
+  streamChunkCount?: number | null
+  streamDispatchCopyMs?: number | null
+  streamDispatchPostMs?: number | null
+  streamTailMs?: number | null
+  rendererPcmAssemblyAllocationMs?: number | null
+  rendererPcmAssemblyCopyMs?: number | null
+  rendererPortRequestMs?: number | null
+  streamTransportResidualMs?: number | null
+  webAudioBufferAllocationMs?: number | null
+  pcmDeinterleaveMs?: number | null
+  pcmCommitMs?: number | null
+  postDeliveryCommitMs?: number | null
+  nativeBinaryResolutionMs?: number | null
+  nativeProbeMs?: number | null
+  nativeDecodeMs?: number | null
+  nativeLoadMs?: number | null
+  nativeDeviceStartMs?: number | null
+}
+
+function getStandardPcmTimingDetails(timings: AudioLoadTimings | null | undefined) {
+  const decodeWorkMs = timings?.decodeWorkMs ?? timings?.decodeMs ?? null
+  return {
+    audioContextInitMs: timings?.audioContextInitMs ?? null,
+    loudnessSource: timings?.loudnessSource ?? null,
+    decodeRequestId: timings?.decodeRequestId ?? null,
+    validPcmBytes: timings?.validPcmBytes ?? null,
+    backingBufferBytes: timings?.backingBufferBytes ?? null,
+    allocationGrowthCount: timings?.allocationGrowthCount ?? null,
+    transportRoute: timings?.transportRoute ?? null,
+    mainHandlerMs: timings?.mainHandlerMs ?? null,
+    binaryResolutionMs: timings?.binaryResolutionMs ?? null,
+    probeMs: timings?.probeMs ?? timings?.nativeProbeMs ?? null,
+    ffmpegMs: timings?.ffmpegMs ?? timings?.nativeDecodeMs ?? null,
+    pcmAllocationMs: timings?.pcmAllocationMs ?? null,
+    initialPcmAllocationMs: timings?.initialPcmAllocationMs ?? null,
+    growthPcmAllocationMs: timings?.growthPcmAllocationMs ?? null,
+    payloadFinalizationMs: timings?.payloadFinalizationMs ?? null,
+    preloadInvokeMs: timings?.preloadInvokeMs ?? null,
+    rendererBridgeCallMs: timings?.rendererBridgeCallMs ?? null,
+    electronIpcResidualMs: timings?.electronIpcResidualMs ?? null,
+    contextBridgeResidualMs: timings?.contextBridgeResidualMs ?? null,
+    streamChunkCount: timings?.streamChunkCount ?? null,
+    streamDispatchCopyMs: timings?.streamDispatchCopyMs ?? null,
+    streamDispatchPostMs: timings?.streamDispatchPostMs ?? null,
+    streamTailMs: timings?.streamTailMs ?? null,
+    rendererPcmAssemblyAllocationMs: timings?.rendererPcmAssemblyAllocationMs ?? null,
+    rendererPcmAssemblyCopyMs: timings?.rendererPcmAssemblyCopyMs ?? null,
+    rendererPortRequestMs: timings?.rendererPortRequestMs ?? null,
+    streamTransportResidualMs: timings?.streamTransportResidualMs ?? null,
+    webAudioBufferAllocationMs: timings?.webAudioBufferAllocationMs ?? null,
+    pcmDeinterleaveMs: timings?.pcmDeinterleaveMs ?? null,
+    pcmCommitMs: timings?.pcmCommitMs ?? null,
+    postDeliveryCommitMs: timings?.postDeliveryCommitMs ?? null,
+    decodeWorkMs
+  }
+}
+
+interface PendingTransitionLoad {
+  id: number
+  intentId: number
+  track: Track
+  targetQueueItemId: string | null
+  standaloneTrackPath: string | null
+  options: PlaybackLoadOptions
+  queuedAtMs: number
+  backend: PlaybackAttemptTimings['backend']
+  resolve: (outcome: PlaybackLoadOutcome) => void
+  reject: (error: unknown) => void
+}
+
+interface PlaybackContextHydrationPlan {
+  missingPaths: Set<string>
+  commandStartedAtMs: number
+  playbackIntentId: number
+}
+
+interface ContextTrackHydrationRecord {
+  generation: number
+  promise: Promise<DbTrack | null>
+}
+
+interface PlaybackInterruptionReconciliation {
+  intentId: number
+  desiredState: Extract<PlaybackState, 'paused' | 'stopped'>
+  track: Track
+  standaloneTrackPath: string | null
+}
 
 export type QueueTrackSnapshot = Omit<Track, 'artworkData'>
 
@@ -67,13 +234,8 @@ export interface ResolvedQueueTrack {
   index: number
 }
 
-export type PlaybackSourceContext =
-  | { type: 'playlist'; playlistId: number }
-  | { type: 'artist'; artist: string }
-  | { type: 'genre'; genre: string }
-  | { type: 'album'; album: string; albumArtist?: string; identityKey?: string }
-
 export interface PlaybackContextOptions {
+  recordSelectedTrack?: boolean
   sourcePlaylistId?: number | null
   contextLabel?: string | null
   sourceContext?: PlaybackSourceContext | null
@@ -128,6 +290,9 @@ interface PlayerStore {
     channels: number | null
     sampleFormat: string | null
     message: string
+    failureStage: string | null
+    osCode: string | number | null
+    report: string | null
   } | null
   restoredTrackNeedsLoad: boolean
   restoredPlaybackTime: number | null
@@ -168,9 +333,9 @@ interface PlayerStore {
     startIndex?: number,
     options?: PlaybackContextOptions
   ) => Promise<void>
-  enqueueTrack: (track: Track, position?: number | 'next' | 'end') => void
-  enqueueTracks: (tracks: Track[], position?: number | 'next' | 'end') => void
-  enqueueTrackPaths: (paths: string[], position?: number | 'next' | 'end') => Promise<void>
+  enqueueTrack: (track: Track, position?: number | 'next' | 'end', options?: PlaybackContextOptions) => void
+  enqueueTracks: (tracks: Track[], position?: number | 'next' | 'end', options?: PlaybackContextOptions) => void
+  enqueueTrackPaths: (paths: string[], position?: number | 'next' | 'end', options?: PlaybackContextOptions) => Promise<void>
   moveUpcomingItem: (queueId: string, toIndex: number) => void
   removeUpcomingItem: (queueId: string) => void
   clearAllQueues: () => void
@@ -185,7 +350,7 @@ interface PlayerStore {
   toggleShuffle: () => void
   toggleRepeat: () => void
   getResolvedUpcomingTracks: () => Track[]
-  getResolvedUpcomingEntries: () => ResolvedQueueTrack[]
+  getResolvedUpcomingEntries: (limit?: number) => ResolvedQueueTrack[]
   getResolvedPreviousTracks: () => Track[]
   getResolvedPreviousEntries: () => ResolvedQueueTrack[]
   getResolvedNextTrack: () => Track | null
@@ -207,9 +372,10 @@ interface PlayerStore {
   // Internal
   _initListeners: () => void
   _cleanupListeners: () => void
-  _loadAndPlayTrack: (track: Track, options?: { manualStart?: boolean; startTime?: number }) => Promise<PlaybackLoadOutcome>
+  _loadAndPlayTrack: (track: Track, options?: PlaybackLoadOptions) => Promise<PlaybackLoadOutcome>
   _preBufferNextTrack: () => Promise<void>
   _schedulePreBufferNextTrack: (options?: { invalidatePending?: boolean }) => void
+  _clearBufferedNextTrack: () => void
   _getNextEntry: () => ResolvedQueueTrack | null
 }
 
@@ -231,15 +397,19 @@ const LOCAL_PROGRESSIVE_DECODED_BYTES = MAX_STANDARD_PREBUFFER_TRACK_BYTES
 // streamed without a loudness analysis and without loudness normalization. Analysing them is slow,
 // and if it failed the player used to fall back to decoding the whole file into memory.
 const SKIP_LOUDNESS_DECODED_BYTES = 1024 * 1024 * 1024
-const LOUDNESS_WARMUP_UPCOMING_TRACKS = 2
+const LOUDNESS_WARMUP_UPCOMING_TRACKS = 1
 export const GAPLESS_PREBUFFER_LEAD_SECONDS = 15
 const GAPLESS_PREBUFFER_TIMER_TOLERANCE_MS = 250
 const MAX_GAPLESS_PREBUFFER_TIMER_MS = 2_147_000_000
-export const MAX_PLAYBACK_HISTORY = 500
+export const ADAPTIVE_PREBUFFER_SETTLE_MS = 1000
+export const ADAPTIVE_PREBUFFER_IDLE_TIMEOUT_MS = 2000
+export const CONTEXT_HYDRATION_BATCH_SIZE = 200
+const STANDARD_TRANSITION_COALESCE_MS = 75
 export const PLAYER_VOLUME_STORAGE_KEY = 'astra-player-volume-v1'
-const BIT_PERFECT_REMOTE_FALLBACK_MESSAGE = 'Bit-perfect mode is only available for local files. Playback fell back to Standard.'
-const IAMF_BIT_PERFECT_FALLBACK_MESSAGE = 'Eclipsa (IAMF) tracks decode through the standard pipeline. Playback fell back to Standard.'
+const NATIVE_REMOTE_FAILURE_MESSAGE = 'Native exclusive playback is local-file-only. Switch to Standard to play remote or progressive sources.'
+const IAMF_NATIVE_FAILURE_MESSAGE = 'Eclipsa (IAMF) and Parallax sources are Standard-only. Switch to Standard to play this track.'
 let nextQueueItemId = 1
+let nextPlaybackAttemptId = 1
 
 function createQueueId(): string {
   const queueId = `queue-${nextQueueItemId}`
@@ -266,29 +436,7 @@ function advanceNextQueueItemId(queueIds: Iterable<string>): void {
 }
 
 function sessionContextToPlaybackContext(context: SessionPlaybackSourceContext | null): PlaybackSourceContext | null {
-  if (!context) return null
-  if (context.type === 'playlist') {
-    return typeof context.playlistId === 'number'
-      ? { type: 'playlist', playlistId: context.playlistId }
-      : null
-  }
-  if (context.type === 'artist') {
-    return context.artist ? { type: 'artist', artist: context.artist } : null
-  }
-  if (context.type === 'genre') {
-    return context.genre ? { type: 'genre', genre: context.genre } : null
-  }
-  if (context.type === 'album') {
-    return context.album
-      ? {
-          type: 'album',
-          album: context.album,
-          albumArtist: context.albumArtist,
-          identityKey: context.identityKey
-        }
-      : null
-  }
-  return null
+  return normalizePlaybackSourceContext(context)
 }
 
 function sessionQueueItemToQueueItem(item: SessionQueueItem): QueueItem {
@@ -541,11 +689,29 @@ function createQueueEntriesFromResolvedTracks(
 }
 
 export function createQueueEntriesFromPaths(trackPaths: readonly string[]): QueueTrackEntry[] {
-  const paths = trackPaths.filter((trackPath) => typeof trackPath === 'string' && trackPath.length > 0)
-  if (paths.length === 0) return []
+  return preparePlaybackContextPaths(trackPaths).entries
+}
 
-  const resolvedTracks = useLibraryStore.getState().resolveTrackPaths(paths)
-  return createQueueEntriesFromResolvedTracks(paths, resolvedTracks)
+function preparePlaybackContextPaths(trackPaths: readonly string[]): {
+  entries: QueueTrackEntry[]
+  missingPaths: Set<string>
+} {
+  const { trackByPath } = useLibraryStore.getState()
+  const entries: QueueTrackEntry[] = []
+  const missingPaths = new Set<string>()
+  for (const path of trackPaths) {
+    if (typeof path !== 'string' || path.length === 0) continue
+    const track = trackByPath.get(path)
+    if (track) {
+      // Conversion already produces an artwork-free snapshot. Create one per
+      // occurrence so duplicate playlist paths remain independent queue entries.
+      entries.push({ path, snapshot: dbTrackToTrack(track) })
+    } else {
+      entries.push(createQueueEntryFromPath(path))
+      missingPaths.add(path)
+    }
+  }
+  return { entries, missingPaths }
 }
 
 export async function createQueueEntriesFromPathsWithFetch(trackPaths: readonly string[]): Promise<QueueTrackEntry[]> {
@@ -724,7 +890,7 @@ function normalizeContextLabel(value: string | null | undefined): string | null 
 }
 
 function resolvePlaybackSourceContext(options?: PlaybackContextOptions): PlaybackSourceContext | null {
-  if (options?.sourceContext) return options.sourceContext
+  if (options?.sourceContext) return normalizePlaybackSourceContext(options.sourceContext)
   if (typeof options?.sourcePlaylistId === 'number') {
     return { type: 'playlist', playlistId: options.sourcePlaylistId }
   }
@@ -761,6 +927,8 @@ interface RecentPlaySession {
   counted: boolean
   allowDbWrite: boolean
   sourcePlaylistId: number | null
+  sourceContext: PlaybackSourceContext | null
+  queueItemId: string | null
   generation: string | null
   sessionKey: string
   sessionStartedAt: number
@@ -888,11 +1056,20 @@ function requestTrackLoudnessAnalysis(
 ): Promise<{ loudnessLufs: number; peakLinear: number | null } | null> | null {
   if (track.sourceType && track.sourceType !== 'local') return null
   if (isTooLongForLoudnessAnalysis(track)) return null
+  if (useAudioSettingsStore.getState().playbackOutputMode === 'bitperfect') return null
   if (!audioEngine.needsLoudnessAnalysisForLoad(replayGainDb)) return null
   const request = priority === 'background'
     ? window.electronAPI.warmupTrackLoudness(track.path)
     : window.electronAPI.analyzeTrackLoudness(track.path)
   return request.catch(() => null)
+}
+
+function supersedeInteractiveLoudnessAnalysis(trackPath: string | null): void {
+  const supersede = window.electronAPI.supersedeTrackLoudness
+  if (!supersede) return
+  void supersede(trackPath).catch(() => {
+    // Playback must remain independent from optional analysis coordination.
+  })
 }
 
 // IAMF (Eclipsa) tracks decode via the renderer wasm worker; every
@@ -956,12 +1133,12 @@ function getReplayGainCandidateDb(
   return trackGainDb ?? albumGainDb
 }
 
-function shouldUseBitPerfectPath(track: Track | null | undefined): boolean {
+function shouldUseNativeExclusivePath(track: Track | null | undefined): boolean {
   if (!track) return false
   const sourceType = track.sourceType ?? 'local'
   if (sourceType !== 'local') return false
   if (isIamfTrack(track)) return false
-  return useAudioSettingsStore.getState().playbackOutputMode === 'bitperfect'
+  return useAudioSettingsStore.getState().playbackOutputMode !== 'standard'
 }
 
 async function ensureCompatiblePlaybackMode(track: Track): Promise<void> {
@@ -972,15 +1149,22 @@ async function ensureCompatiblePlaybackMode(track: Track): Promise<void> {
   }
 
   const audioSettings = useAudioSettingsStore.getState()
-  if (audioSettings.playbackOutputMode !== 'bitperfect') {
+  if (audioSettings.playbackOutputMode === 'standard') {
     return
   }
 
-  await audioSettings.setPlaybackOutputMode('standard')
-  useAudioSettingsStore.setState({
-    playbackModeStatusMessage: sourceType !== 'local'
-      ? BIT_PERFECT_REMOTE_FALLBACK_MESSAGE
-      : IAMF_BIT_PERFECT_FALLBACK_MESSAGE
+  const message = sourceType !== 'local'
+    ? NATIVE_REMOTE_FAILURE_MESSAGE
+    : IAMF_NATIVE_FAILURE_MESSAGE
+  throw createNativeOutputFailureError({
+    deviceLabel: audioSettings.nativeAudioOutputStatus?.deviceLabel ?? null,
+    sampleRate: track.sampleRate ?? null,
+    channels: track.channels ?? null,
+    sampleFormat: null,
+    message,
+    failureStage: 'source',
+    osCode: null,
+    report: `Native output failure\nStage: source\nMode: ${audioSettings.playbackOutputMode}\nTrack: ${track.path}\n${message}`
   })
 }
 
@@ -988,6 +1172,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   // Track if listeners are initialized
   let listenersInitialized = false
   let remoteLoadProgressUnsubscribe: (() => void) | null = null
+  let staticWaveformResultUnsubscribe: (() => void) | null = null
+  let staticWaveformResultListenerAvailable = false
+  const pendingStaticWaveformBuffers = new Map<number, { trackPath: string; buffer: AudioBuffer }>()
+  const failedStaticWaveformRequests = new Map<number, string>()
   let listeningBeforeUnloadHandler: (() => void) | null = null
   let lastCommittedCurrentTimeMs = 0
   let ffmpegFallbackNoticeId = 0
@@ -1003,32 +1191,274 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   let listeningHistoryStatusPromise: Promise<ListeningHistoryStatus> | null = null
   let activeLoadRequestId = 0
   let activePrebufferRequestId = 0
-  let currentSerializedLoad: Promise<void> | null = null
+  let playbackIntentGeneration = 0
+  let contextHydrationGeneration = 0
+  let activeContextHydrationItems: readonly QueueItem[] = []
+  const pendingContextMetadataPaths = new Map<string, number>()
+  const contextTrackHydrationByPath = new Map<string, ContextTrackHydrationRecord>()
+  // Keep exact queue-item ownership until a request settles. A newer context may
+  // preserve an unresolved item in playback history; Previous must be able to
+  // promote that original request without letting its stale generation patch a
+  // different queue item that happens to share the same path.
+  const contextTrackHydrationByQueueId = new Map<string, ContextTrackHydrationRecord>()
+  let nextTransitionLoadId = 1
+  let activeStandardTransitionLoads = 0
+  let pendingStandardTransition: PendingTransitionLoad | null = null
+  let standardTransitionTimerId: ReturnType<typeof globalThis.setTimeout> | null = null
+  let activeNativeTransitionLoad: Promise<void> | null = null
+  let activeNativeControl: Promise<void> | null = null
+  let activeStandaloneNativeLoad = false
+  let pendingNativeTransition: PendingTransitionLoad | null = null
+  let activeExecutingTransition: PendingTransitionLoad | null = null
+  let committedPlaybackTransition: CommittedPlaybackTransition | null = null
+  let pendingNativeSeek: {
+    intentId: number
+    targetTime: number
+    dirty: boolean
+    operation: Promise<void> | null
+  } | null = null
   let prebufferScheduleTimerId: ReturnType<typeof globalThis.setTimeout> | null = null
   let prebufferScheduleDueAtMs: number | null = null
   let prebufferScheduleTrackPath: string | null = null
+  let prebufferIdleCallbackId: number | null = null
+  let prebufferIdleTrackPath: string | null = null
+  let prebufferIdleDueAtMs: number | null = null
   let prebufferInFlightRequestId: number | null = null
   let prebufferInFlightTrackPath: string | null = null
+  let prebufferInFlightPromise: Promise<void> | null = null
+  let completedPrebufferRequestId: number | null = null
+  let completedPrebufferTrackPath: string | null = null
   let prebufferAttemptedTrackPath: string | null = null
+  let prebufferRetryAtLateTrackPath: string | null = null
+  let prebufferLateRetryAttemptedTrackPath: string | null = null
   let manualGaplessTransitionInProgress = false
+  let preAppliedGaplessQueueItemId: string | null = null
+  let completedPreAppliedGaplessQueueItemId: string | null = null
+  let pendingPlaybackInterruptionReconciliation: PlaybackInterruptionReconciliation | null = null
+  let standaloneTransitionTrackPath: string | null = null
+  let standaloneTransitionIntentId: number | null = null
+  let nextPlaybackIntentOverride: PlaybackIntent | null = null
+
+  const resetContextHydrationTracking = (): void => {
+    activeContextHydrationItems = []
+    pendingContextMetadataPaths.clear()
+    contextTrackHydrationByPath.clear()
+  }
+
+  const createPlaybackAttempt = (
+    intent: PlaybackIntent,
+    commandStartedAtMs: number = performance.now(),
+    details: Partial<Pick<PlaybackAttempt, 'queuePreparationMs' | 'supersededLoadWaitMs' | 'prebufferStatus'>> = {}
+  ): PlaybackAttempt => ({
+    id: nextPlaybackAttemptId++,
+    intent,
+    commandStartedAtMs,
+    queuePreparationMs: details.queuePreparationMs ?? 0,
+    queueSize: get().queueItems.length,
+    loadingStateAtMs: null,
+    selectedTrackHydrationMs: 0,
+    supersededLoadWaitMs: details.supersededLoadWaitMs ?? 0,
+    prebufferStatus: details.prebufferStatus ?? 'not_applicable',
+    completed: false,
+    playingAtMs: null,
+    transitionIdentity: null
+  })
+
+  const transitionIdentitiesMatch = (
+    left: PlaybackTransitionIdentity,
+    right: PlaybackTransitionIdentity
+  ): boolean => (
+    left.intentId === right.intentId
+    && left.queueItemId === right.queueItemId
+    && left.standaloneTrackPath === right.standaloneTrackPath
+  )
+
+  const clearCommittedPlaybackTransition = (identity: PlaybackTransitionIdentity | null): void => {
+    if (
+      identity
+      && committedPlaybackTransition
+      && transitionIdentitiesMatch(committedPlaybackTransition.identity, identity)
+    ) {
+      committedPlaybackTransition = null
+    }
+  }
+
+  const commitPlaybackTransition = (
+    attempt: PlaybackAttempt,
+    intentId: number,
+    track: Track,
+    options: { queueItemId?: string | null; standaloneTrackPath?: string | null } = {}
+  ): void => {
+    if (!isCurrentPlaybackIntent(intentId)) return
+    const state = get()
+    const standaloneTrackPath = options.standaloneTrackPath !== undefined
+      ? options.standaloneTrackPath
+      : standaloneTransitionIntentId === intentId && standaloneTransitionTrackPath === track.path
+        ? track.path
+        : null
+    const candidateQueueItemId = options.queueItemId !== undefined
+      ? options.queueItemId
+      : standaloneTrackPath
+        ? null
+        : state.currentQueueItemId
+    const queueItem = candidateQueueItemId
+      ? state.queueItems.find((item) => item.queueId === candidateQueueItemId)
+      : null
+    const queueItemId = !standaloneTrackPath && queueItem?.entry.path === track.path
+      ? queueItem.queueId
+      : null
+    const identity: PlaybackTransitionIdentity = {
+      intentId,
+      queueItemId,
+      standaloneTrackPath
+    }
+    attempt.transitionIdentity = identity
+    committedPlaybackTransition = { identity, track }
+  }
+
+  const completePlaybackAttempt = (
+    attempt: PlaybackAttempt,
+    track: Track,
+    outcome: PlaybackLoadOutcome,
+    timings: PlaybackAttemptTimings
+  ): void => {
+    if (attempt.completed) return
+    attempt.completed = true
+    clearCommittedPlaybackTransition(attempt.transitionIdentity)
+    const audioSettings = useAudioSettingsStore.getState()
+    const completedAtMs = performance.now()
+    const commandToScheduledPlayMs = outcome === 'loaded' && attempt.playingAtMs !== null
+      ? Math.max(0, Math.round(attempt.playingAtMs - attempt.commandStartedAtMs))
+      : null
+    // Compatibility alias: this endpoint has always meant source scheduled/state
+    // changed, not hardware-audible output.
+    const totalCommandToPlayingMs = commandToScheduledPlayMs
+    logMemoryDiagnosticsEvent('playback_attempt_completed', {
+      attemptId: attempt.id,
+      loadRequestId: timings.loadRequestId ?? null,
+      prebufferRequestId: timings.prebufferRequestId ?? null,
+      decodeRequestId: timings.decodeRequestId ?? null,
+      intent: attempt.intent,
+      outcome,
+      trackPath: track.path,
+      sourceType: track.sourceType ?? 'local',
+      backend: timings.backend,
+      queuePreparationMs: Math.round(attempt.queuePreparationMs),
+      queueSize: attempt.queueSize,
+      commandToLoadingStateMs: attempt.loadingStateAtMs === null
+        ? null
+        : Math.max(0, Math.round(attempt.loadingStateAtMs - attempt.commandStartedAtMs)),
+      selectedTrackHydrationMs: Math.round(attempt.selectedTrackHydrationMs),
+      supersededLoadWaitMs: Math.round(attempt.supersededLoadWaitMs),
+      prebufferStatus: attempt.prebufferStatus,
+      fileReadMs: timings.fileReadMs ?? null,
+      decodeMs: timings.decodeMs ?? null,
+      decodeOnlyMs: timings.decodeOnlyMs ?? null,
+      standardLoadPipelineMs: timings.standardLoadPipelineMs ?? null,
+      decodeWorkMs: timings.decodeWorkMs ?? null,
+      loudnessMs: timings.loudnessMs ?? null,
+      localFilePreflightMs: timings.localFilePreflightMs ?? null,
+      audioContextInitMs: timings.audioContextInitMs ?? null,
+      loudnessSource: timings.loudnessSource ?? null,
+      backendStartMs: timings.backendStartMs ?? null,
+      validPcmBytes: timings.validPcmBytes ?? null,
+      backingBufferBytes: timings.backingBufferBytes ?? null,
+      allocationGrowthCount: timings.allocationGrowthCount ?? null,
+      transportRoute: timings.transportRoute ?? null,
+      mainHandlerMs: timings.mainHandlerMs ?? null,
+      binaryResolutionMs: timings.binaryResolutionMs ?? null,
+      probeMs: timings.probeMs ?? null,
+      ffmpegMs: timings.ffmpegMs ?? null,
+      pcmAllocationMs: timings.pcmAllocationMs ?? null,
+      initialPcmAllocationMs: timings.initialPcmAllocationMs ?? null,
+      growthPcmAllocationMs: timings.growthPcmAllocationMs ?? null,
+      payloadFinalizationMs: timings.payloadFinalizationMs ?? null,
+      preloadInvokeMs: timings.preloadInvokeMs ?? null,
+      rendererBridgeCallMs: timings.rendererBridgeCallMs ?? null,
+      electronIpcResidualMs: timings.electronIpcResidualMs ?? null,
+      contextBridgeResidualMs: timings.contextBridgeResidualMs ?? null,
+      streamChunkCount: timings.streamChunkCount ?? null,
+      streamDispatchCopyMs: timings.streamDispatchCopyMs ?? null,
+      streamDispatchPostMs: timings.streamDispatchPostMs ?? null,
+      streamTailMs: timings.streamTailMs ?? null,
+      rendererPcmAssemblyAllocationMs: timings.rendererPcmAssemblyAllocationMs ?? null,
+      rendererPcmAssemblyCopyMs: timings.rendererPcmAssemblyCopyMs ?? null,
+      rendererPortRequestMs: timings.rendererPortRequestMs ?? null,
+      streamTransportResidualMs: timings.streamTransportResidualMs ?? null,
+      webAudioBufferAllocationMs: timings.webAudioBufferAllocationMs ?? null,
+      pcmDeinterleaveMs: timings.pcmDeinterleaveMs ?? null,
+      pcmCommitMs: timings.pcmCommitMs ?? null,
+      postDeliveryCommitMs: timings.postDeliveryCommitMs ?? null,
+      nativeBinaryResolutionMs: timings.nativeBinaryResolutionMs ?? null,
+      nativeProbeMs: timings.nativeProbeMs ?? null,
+      nativeDecodeMs: timings.nativeDecodeMs ?? null,
+      nativeLoadMs: timings.nativeLoadMs ?? null,
+      nativeDeviceStartMs: timings.nativeDeviceStartMs ?? null,
+      commandToScheduledPlayMs,
+      totalCommandToPlayingMs,
+      totalAttemptMs: Math.max(0, Math.round(completedAtMs - attempt.commandStartedAtMs)),
+      configuredOutputDelayMs: audioSettings.effectiveDelayMs
+    }, 'renderer', { captureSample: false })
+    logSlowPath('playbackAttempt', attempt.commandStartedAtMs, {
+      attemptId: attempt.id,
+      intent: attempt.intent,
+      outcome,
+      trackPath: track.path,
+      backend: timings.backend,
+      commandToScheduledPlayMs,
+      totalCommandToPlayingMs
+    })
+  }
+
+  const markPlaybackAttemptPlaying = (attempt: PlaybackAttempt): void => {
+    if (attempt.playingAtMs === null) attempt.playingAtMs = performance.now()
+  }
+
+  const getPromotedPrebufferAttemptTimings = (
+    prebufferRequestId: number | null,
+    backendStartMs?: number | null
+  ): PlaybackAttemptTimings => {
+    const engineTimings = audioEngine.getLastLoadTimings()
+    const pcmTimingDetails = getStandardPcmTimingDetails(engineTimings)
+    const standardLoadPipelineMs = engineTimings?.standardLoadPipelineMs ?? null
+    const decodeWorkMs = engineTimings?.decodeWorkMs ?? engineTimings?.decodeMs ?? null
+    return {
+      backend: 'prebuffer',
+      prebufferRequestId,
+      ...pcmTimingDetails,
+      decodeMs: standardLoadPipelineMs,
+      decodeOnlyMs: decodeWorkMs,
+      standardLoadPipelineMs,
+      decodeWorkMs,
+      loudnessMs: engineTimings?.analysisMs ?? null,
+      backendStartMs: backendStartMs ?? null
+    }
+  }
 
   const isParallaxSinkModeActive = (): boolean => {
     return Boolean(useParallaxStore.getState().status?.sink.connected)
   }
 
-  const playWithParallaxIfNeeded = async (track: Track | null | undefined): Promise<void> => {
+  const playWithParallaxIfNeeded = async (
+    track: Track | null | undefined,
+    isCurrent: () => boolean = () => true
+  ): Promise<void> => {
+    if (!isCurrent()) throw new SupersededPlaybackLoadError()
     if (isParallaxSinkModeActive()) return
     const parallaxStore = useParallaxStore.getState()
     const resumeTimeline = await parallaxStore.resumeHostPlayback(track)
+    if (!isCurrent()) throw new SupersededPlaybackLoadError()
     if (resumeTimeline) {
       await audioEngine.playCurrentBufferOnParallaxTimeline(resumeTimeline)
       return
     }
     const timeline = track ? await useParallaxStore.getState().prepareHostPlayback(track) : null
+    if (!isCurrent()) throw new SupersededPlaybackLoadError()
     if (timeline) {
       await audioEngine.playCurrentBufferOnParallaxTimeline(timeline)
       return
     }
+    if (!isCurrent()) throw new SupersededPlaybackLoadError()
     await audioEngine.play()
   }
 
@@ -1037,6 +1467,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       globalThis.clearTimeout(prebufferScheduleTimerId)
       prebufferScheduleTimerId = null
     }
+    if (prebufferIdleCallbackId !== null && typeof globalThis.cancelIdleCallback === 'function') {
+      globalThis.cancelIdleCallback(prebufferIdleCallbackId)
+      prebufferIdleCallbackId = null
+    }
+    prebufferIdleCallbackId = null
+    prebufferIdleTrackPath = null
+    prebufferIdleDueAtMs = null
     prebufferScheduleDueAtMs = null
     prebufferScheduleTrackPath = null
   }
@@ -1045,13 +1482,26 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     activePrebufferRequestId += 1
     prebufferInFlightRequestId = null
     prebufferInFlightTrackPath = null
+    prebufferInFlightPromise = null
     prebufferAttemptedTrackPath = null
+    prebufferRetryAtLateTrackPath = null
+    prebufferLateRetryAttemptedTrackPath = null
   }
 
   const clearBufferedNextTrack = (): void => {
+    const hadNativePrebufferInFlight = audioEngine.getPlaybackOutputMode() !== 'standard'
+      && prebufferInFlightPromise !== null
     clearScheduledPrebufferTimer()
     invalidatePrebufferRequest()
-    audioEngine.clearNextBuffer()
+    completedPrebufferRequestId = null
+    completedPrebufferTrackPath = null
+    if (audioEngine.getPlaybackOutputMode() !== 'standard') {
+      if (hadNativePrebufferInFlight) audioEngine.cancelPendingNativeDecode()
+      const clearIntentId = playbackIntentGeneration
+      void runNativeControlAfterActiveTransition(clearIntentId, () => audioEngine.clearNextBuffer())
+    } else {
+      audioEngine.clearNextBuffer()
+    }
     // §21 Gapless sink handoff — the pre-announced next stream (if any) is now stale; withdraw it
     // from sinks. Idempotent: a no-op when nothing is pending. Re-published when the next prebuffer
     // completes.
@@ -1098,9 +1548,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   const resolveInteractiveLoudnessForProgressiveLoad = async (
     track: Track,
     replayGainDb: number | null,
-    loadRequestId: number
+    loadRequestId: number,
+    existingRequest?: ReturnType<typeof requestTrackLoudnessAnalysis>
   ): Promise<{ loudnessLufs: number; peakLinear: number | null } | null> => {
-    const request = requestTrackLoudnessAnalysis(track, replayGainDb, 'interactive')
+    const request = existingRequest === undefined
+      ? requestTrackLoudnessAnalysis(track, replayGainDb, 'interactive')
+      : existingRequest
     if (!request) return null
 
     set({ loadingStatus: 'Analyzing loudness' })
@@ -1115,44 +1568,313 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     }
   }
 
-  // Run _loadAndPlayTrack while serializing rapid presses against any in-flight load.
-  // Bumps activeLoadRequestId so the in-flight load supersedes itself at its next
-  // checkpoint, then awaits its completion before starting the new load. This stops
-  // the native-side controlMutex pile-up that magnifies the freeze during rate changes.
-  const runSerializedTrackLoad = async (
-    track: Track,
-    options?: { manualStart?: boolean }
+  const getAttemptBackend = (track: Track): PlaybackAttemptTimings['backend'] => {
+    if (shouldUseNativeExclusivePath(track)) {
+      return useAudioSettingsStore.getState().playbackOutputMode === 'exclusive'
+        ? 'exclusive'
+        : 'bitperfect'
+    }
+    if (track.sourceType && track.sourceType !== 'local') return 'remote'
+    return 'standard'
+  }
+
+  const supersedePendingTransition = (request: PendingTransitionLoad | null): void => {
+    if (!request) return
+    request.options.attempt!.supersededLoadWaitMs += Math.max(0, performance.now() - request.queuedAtMs)
+    completePlaybackAttempt(request.options.attempt!, request.track, 'superseded', {
+      backend: request.backend
+    })
+    request.resolve('superseded')
+  }
+
+  const cancelPendingTransitionLoads = (): void => {
+    supersedePendingTransition(pendingStandardTransition)
+    pendingStandardTransition = null
+    supersedePendingTransition(pendingNativeTransition)
+    pendingNativeTransition = null
+    if (standardTransitionTimerId !== null) {
+      globalThis.clearTimeout(standardTransitionTimerId)
+      standardTransitionTimerId = null
+    }
+  }
+
+  const beginPlaybackIntent = (): number => {
+    playbackIntentGeneration += 1
+    cancelPendingTransitionLoads()
+    // An obsolete Standard request may continue unwinding in parallel, but it
+    // must no longer identify itself as the transition that owns player state.
+    activeExecutingTransition = null
+    committedPlaybackTransition = null
+    pendingNativeSeek = null
+    // Supersede the active track load as soon as the user's newer intent is
+    // accepted, including while its context metadata is still hydrating. Do
+    // not call invalidateLoadRequest() here: a matching next-track prebuffer
+    // remains eligible for promotion by the newer intent.
+    activeLoadRequestId += 1
+    audioEngine.supersedeCurrentLoadPreservingPrebuffer()
+    const hadPreAppliedTransition = preAppliedGaplessQueueItemId !== null
+    preAppliedGaplessQueueItemId = null
+    completedPreAppliedGaplessQueueItemId = null
+    const hadPendingInterruption = pendingPlaybackInterruptionReconciliation !== null
+    pendingPlaybackInterruptionReconciliation = null
+    standaloneTransitionTrackPath = null
+    standaloneTransitionIntentId = null
+    if (
+      activeNativeTransitionLoad
+      || activeStandaloneNativeLoad
+      || hadPreAppliedTransition
+      || hadPendingInterruption
+    ) {
+      audioEngine.cancelPendingNativeDecode()
+    }
+    return playbackIntentGeneration
+  }
+
+  const isCurrentPlaybackIntent = (intentId: number): boolean => intentId === playbackIntentGeneration
+
+  const runNativeControlAfterActiveTransition = (
+    intentId: number,
+    control: () => void | Promise<void>
   ): Promise<void> => {
-    invalidateLoadRequest()
-    const previous = currentSerializedLoad
-    if (previous) {
-      try {
-        await previous
-      } catch {
-        // Superseded or failed loads are expected here; the next load will handle errors.
+    const barrier = activeNativeControl ?? activeNativeTransitionLoad
+    const runIfCurrent = async (): Promise<void> => {
+      if (isCurrentPlaybackIntent(intentId)) await Promise.resolve(control())
+    }
+    const operation = barrier
+      ? barrier.then(runIfCurrent, runIfCurrent)
+      : runIfCurrent()
+    activeNativeControl = operation
+    const settle = (): void => {
+      if (activeNativeControl === operation) activeNativeControl = null
+      drainNativeTransitions()
+      if (!activeNativeTransitionLoad && !activeNativeControl && standardTransitionTimerId === null) {
+        flushPendingStandardTransition()
       }
+    }
+    void operation.then(settle, settle)
+    return operation
+  }
+
+  const runSerializedNativeSeek = (intentId: number, targetTime: number): Promise<void> => {
+    const existing = pendingNativeSeek
+    if (existing && existing.intentId === intentId) {
+      existing.targetTime = targetTime
+      existing.dirty = true
+      return existing.operation ?? Promise.resolve()
     }
 
-    const next = (async () => {
-      try {
-        const outcome = await get()._loadAndPlayTrack(track, options ?? {})
-        if (outcome === 'failed' && track.sourceType && track.sourceType !== 'local') {
-          markTrackUnavailableInState(track.path)
-        }
-      } catch (error) {
-        if (!isSupersededAudioLoadError(error) && !(error instanceof SupersededPlaybackLoadError)) {
-          throw error
-        }
-      }
-    })()
-    currentSerializedLoad = next
+    const request = {
+      intentId,
+      targetTime,
+      dirty: false,
+      operation: null as Promise<void> | null
+    }
+    pendingNativeSeek = request
+    const operation = runNativeControlAfterActiveTransition(intentId, async () => {
+      do {
+        request.dirty = false
+        const latestTargetTime = request.targetTime
+        await audioEngine.seek(latestTargetTime)
+      } while (request.dirty && isCurrentPlaybackIntent(intentId))
+    })
+    request.operation = operation
+    const settle = (): void => {
+      if (pendingNativeSeek === request) pendingNativeSeek = null
+    }
+    void operation.then(settle, settle)
+    return operation
+  }
+
+  const clearNonmatchingPrebufferForIntent = (
+    intentId: number,
+    targetTrackPath: string
+  ): void => {
+    // A newly committed target owns the transition immediately, even if its
+    // metadata still needs fetching. Keep only work that can be promoted to
+    // that exact target; otherwise a natural gapless handoff could advance the
+    // queue to the old buffered track during the metadata wait.
+    clearScheduledPrebufferTimer()
+    const bufferedPath = audioEngine.nextBufferedTrackPath
+    const hasBufferedWork = audioEngine.hasNextBuffered || bufferedPath !== null
+    const hasInFlightWork = prebufferInFlightPromise !== null && prebufferInFlightTrackPath !== null
+    const hasNonmatchingWork = (
+      (hasBufferedWork && bufferedPath !== targetTrackPath)
+      || (hasInFlightWork && prebufferInFlightTrackPath !== targetTrackPath)
+    )
+    if (!hasNonmatchingWork) return
+
+    const cancelNativePrebufferDecode = audioEngine.getPlaybackOutputMode() !== 'standard'
+      && hasInFlightWork
+    invalidatePrebufferRequest()
+    void useParallaxStore.getState().cancelHostNextStream()
+    if (audioEngine.getPlaybackOutputMode() !== 'standard') {
+      if (cancelNativePrebufferDecode) audioEngine.cancelPendingNativeDecode()
+      void runNativeControlAfterActiveTransition(intentId, () => audioEngine.clearNextBuffer())
+      return
+    }
+    audioEngine.clearNextBuffer()
+  }
+
+  const executeTransitionLoad = async (request: PendingTransitionLoad): Promise<void> => {
+    request.options.attempt!.supersededLoadWaitMs += Math.max(0, performance.now() - request.queuedAtMs)
+    if (request.intentId === playbackIntentGeneration) {
+      activeExecutingTransition = request
+    }
     try {
-      await next
+      const outcome = await get()._loadAndPlayTrack(request.track, request.options)
+      request.resolve(outcome)
+    } catch (error) {
+      if (isSupersededAudioLoadError(error) || error instanceof SupersededPlaybackLoadError) {
+        completePlaybackAttempt(request.options.attempt!, request.track, 'superseded', {
+          backend: request.backend
+        })
+        request.resolve('superseded')
+        return
+      }
+      completePlaybackAttempt(request.options.attempt!, request.track, 'failed', {
+        backend: request.backend
+      })
+      request.reject(error)
     } finally {
-      if (currentSerializedLoad === next) {
-        currentSerializedLoad = null
+      if (activeExecutingTransition === request) activeExecutingTransition = null
+    }
+  }
+
+  const startStandardTransition = (request: PendingTransitionLoad): void => {
+    if (shouldUseNativeExclusivePath(request.track)) {
+      supersedePendingTransition(pendingNativeTransition)
+      pendingNativeTransition = request
+      drainNativeTransitions()
+      return
+    }
+    activeStandardTransitionLoads += 1
+    const settle = (): void => {
+      activeStandardTransitionLoads = Math.max(0, activeStandardTransitionLoads - 1)
+    }
+    void executeTransitionLoad(request).then(settle, settle)
+  }
+
+  const flushPendingStandardTransition = (): void => {
+    if (!pendingStandardTransition || activeNativeTransitionLoad || activeNativeControl) return
+    const request = pendingStandardTransition
+    pendingStandardTransition = null
+    startStandardTransition(request)
+  }
+
+  const schedulePendingStandardTransition = (): void => {
+    if (standardTransitionTimerId !== null) {
+      globalThis.clearTimeout(standardTransitionTimerId)
+    }
+    standardTransitionTimerId = globalThis.setTimeout(() => {
+      standardTransitionTimerId = null
+      flushPendingStandardTransition()
+    }, STANDARD_TRANSITION_COALESCE_MS)
+  }
+
+  const drainNativeTransitions = (): void => {
+    if (activeNativeTransitionLoad || activeNativeControl || !pendingNativeTransition) return
+    const request = pendingNativeTransition
+    pendingNativeTransition = null
+    if (!shouldUseNativeExclusivePath(request.track)) {
+      startStandardTransition(request)
+      return
+    }
+    const operation = executeTransitionLoad(request)
+    activeNativeTransitionLoad = operation
+    const settle = (): void => {
+      if (activeNativeTransitionLoad === operation) {
+        activeNativeTransitionLoad = null
+      }
+      drainNativeTransitions()
+      if (!activeNativeTransitionLoad && !activeNativeControl && standardTransitionTimerId === null) {
+        flushPendingStandardTransition()
       }
     }
+    void operation.then(settle, settle)
+  }
+
+  // Standard decoding is safe to supersede: the first request starts immediately and
+  // subsequent rapid requests collapse into a 75 ms latest-wins window. Native control
+  // calls remain strictly serialized; only their abortable probe/decode phase is canceled.
+  const runSerializedTrackLoad = (
+    track: Track,
+    options: PlaybackLoadOptions = {},
+    intent: PlaybackIntent = 'next'
+  ): Promise<PlaybackLoadOutcome> => {
+    invalidateLoadRequest()
+    const normalizedOptions: PlaybackLoadOptions = {
+      ...options,
+      attempt: options.attempt ?? createPlaybackAttempt(intent)
+    }
+    const transitionState = get()
+    const requestStandaloneTrackPath = standaloneTransitionTrackPath === track.path
+      && standaloneTransitionIntentId === playbackIntentGeneration
+      ? track.path
+      : null
+    const requestQueueItem = !requestStandaloneTrackPath && transitionState.currentQueueItemId
+      ? transitionState.queueItems.find((item) => item.queueId === transitionState.currentQueueItemId)
+      : null
+    const requestQueueItemId = requestQueueItem?.entry.path === track.path
+      ? requestQueueItem.queueId
+      : null
+    const attempt = normalizedOptions.attempt!
+    if (!attempt.transitionIdentity) {
+      commitPlaybackTransition(attempt, playbackIntentGeneration, track, {
+        queueItemId: requestQueueItemId,
+        standaloneTrackPath: requestStandaloneTrackPath
+      })
+    }
+    const requestIdentity = attempt.transitionIdentity
+
+    return new Promise<PlaybackLoadOutcome>((resolve, reject) => {
+      const request: PendingTransitionLoad = {
+        id: nextTransitionLoadId++,
+        intentId: requestIdentity?.intentId ?? playbackIntentGeneration,
+        track,
+        targetQueueItemId: requestIdentity?.queueItemId ?? requestQueueItemId,
+        standaloneTrackPath: requestIdentity?.standaloneTrackPath ?? requestStandaloneTrackPath,
+        options: normalizedOptions,
+        queuedAtMs: performance.now(),
+        backend: getAttemptBackend(track),
+        resolve,
+        reject
+      }
+
+      if (activeNativeTransitionLoad) {
+        void audioEngine.cancelPendingNativeDecode?.()
+      }
+
+      if (shouldUseNativeExclusivePath(track)) {
+        supersedePendingTransition(pendingStandardTransition)
+        pendingStandardTransition = null
+        if (standardTransitionTimerId !== null) {
+          globalThis.clearTimeout(standardTransitionTimerId)
+          standardTransitionTimerId = null
+        }
+        supersedePendingTransition(pendingNativeTransition)
+        pendingNativeTransition = request
+        drainNativeTransitions()
+        return
+      }
+
+      supersedePendingTransition(pendingNativeTransition)
+      pendingNativeTransition = null
+
+      if (
+        activeStandardTransitionLoads === 0
+        && !activeNativeTransitionLoad
+        && !activeNativeControl
+        && !pendingStandardTransition
+        && standardTransitionTimerId === null
+      ) {
+        startStandardTransition(request)
+        return
+      }
+
+      supersedePendingTransition(pendingStandardTransition)
+      pendingStandardTransition = request
+      schedulePendingStandardTransition()
+    })
   }
 
   const beginPrebufferRequest = (): number => {
@@ -1208,34 +1930,113 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     entry: QueueTrackEntry,
     origin: QueueItemOrigin,
     options?: PlaybackContextOptions
-  ): QueueItem => ({
-    queueId: createQueueId(),
-    entry,
-    origin,
-    sourcePlaylistId: origin === 'context' ? options?.sourcePlaylistId ?? null : null,
-    sourceContext: origin === 'context' ? resolvePlaybackSourceContext(options) : null,
-    contextLabel: origin === 'context'
-      ? normalizeContextLabel(options?.contextLabel) ?? 'Current Selection'
-      : null
-  })
+  ): QueueItem => {
+    const source = resolvePlaybackSourceContext(options)
+      ?? (origin === 'manual' && options?.recordSelectedTrack !== false
+        ? { type: 'track' as const, trackPath: entry.path } : null)
+    return {
+      queueId: createQueueId(),
+      entry,
+      origin,
+      sourcePlaylistId: source?.type === 'playlist' ? source.playlistId : null,
+      sourceContext: source,
+      contextLabel: origin === 'context' || options?.contextLabel
+        ? normalizeContextLabel(options?.contextLabel) ?? 'Current Selection'
+        : null
+    }
+  }
 
   const getCurrentPlaybackEntry = (
     state: Pick<PlayerStore, 'currentTrack' | 'currentQueueItemId' | 'queueItems'>
   ): PlaybackHistoryEntry | null => {
-    if (!state.currentTrack) return null
     const activeItem = state.currentQueueItemId
       ? state.queueItems.find((item) => item.queueId === state.currentQueueItemId)
       : null
-    return {
-      item: activeItem ?? createQueueItem(createQueueEntryFromTrack(state.currentTrack), 'manual')
-    }
+    return activeItem ? { item: activeItem } : null
   }
 
-  const resolveSourcePlaylistIdForState = (
-    state: Pick<PlayerStore, 'currentQueueItemId' | 'queueItems'>
-  ): number | null => {
-    if (!state.currentQueueItemId) return null
-    return state.queueItems.find((item) => item.queueId === state.currentQueueItemId)?.sourcePlaylistId ?? null
+  const resolveAuthoritativeTransitionTrack = (
+    request: PendingTransitionLoad | null,
+    state: PlayerStore
+  ): Track | null => {
+    if (!request || request.intentId !== playbackIntentGeneration) return null
+    if (request.standaloneTrackPath) {
+      return standaloneTransitionIntentId === request.intentId
+        && standaloneTransitionTrackPath === request.standaloneTrackPath
+        ? request.track
+        : null
+    }
+    if (!request.targetQueueItemId || state.currentQueueItemId !== request.targetQueueItemId) return null
+    const targetItem = state.queueItems.find((item) => item.queueId === request.targetQueueItemId)
+    return resolveQueueEntryTrack(targetItem?.entry) ?? request.track
+  }
+
+  const getCommittedTransitionTarget = (state: PlayerStore = get()): Track | null => {
+    const committed = committedPlaybackTransition
+    if (committed?.identity.intentId === playbackIntentGeneration) {
+      const { identity } = committed
+      if (
+        identity.standaloneTrackPath
+        && standaloneTransitionIntentId === identity.intentId
+        && standaloneTransitionTrackPath === identity.standaloneTrackPath
+      ) {
+        return committed.track
+      }
+      if (identity.queueItemId && state.currentQueueItemId === identity.queueItemId) {
+        const committedItem = state.queueItems.find((item) => item.queueId === identity.queueItemId)
+        return resolveQueueEntryTrack(committedItem?.entry) ?? committed.track
+      }
+    }
+    // Exact queue-item identity matters here: authored duplicates may share one
+    // path while a newer occurrence is waiting or between decode and backend start.
+    for (const request of [pendingStandardTransition, pendingNativeTransition, activeExecutingTransition]) {
+      const authoritativeTrack = resolveAuthoritativeTransitionTrack(request, state)
+      if (authoritativeTrack) return authoritativeTrack
+    }
+    if (!state.currentQueueItemId) {
+      return state.playbackState === 'loading' ? state.currentTrack : null
+    }
+    const currentItem = state.queueItems.find((item) => item.queueId === state.currentQueueItemId)
+    const targetTrack = resolveQueueEntryTrack(currentItem?.entry)
+    if (!targetTrack) return state.playbackState === 'loading' ? state.currentTrack : null
+    const targetsDifferentTrack = !state.currentTrack || state.currentTrack.path !== targetTrack.path
+    if (state.currentTrack?.path === standaloneTransitionTrackPath) {
+      return state.playbackState === 'loading' ? state.currentTrack : null
+    }
+    if (preAppliedGaplessQueueItemId === currentItem?.queueId) {
+      return targetTrack
+    }
+    // A rapid queue transition can commit its final target while an older load
+    // still owns currentTrack. In that case the committed queue item wins.
+    if (targetsDifferentTrack) return targetTrack
+    // Once that target's load begins, currentTrack is authoritative.
+    if (state.playbackState === 'loading') return state.currentTrack ?? targetTrack
+    return null
+  }
+
+  const applyPlaybackInterruptionReconciliation = (
+    reconciliation: PlaybackInterruptionReconciliation
+  ): void => {
+    const { desiredState, track } = reconciliation
+    if (reconciliation.standaloneTrackPath === track.path) {
+      standaloneTransitionTrackPath = track.path
+      standaloneTransitionIntentId = reconciliation.intentId
+    }
+    set({
+      currentTrack: track,
+      playbackState: desiredState,
+      currentTime: 0,
+      duration: track.duration,
+      waveformData: null,
+      waveformBufferedRatio: track.sourceType && track.sourceType !== 'local' ? 0 : 1,
+      waveformAnalyzedRatio: track.sourceType && track.sourceType !== 'local' ? 0 : 1,
+      remoteLoadProgress: null,
+      loadingStatus: null,
+      remoteBufferedSeconds: 0,
+      remoteStreamSessionId: null,
+      restoredTrackNeedsLoad: true,
+      restoredPlaybackTime: 0
+    })
   }
 
   const getListeningHistoryStatus = (): Promise<ListeningHistoryStatus> => {
@@ -1291,6 +2092,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           segmentKey: checkpointSegmentKey,
           trackPath: session.trackPath,
           sourcePlaylistId: session.sourcePlaylistId,
+          sourceContext: session.sourceContext,
           sessionStartedAt: session.sessionStartedAt,
           segmentStartedAt: session.segmentStartedAt,
           observedAt,
@@ -1320,6 +2122,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           )
         }
         if (result.qualifiedNow) {
+          if (typeof window.dispatchEvent === 'function') window.dispatchEvent(new Event('astra:home-sources-changed'))
           session.counted = true
           session.qualificationEligible = false
           await Promise.all([
@@ -1376,15 +2179,18 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   }
 
   const startRecentPlaySession = (trackPath: string): void => {
-    if (recentPlaySession?.trackPath === trackPath) {
-      const state = get()
+    const state = get()
+    const sourceContext = resolveCurrentPlaybackSource(state)
+    const sourceKey = sourceContext ? playbackSourceKey(sourceContext) : null
+    if (recentPlaySession?.trackPath === trackPath
+      && recentPlaySession.queueItemId === state.currentQueueItemId
+      && (recentPlaySession.sourceContext ? playbackSourceKey(recentPlaySession.sourceContext) : null) === sourceKey) {
       const duration = resolvePositiveDuration(state.currentTrack?.duration, state.duration)
       recentPlaySession.trackDurationSeconds = Math.max(recentPlaySession.trackDurationSeconds, duration)
       recentPlaySession.thresholdSeconds = getRecentPlayThresholdSecondsForDuration(duration)
       return
     }
     finalizeRecentPlaySession()
-    const state = get()
     const track = state.currentTrack
     const thresholdSeconds = getRecentPlayThresholdSeconds(track)
     const wallNow = Date.now()
@@ -1395,7 +2201,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       lastAccumulatedAtMs: state.playbackState === 'playing' ? performance.now() : null,
       counted: false,
       allowDbWrite: track?.origin !== 'associated-external',
-      sourcePlaylistId: resolveSourcePlaylistIdForState(state),
+      sourcePlaylistId: sourceContext?.type === 'playlist' ? sourceContext.playlistId : null,
+      sourceContext,
+      queueItemId: state.currentQueueItemId,
       generation: null,
       sessionKey: createListeningHistoryKey('session'),
       sessionStartedAt: wallNow,
@@ -1465,7 +2273,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       failure.deviceLabel ?? '',
       failure.sampleRate ?? '',
       failure.channels ?? '',
-      failure.sampleFormat ?? ''
+      failure.sampleFormat ?? '',
+      failure.failureStage ?? ''
     ].join('|')
     if (surfacedBitPerfectFormatFailures.has(dedupeKey)) return true
     surfacedBitPerfectFormatFailures.add(dedupeKey)
@@ -1479,7 +2288,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         sampleRate: failure.sampleRate,
         channels: failure.channels,
         sampleFormat: failure.sampleFormat,
-        message: failure.message
+        message: failure.message,
+        failureStage: failure.failureStage,
+        osCode: failure.osCode,
+        report: failure.report
       }
     })
     return true
@@ -1508,16 +2320,38 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     }))
   }
 
+  const queueItemsByIdCache = new WeakMap<QueueItem[], ReadonlyMap<string, QueueItem>>()
+
+  const getQueueItemsById = (queueItems: QueueItem[]): ReadonlyMap<string, QueueItem> => {
+    const cached = queueItemsByIdCache.get(queueItems)
+    if (cached) return cached
+
+    const itemsById = new Map<string, QueueItem>()
+    for (const item of queueItems) {
+      itemsById.set(item.queueId, item)
+    }
+    queueItemsByIdCache.set(queueItems, itemsById)
+    return itemsById
+  }
+
   const buildResolvedUpcomingEntries = (
-    state: Pick<PlayerStore, 'queueItems' | 'upcomingQueueIds'>
+    state: Pick<PlayerStore, 'queueItems' | 'upcomingQueueIds'>,
+    limit?: number
   ): ResolvedQueueTrack[] => {
-    const itemsById = new Map(state.queueItems.map((item) => [item.queueId, item]))
+    const normalizedLimit = limit === undefined || limit === Number.POSITIVE_INFINITY
+      ? Number.POSITIVE_INFINITY
+      : Number.isFinite(limit)
+        ? Math.max(0, Math.floor(limit))
+        : 0
+    if (normalizedLimit === 0) return []
+
+    const itemsById = getQueueItemsById(state.queueItems)
     const resolved: ResolvedQueueTrack[] = []
-    state.upcomingQueueIds.forEach((queueId, index) => {
+    for (let index = 0; index < state.upcomingQueueIds.length; index += 1) {
+      const queueId = state.upcomingQueueIds[index]!
       const item = itemsById.get(queueId)
       const track = resolveQueueEntryTrack(item?.entry)
-      if (!item || !track) return
-      if (!track) return
+      if (!item || !track) continue
       resolved.push({
         queueId,
         source: 'upcoming',
@@ -1525,77 +2359,157 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         track,
         index
       })
-    })
+      if (resolved.length >= normalizedLimit) break
+    }
 
     return resolved
   }
 
-  const collectNextCandidates = (state: PlayerStore): NextCandidate[] => {
-    if (state.repeat === 'one' && state.currentTrack) {
-      return [{ kind: 'current', track: state.currentTrack }]
+  // Navigation belongs to the active queue, not to earlier playback contexts.
+  // Keep the most recent visit to each occurrence, using its live metadata.
+  const normalizeNavigationHistory = (
+    queueItems: QueueItem[],
+    history: readonly PlaybackHistoryEntry[],
+    currentQueueItemId: string | null
+  ): PlaybackHistoryEntry[] => {
+    const itemsById = getQueueItemsById(queueItems)
+    const seen = new Set<string>()
+    const entries: PlaybackHistoryEntry[] = []
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      const entry = history[index]!
+      const item = itemsById.get(entry.item.queueId)
+      if (!item || item.queueId === currentQueueItemId || seen.has(item.queueId)) continue
+      seen.add(item.queueId)
+      entries.push(item === entry.item ? entry : { item })
+    }
+    return entries.reverse()
+  }
+
+  function* iterateNextCandidates(
+    state: PlayerStore,
+    options: { respectRepeatOne?: boolean } = {}
+  ): Generator<NextCandidate> {
+    if (options.respectRepeatOne !== false && state.repeat === 'one' && state.currentTrack) {
+      yield { kind: 'current', track: state.currentTrack }
+      return
     }
 
-    const itemsById = new Map(state.queueItems.map((item) => [item.queueId, item]))
-    const candidates: NextCandidate[] = []
-    state.upcomingQueueIds.forEach((queueId, index) => {
+    const itemsById = getQueueItemsById(state.queueItems)
+    let foundQueueCandidate = false
+    for (let index = 0; index < state.upcomingQueueIds.length; index += 1) {
+      const queueId = state.upcomingQueueIds[index]!
       const item = itemsById.get(queueId)
       const track = resolveQueueEntryTrack(item?.entry)
-      if (!item || !track) return
-      candidates.push({ kind: 'queue', item, track, index })
-    })
+      if (!item || !track) continue
+      foundQueueCandidate = true
+      yield { kind: 'queue', item, track, index }
+    }
 
-    if (candidates.length === 0 && state.repeat === 'all' && state.currentTrack) {
+    if (!foundQueueCandidate && state.repeat === 'all' && state.currentTrack) {
       const currentItem = state.currentQueueItemId
         ? itemsById.get(state.currentQueueItemId)
         : null
       if (currentItem && state.queueItems.length === 1) {
-        candidates.push({ kind: 'current', track: state.currentTrack })
+        yield { kind: 'current', track: state.currentTrack }
       }
     }
-
-    return candidates
   }
 
-  const findNextPlayableCandidate = (state: PlayerStore): NextCandidate | null => {
-    const candidates = collectNextCandidates(state)
-    for (const candidate of candidates) {
+  const findNextPlayableCandidate = (
+    state: PlayerStore,
+    options: { respectRepeatOne?: boolean } = {}
+  ): NextCandidate | null => {
+    for (const candidate of iterateNextCandidates(state, options)) {
       if (isUnavailableRemoteTrack(candidate.track)) continue
       return candidate
     }
     return null
   }
 
-  const resolveExpectedPrebufferTrackPath = (state: PlayerStore = get()): string | null => {
+  const resolveExpectedPrebufferTrack = (state: PlayerStore = get()): Track | null => {
     if (state.repeat === 'one') return null
 
-    for (const candidate of collectNextCandidates(state)) {
+    for (const candidate of iterateNextCandidates(state)) {
       const candidateTrack = candidate.track
       if (!candidateTrack) continue
-      if (candidateTrack.sourceType && candidateTrack.sourceType !== 'local') continue
       if (isUnavailableRemoteTrack(candidateTrack)) continue
-      return candidateTrack.path
+      // Path-only context snapshots intentionally omit source metadata. Do not
+      // treat one as a local file until its already-scheduled hydration settles;
+      // it may actually be a remote entry that must never be prebuffered.
+      if (pendingContextMetadataPaths.get(candidateTrack.path) === contextHydrationGeneration) {
+        void getOrStartContextTrackHydration(
+          candidateTrack.path,
+          candidate.kind === 'queue' ? candidate.item.queueId : state.currentQueueItemId
+        )
+        return null
+      }
+      // The first playable queue entry defines the handoff. Never prebuffer a local
+      // track hidden behind a remote entry.
+      if (candidateTrack.sourceType && candidateTrack.sourceType !== 'local') return null
+      return candidateTrack
     }
 
     return null
   }
 
+  const resolveExpectedPrebufferTrackPath = (state: PlayerStore = get()): string | null => (
+    resolveExpectedPrebufferTrack(state)?.path ?? null
+  )
+
   const warmupUpcomingLoudness = (): void => {
     const audioSettings = useAudioSettingsStore.getState()
     if (!audioSettings.normalizationEnabled || audioSettings.playbackOutputMode !== 'standard') return
+    const state = get()
+    if (state.repeat === 'one') return
 
-    const warmed = new Set<string>()
-    for (const candidate of collectNextCandidates(get())) {
-      if (warmed.size >= LOUDNESS_WARMUP_UPCOMING_TRACKS) break
-      const track = candidate.track
-      if (!track || (track.sourceType && track.sourceType !== 'local')) continue
-      if (isUnavailableRemoteTrack(track) || warmed.has(track.path)) continue
-
+    const upcomingTracks = (function* (): Generator<Track> {
+      for (const candidate of iterateNextCandidates(state)) {
+        yield candidate.track
+      }
+    })()
+    const tracks = selectUpcomingLoudnessWarmupTracks(
+      upcomingTracks,
+      (track) => {
+        const replayGainDb = getReplayGainCandidateDb(track, audioSettings.replayGainMode)
+        return audioEngine.needsLoudnessAnalysisForLoad(replayGainDb)
+      },
+      LOUDNESS_WARMUP_UPCOMING_TRACKS
+    )
+    for (const track of tracks) {
       const replayGainDb = getReplayGainCandidateDb(track, audioSettings.replayGainMode)
       const request = requestTrackLoudnessAnalysis(track, replayGainDb, 'background')
-      if (!request) continue
-      warmed.add(track.path)
-      void request
+      if (request) void request
     }
+  }
+
+  const startPrebufferNextTrack = (): Promise<void> => {
+    const expectedTrackPath = resolveExpectedPrebufferTrackPath()
+    if (
+      expectedTrackPath
+      && prebufferInFlightTrackPath === expectedTrackPath
+      && prebufferInFlightPromise
+    ) {
+      return prebufferInFlightPromise
+    }
+
+    const operation = get()._preBufferNextTrack()
+    prebufferInFlightPromise = operation
+    void operation.then(
+      () => {
+        if (prebufferInFlightPromise === operation) prebufferInFlightPromise = null
+        if (
+          prebufferRetryAtLateTrackPath
+          && prebufferRetryAtLateTrackPath === resolveExpectedPrebufferTrackPath()
+          && !audioEngine.hasNextBuffered
+        ) {
+          schedulePreBufferNextTrack()
+        }
+      },
+      () => {
+        if (prebufferInFlightPromise === operation) prebufferInFlightPromise = null
+      }
+    )
+    return operation
   }
 
   const schedulePreBufferNextTrack = (options: { invalidatePending?: boolean } = {}): void => {
@@ -1610,7 +2524,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     }
 
     const state = get()
-    const expectedTrackPath = resolveExpectedPrebufferTrackPath(state)
+    const expectedTrack = resolveExpectedPrebufferTrack(state)
+    const expectedTrackPath = expectedTrack?.path ?? null
+    const activeOutputMode = audioEngine.getPlaybackOutputMode()
+    const usesNativePrebuffer = activeOutputMode !== 'standard'
+      && shouldUseNativeExclusivePath(expectedTrack)
 
     if (
       useAudioSettingsStore.getState().disableGaplessPrebufferDev
@@ -1618,6 +2536,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       || state.repeat === 'one'
       || !expectedTrackPath
       || (state.currentTrack.sourceType && state.currentTrack.sourceType !== 'local')
+      // IAMF and other Standard-only targets must not start eager file/loudness
+      // work while a native-exclusive backend is active. Their eventual play action
+      // performs the existing safe fallback to Standard first.
+      || (activeOutputMode !== 'standard' && !usesNativePrebuffer)
     ) {
       clearScheduledPrebufferTimer()
       if (audioEngine.hasNextBuffered) {
@@ -1637,27 +2559,45 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       clearBufferedNextTrack()
     }
 
+    if (state.playbackState !== 'playing') {
+      clearScheduledPrebufferTimer()
+      return
+    }
+
+    if (audioEngine.nextBufferedTrackPath === expectedTrackPath) {
+      clearScheduledPrebufferTimer()
+      // Eager decode may have installed the buffer long before Parallax's
+      // announcement window. Re-enter its existing deferred scheduler on
+      // resume so a pause cannot leave behind a stale boundary timer.
+      void useParallaxStore.getState().publishHostNextStream(expectedTrack)
+      return
+    }
+    if (
+      prebufferInFlightTrackPath === expectedTrackPath
+      && prebufferInFlightRequestId !== null
+      && prebufferInFlightPromise
+    ) {
+      clearScheduledPrebufferTimer()
+      return
+    }
     const duration = audioEngine.duration > 0 ? audioEngine.duration : state.duration
     const currentTime = Number.isFinite(audioEngine.currentTime) ? audioEngine.currentTime : state.currentTime
     const delayMs = getGaplessPrebufferDelayMs(currentTime, duration)
 
-    if (delayMs > 0) {
+    if (prebufferIdleTrackPath === expectedTrackPath && prebufferIdleCallbackId !== null) {
+      const lateBoundaryDueAtMs = performance.now() + delayMs
       if (
-        audioEngine.nextBufferedTrackPath === expectedTrackPath
-        || prebufferInFlightTrackPath === expectedTrackPath
+        delayMs > 0
+        && prebufferIdleDueAtMs !== null
+        && prebufferIdleDueAtMs <= lateBoundaryDueAtMs + GAPLESS_PREBUFFER_TIMER_TOLERANCE_MS
       ) {
-        clearBufferedNextTrack()
-      }
-      if (prebufferAttemptedTrackPath === expectedTrackPath) {
-        prebufferAttemptedTrackPath = null
-      }
-
-      if (state.playbackState !== 'playing') {
-        clearScheduledPrebufferTimer()
         return
       }
+      clearScheduledPrebufferTimer()
+    }
 
-      const dueAtMs = performance.now() + delayMs
+    const scheduleTimer = (timerDelayMs: number, callback: () => void): void => {
+      const dueAtMs = performance.now() + timerDelayMs
       if (
         prebufferScheduleTimerId !== null
         && prebufferScheduleTrackPath === expectedTrackPath
@@ -1666,7 +2606,6 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       ) {
         return
       }
-
       clearScheduledPrebufferTimer()
       prebufferScheduleTrackPath = expectedTrackPath
       prebufferScheduleDueAtMs = dueAtMs
@@ -1674,22 +2613,90 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         prebufferScheduleTimerId = null
         prebufferScheduleDueAtMs = null
         prebufferScheduleTrackPath = null
-        schedulePreBufferNextTrack()
-      }, delayMs)
+        callback()
+      }, timerDelayMs)
+    }
+
+    const startIfStillEligible = (): void => {
+      const latestState = get()
+      if (
+        latestState.playbackState !== 'playing'
+        || resolveExpectedPrebufferTrackPath(latestState) !== expectedTrackPath
+        || useAudioSettingsStore.getState().disableGaplessPrebufferDev
+      ) {
+        return
+      }
+      void startPrebufferNextTrack()
+    }
+
+    if (delayMs > 0 && usesNativePrebuffer) {
+      scheduleTimer(delayMs, startIfStillEligible)
       return
     }
 
-    if (state.playbackState !== 'playing') {
-      clearScheduledPrebufferTimer()
+    if (delayMs > 0 && prebufferAttemptedTrackPath === expectedTrackPath) {
+      if (prebufferRetryAtLateTrackPath === expectedTrackPath) {
+        scheduleTimer(delayMs, () => {
+          if (prebufferAttemptedTrackPath === expectedTrackPath) {
+            prebufferAttemptedTrackPath = null
+          }
+          prebufferRetryAtLateTrackPath = null
+          prebufferLateRetryAttemptedTrackPath = expectedTrackPath
+          startIfStillEligible()
+        })
+      }
+      return
+    }
+
+    if (delayMs > 0) {
+      const settleDelayMs = Math.min(ADAPTIVE_PREBUFFER_SETTLE_MS, delayMs)
+      scheduleTimer(settleDelayMs, () => {
+        if (settleDelayMs >= delayMs) {
+          startIfStillEligible()
+          return
+        }
+        if (resolveExpectedPrebufferTrackPath() !== expectedTrackPath) return
+        prebufferIdleTrackPath = expectedTrackPath
+        if (typeof globalThis.requestIdleCallback === 'function') {
+          const idleTimeoutMs = Math.max(1, Math.min(
+            ADAPTIVE_PREBUFFER_IDLE_TIMEOUT_MS,
+            delayMs - settleDelayMs
+          ))
+          prebufferIdleDueAtMs = performance.now() + idleTimeoutMs
+          prebufferIdleCallbackId = globalThis.requestIdleCallback(() => {
+            prebufferIdleCallbackId = null
+            prebufferIdleTrackPath = null
+            prebufferIdleDueAtMs = null
+            startIfStillEligible()
+          }, { timeout: idleTimeoutMs })
+        } else {
+          prebufferScheduleTrackPath = expectedTrackPath
+          prebufferScheduleDueAtMs = performance.now()
+          prebufferScheduleTimerId = globalThis.setTimeout(() => {
+            prebufferScheduleTimerId = null
+            prebufferScheduleTrackPath = null
+            prebufferScheduleDueAtMs = null
+            startIfStillEligible()
+          }, 0)
+        }
+      })
       return
     }
 
     clearScheduledPrebufferTimer()
-    if (audioEngine.nextBufferedTrackPath === expectedTrackPath) return
-    if (prebufferInFlightTrackPath === expectedTrackPath && prebufferInFlightRequestId !== null) return
-    if (prebufferAttemptedTrackPath === expectedTrackPath) return
-
-    void get()._preBufferNextTrack()
+    if (prebufferAttemptedTrackPath === expectedTrackPath) {
+      if (
+        prebufferRetryAtLateTrackPath === expectedTrackPath
+        && prebufferLateRetryAttemptedTrackPath !== expectedTrackPath
+      ) {
+        prebufferAttemptedTrackPath = null
+        prebufferRetryAtLateTrackPath = null
+        prebufferLateRetryAttemptedTrackPath = expectedTrackPath
+      } else {
+        return
+      }
+    }
+    startIfStillEligible()
   }
 
   const applyCandidateTransition = (
@@ -1698,9 +2705,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     options: { pushCurrentToHistory: boolean }
   ) => {
     const currentEntry = getCurrentPlaybackEntry(state)
-    const nextHistory = options.pushCurrentToHistory && currentEntry && candidate.kind !== 'current'
-      ? [...state.playbackHistory, currentEntry].slice(-MAX_PLAYBACK_HISTORY)
-      : state.playbackHistory
+    const nextHistory = normalizeNavigationHistory(
+      state.queueItems,
+      options.pushCurrentToHistory && currentEntry && candidate.kind !== 'current'
+        ? [...state.playbackHistory, currentEntry]
+        : state.playbackHistory,
+      candidate.kind === 'current' ? state.currentQueueItemId : candidate.item.queueId
+    )
 
     if (candidate.kind === 'current') {
       return { playbackHistory: nextHistory }
@@ -1724,13 +2735,197 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     }
   }
 
+  const patchHydratedContextTracks = (
+    generation: number,
+    contextItems: readonly QueueItem[],
+    resolvedTracks: readonly DbTrack[]
+  ): void => {
+    if (resolvedTracks.length === 0) return
+    const entryByPath = new Map(resolvedTracks.map((dbTrack) => {
+      const entry = createQueueEntryFromTrack(dbTrackToTrack(dbTrack))
+      return [entry.path, entry]
+    }))
+    const contextQueueIds = new Set(contextItems.map((item) => item.queueId))
+    const patchItem = (item: QueueItem): QueueItem => {
+      if (!contextQueueIds.has(item.queueId)) return item
+      const entry = entryByPath.get(item.entry.path)
+      return entry ? { ...item, entry } : item
+    }
+    const patchHistory = (history: readonly PlaybackHistoryEntry[]): PlaybackHistoryEntry[] => (
+      history.map((historyEntry) => {
+        const item = patchItem(historyEntry.item)
+        return item === historyEntry.item ? historyEntry : { ...historyEntry, item }
+      })
+    )
+    if (generation !== contextHydrationGeneration) {
+      // A queue clear may retain the current item from an older generation.
+      // Exact-ID patches update that surviving item without resurrecting
+      // discarded history or touching items created for a newer context.
+      set((state) => ({
+        queueItems: state.queueItems.map(patchItem),
+        playbackHistory: patchHistory(state.playbackHistory)
+      }))
+      return
+    }
+    const pendingInterruption = pendingPlaybackInterruptionReconciliation
+    if (pendingInterruption) {
+      const entry = entryByPath.get(pendingInterruption.track.path)
+      if (entry && contextItems.some(
+        (item) => item.queueId === get().currentQueueItemId && item.entry.path === entry.path
+      )) {
+        pendingPlaybackInterruptionReconciliation = {
+          ...pendingInterruption,
+          track: { ...entry.snapshot }
+        }
+      }
+    }
+    set((state) => {
+      const currentItem = state.currentQueueItemId
+        ? state.queueItems.find(
+            (item) => item.queueId === state.currentQueueItemId && contextQueueIds.has(item.queueId)
+          )
+        : null
+      const restoredEntry = state.restoredTrackNeedsLoad && state.currentTrack && currentItem
+        ? entryByPath.get(currentItem.entry.path) ?? null
+        : null
+      const restoredTrack = restoredEntry && state.currentTrack?.path === restoredEntry.path
+        ? { ...restoredEntry.snapshot }
+        : null
+      return {
+        queueItems: state.queueItems.map(patchItem),
+        // A rapid transition can move an unresolved context item into history
+        // before its fetch completes. Keep that preserved transition authoritative
+        // too, especially for remote/progressive source classification on Previous.
+        playbackHistory: patchHistory(state.playbackHistory),
+        currentTrack: restoredTrack ?? state.currentTrack,
+        ...(restoredTrack
+          ? {
+              duration: restoredTrack.duration,
+              waveformBufferedRatio: restoredTrack.sourceType && restoredTrack.sourceType !== 'local' ? 0 : 1,
+              waveformAnalyzedRatio: restoredTrack.sourceType && restoredTrack.sourceType !== 'local' ? 0 : 1
+            }
+          : {})
+      }
+    })
+  }
+
+  const hydrateContextPathBatch = async (
+    generation: number,
+    contextItems: readonly QueueItem[],
+    paths: readonly string[]
+  ): Promise<void> => {
+    if (generation !== contextHydrationGeneration || paths.length === 0) return
+    const batchPaths = [...new Set(paths)].filter((path) => {
+      const existing = contextTrackHydrationByPath.get(path)
+      return !existing || existing.generation !== generation
+    })
+    if (batchPaths.length === 0) return
+
+    // Defer invocation by one microtask so every per-path record is installed
+    // synchronously. A matching skip can then reuse this exact request even if it
+    // arrives before the library resolver has begun its work.
+    const batchResolution = Promise.resolve()
+      .then(() => useLibraryStore.getState().resolveTrackPathsWithFetch(batchPaths))
+      .then((tracks) => {
+        patchHydratedContextTracks(generation, contextItems, tracks)
+        return tracks
+      }, (error) => {
+        if (generation === contextHydrationGeneration && import.meta.env?.DEV) {
+          console.warn('Failed to hydrate playback context metadata:', error)
+        }
+        return [] as DbTrack[]
+      })
+
+    const records = batchPaths.map((path) => {
+      const record: ContextTrackHydrationRecord = {
+        generation,
+        promise: batchResolution.then((tracks) => tracks.find((track) => track.path === path) ?? null)
+      }
+      contextTrackHydrationByPath.set(path, record)
+      for (const item of contextItems) {
+        if (item.entry.path !== path) continue
+        contextTrackHydrationByQueueId.set(item.queueId, record)
+        const clearExactQueueRecord = (): void => {
+          if (contextTrackHydrationByQueueId.get(item.queueId) === record) {
+            contextTrackHydrationByQueueId.delete(item.queueId)
+          }
+        }
+        void record.promise.then(clearExactQueueRecord, clearExactQueueRecord)
+      }
+      return [path, record] as const
+    })
+
+    await batchResolution
+    for (const [path, record] of records) {
+      if (contextTrackHydrationByPath.get(path) === record) {
+        contextTrackHydrationByPath.delete(path)
+      }
+      if (pendingContextMetadataPaths.get(path) === generation) {
+        pendingContextMetadataPaths.delete(path)
+      }
+    }
+    if (
+      generation === contextHydrationGeneration
+      && get().playbackState === 'playing'
+      && getCommittedTransitionTarget(get()) === null
+    ) {
+      schedulePreBufferNextTrack()
+    }
+  }
+
+  const getOrStartContextTrackHydration = (
+    path: string,
+    queueItemId?: string | null
+  ): Promise<DbTrack | null> | null => {
+    if (queueItemId) {
+      const exactQueueRecord = contextTrackHydrationByQueueId.get(queueItemId)
+      if (exactQueueRecord) return exactQueueRecord.promise
+    }
+    const generation = contextHydrationGeneration
+    const existing = contextTrackHydrationByPath.get(path)
+    if (existing?.generation === generation) return existing.promise
+    if (pendingContextMetadataPaths.get(path) !== generation) return null
+
+    void hydrateContextPathBatch(generation, activeContextHydrationItems, [path])
+    return contextTrackHydrationByPath.get(path)?.promise ?? null
+  }
+
+  const scheduleRemainingContextHydration = (
+    generation: number,
+    contextItems: readonly QueueItem[],
+    paths: readonly string[]
+  ): void => {
+    const uniquePaths = [...new Set(paths)]
+    let offset = 0
+    const scheduleNextBatch = (): void => {
+      if (generation !== contextHydrationGeneration || offset >= uniquePaths.length) return
+      const runBatch = (): void => {
+        if (generation !== contextHydrationGeneration) return
+        const batch = uniquePaths.slice(offset, offset + CONTEXT_HYDRATION_BATCH_SIZE)
+        offset += batch.length
+        void hydrateContextPathBatch(generation, contextItems, batch).finally(scheduleNextBatch)
+      }
+      if (typeof globalThis.requestIdleCallback === 'function') {
+        globalThis.requestIdleCallback(runBatch, { timeout: ADAPTIVE_PREBUFFER_IDLE_TIMEOUT_MS })
+      } else {
+        globalThis.setTimeout(runBatch, 0)
+      }
+    }
+    scheduleNextBatch()
+  }
+
   const startPlaybackContextEntries = async (
     entries: QueueTrackEntry[],
     startIndex = 0,
-    options?: PlaybackContextOptions
+    options?: PlaybackContextOptions,
+    hydrationPlan?: PlaybackContextHydrationPlan
   ): Promise<void> => {
     if (blockLocalPlaybackInParallaxSinkMode()) return
 
+    const commandStartedAtMs = hydrationPlan?.commandStartedAtMs ?? performance.now()
+    contextHydrationGeneration += 1
+    resetContextHydrationTracking()
+    const generation = contextHydrationGeneration
     const state = get()
     const normalizedStartIndex = entries.length === 0
       ? -1
@@ -1739,14 +2934,20 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     const playbackStartIndex = options?.startShuffled && nextShuffle
       ? getShuffledStartIndex(entries.length, normalizedStartIndex)
       : normalizedStartIndex
-    const currentEntry = getCurrentPlaybackEntry(state)
-
     if (playbackStartIndex < 0) {
       clearBufferedNextTrack()
       return
     }
 
-    const contextItems = entries.map((entry) => createQueueItem(entry, 'context', options))
+    const contextItems = entries.map((entry, index) => createQueueItem(entry, 'context', {
+      ...options,
+      sourceContext: resolvePlaybackSourceContext(options)
+        ?? (options?.recordSelectedTrack && index === playbackStartIndex ? { type: 'track', trackPath: entry.path } : null)
+    }))
+    activeContextHydrationItems = contextItems
+    for (const path of hydrationPlan?.missingPaths ?? []) {
+      pendingContextMetadataPaths.set(path, generation)
+    }
     const currentItem = contextItems[playbackStartIndex]
     const itemsById = new Map(state.queueItems.map((item) => [item.queueId, item]))
     const manualItems = state.upcomingQueueIds
@@ -1776,26 +2977,154 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       queueSourceContext: resolvePlaybackSourceContext(options),
       queueContextLabel: normalizeContextLabel(options?.contextLabel) ?? 'Current Selection',
       shuffle: nextShuffle,
-      playbackHistory: currentEntry ? [...state.playbackHistory, currentEntry].slice(-MAX_PLAYBACK_HISTORY) : state.playbackHistory,
+      playbackHistory: nextShuffle
+        ? []
+        : contextItems.slice(0, playbackStartIndex).map((item) => ({ item })),
       currentTrackSource: 'context',
       restoredTrackNeedsLoad: false,
       restoredPlaybackTime: null
     })
+    // The newly committed context is authoritative even if its selected metadata
+    // still needs one fetch; prevent an older load from reaching playback meanwhile.
+    invalidateLoadRequest()
+    const contextIntentId = hydrationPlan?.playbackIntentId ?? playbackIntentGeneration
+    let stalePrebufferWaitMs = 0
+    const stalePrebufferWaitStartedAtMs = performance.now()
+    const hadNativePrebufferInFlight = prebufferInFlightPromise !== null
+    const stalePrebufferClear = audioEngine.getPlaybackOutputMode() !== 'standard'
+      ? (() => {
+          clearScheduledPrebufferTimer()
+          invalidatePrebufferRequest()
+          if (hadNativePrebufferInFlight) audioEngine.cancelPendingNativeDecode()
+          void useParallaxStore.getState().cancelHostNextStream()
+          return runNativeControlAfterActiveTransition(contextIntentId, () => audioEngine.clearNextBuffer())
+        })()
+      : (() => {
+          clearBufferedNextTrack()
+          return Promise.resolve()
+        })()
+    void stalePrebufferClear.then(() => {
+      stalePrebufferWaitMs = performance.now() - stalePrebufferWaitStartedAtMs
+    })
 
-    const targetTrack = resolveQueueEntryTrack(currentItem.entry)
-    if (!targetTrack || isUnavailableRemoteTrack(targetTrack)) return
+    const queuePreparationMs = performance.now() - commandStartedAtMs
 
-    const loaded = await get()._loadAndPlayTrack(targetTrack, { manualStart: true })
+    const missingPaths = hydrationPlan?.missingPaths ?? new Set<string>()
+    const targetPath = currentItem.entry.path
+    supersedeInteractiveLoudnessAnalysis(targetPath)
+    // Start the only critical metadata fetch first. Background hydration is
+    // launched immediately afterward, but never delays this selected track.
+    const targetResolution = missingPaths.has(targetPath)
+      ? getOrStartContextTrackHydration(targetPath, currentItem.queueId)
+      : null
+    const nextCandidate = findNextPlayableCandidate(get())
+    const nextHydrationPath = nextCandidate && nextCandidate.kind !== 'current'
+      && missingPaths.has(nextCandidate.track.path)
+      && nextCandidate.track.path !== targetPath
+      ? nextCandidate.track.path
+      : null
+
+    if (nextHydrationPath) {
+      void hydrateContextPathBatch(generation, contextItems, [nextHydrationPath])
+    }
+    // Context metadata belongs to the committed queue, not to the lifetime of
+    // this particular playback intent. Schedule the remaining idle work now so
+    // an immediate Next/Pause/Stop cannot strand the queue on fallback snapshots.
+    scheduleRemainingContextHydration(
+      generation,
+      contextItems,
+      [...missingPaths].filter((path) => path !== targetPath && path !== nextHydrationPath)
+    )
+
+    const attempt = createPlaybackAttempt('context', commandStartedAtMs, {
+      queuePreparationMs,
+      prebufferStatus: 'miss'
+    })
+    let targetTrack = resolveQueueEntryTrack(currentItem.entry)
+    commitPlaybackTransition(
+      attempt,
+      contextIntentId,
+      targetTrack ?? currentItem.entry.snapshot,
+      { queueItemId: currentItem.queueId }
+    )
+    const targetHydrationStartedAtMs = targetResolution ? performance.now() : null
+    const recordTargetHydrationTiming = (): void => {
+      if (targetHydrationStartedAtMs !== null && attempt.selectedTrackHydrationMs === 0) {
+        attempt.selectedTrackHydrationMs = performance.now() - targetHydrationStartedAtMs
+      }
+    }
+    if (targetResolution) {
+      try {
+        const resolvedTarget = await targetResolution
+        if (
+          generation !== contextHydrationGeneration
+          || (hydrationPlan && !isCurrentPlaybackIntent(hydrationPlan.playbackIntentId))
+        ) {
+          recordTargetHydrationTiming()
+          completePlaybackAttempt(attempt, targetTrack ?? currentItem.entry.snapshot, 'superseded', {
+            backend: targetTrack ? getAttemptBackend(targetTrack) : 'standard'
+          })
+          return
+        }
+        if (resolvedTarget) {
+          patchHydratedContextTracks(generation, contextItems, [resolvedTarget])
+          targetTrack = dbTrackToTrack(resolvedTarget)
+        }
+      } catch (error) {
+        if (
+          generation !== contextHydrationGeneration
+          || (hydrationPlan && !isCurrentPlaybackIntent(hydrationPlan.playbackIntentId))
+        ) {
+          recordTargetHydrationTiming()
+          completePlaybackAttempt(attempt, targetTrack ?? currentItem.entry.snapshot, 'superseded', {
+            backend: targetTrack ? getAttemptBackend(targetTrack) : 'standard'
+          })
+          return
+        }
+        if (import.meta.env?.DEV) console.warn('Failed to resolve selected track metadata:', error)
+      }
+      recordTargetHydrationTiming()
+    }
+    if (hydrationPlan && !isCurrentPlaybackIntent(hydrationPlan.playbackIntentId)) {
+      completePlaybackAttempt(attempt, targetTrack ?? currentItem.entry.snapshot, 'superseded', {
+        backend: targetTrack ? getAttemptBackend(targetTrack) : 'standard'
+      })
+      return
+    }
+    if (!targetTrack || isUnavailableRemoteTrack(targetTrack)) {
+      completePlaybackAttempt(attempt, targetTrack ?? currentItem.entry.snapshot, 'failed', {
+        backend: targetTrack ? getAttemptBackend(targetTrack) : 'standard'
+      })
+      return
+    }
+
+    await stalePrebufferClear
+    attempt.supersededLoadWaitMs += stalePrebufferWaitMs
+    if (
+      generation !== contextHydrationGeneration
+      || (hydrationPlan && !isCurrentPlaybackIntent(hydrationPlan.playbackIntentId))
+    ) {
+      completePlaybackAttempt(attempt, targetTrack, 'superseded', {
+        backend: getAttemptBackend(targetTrack)
+      })
+      return
+    }
+
+    const load = runSerializedTrackLoad(targetTrack, {
+      manualStart: true,
+      attempt
+    }, 'context')
+    const loaded = await load
     if (loaded === 'failed' && targetTrack.sourceType && targetTrack.sourceType !== 'local') {
       markTrackUnavailableInState(targetTrack.path)
     }
   }
 
-  const enqueueEntries = (entries: QueueTrackEntry[], position: number | 'next' | 'end' = 'end'): void => {
+  const enqueueEntries = (entries: QueueTrackEntry[], position: number | 'next' | 'end' = 'end', options?: PlaybackContextOptions): void => {
     if (entries.length === 0) return
 
     const state = get()
-    const items = entries.map((entry) => createQueueItem(entry, 'manual'))
+    const items = entries.map((entry) => createQueueItem(entry, 'manual', options))
     const insertionIndex = position === 'next'
       ? 0
       : position === 'end'
@@ -1880,6 +3209,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     loadTrack: async (track: Track, audioData: ArrayBuffer) => {
       if (blockLocalPlaybackInParallaxSinkMode()) return false
 
+      const loadIntentId = beginPlaybackIntent()
+      supersedeInteractiveLoudnessAnalysis(track.path)
       const loadStart = performance.now()
       const loadRequestId = beginLoadRequest()
       pendingManualLoadCueTrack = null
@@ -1914,11 +3245,26 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         throwIfSupersededLoad(loadRequestId)
         let usedFfmpegFallback = false
         const decodeStart = performance.now()
-        if (shouldUseBitPerfectPath(track)) {
+        if (shouldUseNativeExclusivePath(track)) {
           const replayGainDb = getReplayGainCandidateDb(track, useAudioSettingsStore.getState().replayGainMode)
           audioEngine.setCurrentReplayGainDb(replayGainDb)
-          const result = await audioEngine.loadTrackFromPath(track)
+          const nativeLoad: { result: NativeAudioTrackLoadResult | null } = { result: null }
+          const loudnessAnalysis = requestTrackLoudnessAnalysis(track, replayGainDb)
+          await runNativeControlAfterActiveTransition(loadIntentId, async () => {
+            activeStandaloneNativeLoad = true
+            try {
+              nativeLoad.result = await audioEngine.loadTrackFromPath(track, {
+                replayGainDb,
+                trackPath: track.path,
+                loudnessAnalysis
+              })
+            } finally {
+              activeStandaloneNativeLoad = false
+            }
+          })
           throwIfSupersededLoad(loadRequestId)
+          const result = nativeLoad.result
+          if (!result) throw new SupersededPlaybackLoadError()
           const decodeMs = Math.round(performance.now() - decodeStart)
           const resolvedTrack: Track = {
             ...track,
@@ -1946,7 +3292,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           warmupUpcomingLoudness()
           logSlowPath('loadTrack', loadStart, {
             trackPath: track.path,
-            usedNativeBitPerfect: true,
+            usedNativeExclusive: true,
+            nativeOutputMode: useAudioSettingsStore.getState().playbackOutputMode,
             decodeMs
           })
           return true
@@ -2024,7 +3371,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         if (recentPlaySession === loadListeningSession) finalizeRecentPlaySession()
         const isFormatFailure = showBitPerfectFormatNotice(track, error)
         if (isFormatFailure) {
-          console.warn('Bit-perfect playback rejected by the output device:', stripBitPerfectFormatTag(
+          console.warn('Native exclusive playback failed closed:', stripBitPerfectFormatTag(
             error instanceof Error ? error.message : String(error)
           ))
         } else {
@@ -2048,9 +3395,40 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     },
 
     loadTrackFromPath: async (track: Track) => {
+      const commandStartedAtMs = performance.now()
+      const directIntentId = beginPlaybackIntent()
+      clearNonmatchingPrebufferForIntent(directIntentId, track.path)
+      supersedeInteractiveLoudnessAnalysis(track.path)
+      standaloneTransitionTrackPath = track.path
+      standaloneTransitionIntentId = directIntentId
       set({ currentTrackSource: 'manual' })
-      const outcome = await get()._loadAndPlayTrack(track, { manualStart: true })
-      return outcome === 'loaded'
+      try {
+        const outcome = await runSerializedTrackLoad(track, {
+          manualStart: true,
+          attempt: createPlaybackAttempt('direct', commandStartedAtMs, {
+            queuePreparationMs: performance.now() - commandStartedAtMs,
+            prebufferStatus: 'miss'
+          })
+        }, 'direct')
+        if (
+          outcome !== 'loaded'
+          && standaloneTransitionTrackPath === track.path
+          && standaloneTransitionIntentId === directIntentId
+        ) {
+          standaloneTransitionTrackPath = null
+          standaloneTransitionIntentId = null
+        }
+        return outcome === 'loaded'
+      } catch (error) {
+        if (
+          standaloneTransitionTrackPath === track.path
+          && standaloneTransitionIntentId === directIntentId
+        ) {
+          standaloneTransitionTrackPath = null
+          standaloneTransitionIntentId = null
+        }
+        throw error
+      }
     },
 
     // Playback controls
@@ -2058,14 +3436,117 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       if (blockLocalPlaybackInParallaxSinkMode()) return
 
       const state = get()
+      const pendingInterruption = pendingPlaybackInterruptionReconciliation
+      if (
+        pendingInterruption
+        && pendingInterruption.intentId === playbackIntentGeneration
+      ) {
+        const commandStartedAtMs = performance.now()
+        let targetTrack = pendingInterruption.track
+        // Make the committed target authoritative immediately, then queue its
+        // explicit reload behind the still-running native control/handshake.
+        applyPlaybackInterruptionReconciliation(pendingInterruption)
+        const resumeIntentId = beginPlaybackIntent()
+        supersedeInteractiveLoudnessAnalysis(targetTrack.path)
+        if (pendingInterruption.standaloneTrackPath === targetTrack.path) {
+          standaloneTransitionTrackPath = targetTrack.path
+          standaloneTransitionIntentId = resumeIntentId
+        }
+        const attempt = createPlaybackAttempt('resume', commandStartedAtMs, {
+          prebufferStatus: 'miss'
+        })
+        const targetQueueItemId = get().currentQueueItemId
+        commitPlaybackTransition(attempt, resumeIntentId, targetTrack, {
+          queueItemId: targetQueueItemId,
+          standaloneTrackPath: pendingInterruption.standaloneTrackPath
+        })
+        const contextHydration = getOrStartContextTrackHydration(targetTrack.path, targetQueueItemId)
+        if (contextHydration) {
+          const hydrationStartedAtMs = performance.now()
+          await contextHydration
+          attempt.selectedTrackHydrationMs = performance.now() - hydrationStartedAtMs
+          if (!isCurrentPlaybackIntent(resumeIntentId)) {
+            completePlaybackAttempt(attempt, targetTrack, 'superseded', {
+              backend: getAttemptBackend(targetTrack)
+            })
+            return
+          }
+        }
+        const refreshedItem = targetQueueItemId
+          ? get().queueItems.find((item) => item.queueId === targetQueueItemId)
+          : null
+        if (refreshedItem?.entry.path === targetTrack.path) {
+          targetTrack = resolveQueueEntryTrack(refreshedItem.entry) ?? targetTrack
+        }
+        if (isUnavailableRemoteTrack(targetTrack)) {
+          completePlaybackAttempt(attempt, targetTrack, 'failed', {
+            backend: getAttemptBackend(targetTrack)
+          })
+          return
+        }
+        const loaded = await runSerializedTrackLoad(targetTrack, {
+          manualStart: true,
+          startTime: 0,
+          attempt
+        }, 'resume')
+        if (loaded === 'failed' && targetTrack.sourceType && targetTrack.sourceType !== 'local') {
+          markTrackUnavailableInState(targetTrack.path)
+        }
+        return
+      }
+
       if (state.currentTrack && state.restoredTrackNeedsLoad) {
-        const track = state.currentTrack
+        const commandStartedAtMs = performance.now()
+        let track = state.currentTrack
+        const preserveStandaloneIdentity = standaloneTransitionTrackPath === track.path
+        const resumeIntentId = beginPlaybackIntent()
+        supersedeInteractiveLoudnessAnalysis(track.path)
+        if (preserveStandaloneIdentity) {
+          standaloneTransitionTrackPath = track.path
+          standaloneTransitionIntentId = resumeIntentId
+        }
         const startTime = state.restoredPlaybackTime ?? state.currentTime
+        const attempt = createPlaybackAttempt('resume', commandStartedAtMs, {
+          prebufferStatus: 'miss'
+        })
+        const targetQueueItemId = state.currentQueueItemId
+        commitPlaybackTransition(attempt, resumeIntentId, track, {
+          queueItemId: targetQueueItemId,
+          standaloneTrackPath: preserveStandaloneIdentity ? track.path : null
+        })
+        const contextHydration = getOrStartContextTrackHydration(track.path, targetQueueItemId)
+        if (contextHydration) {
+          const hydrationStartedAtMs = performance.now()
+          await contextHydration
+          attempt.selectedTrackHydrationMs = performance.now() - hydrationStartedAtMs
+          if (!isCurrentPlaybackIntent(resumeIntentId)) {
+            completePlaybackAttempt(attempt, track, 'superseded', {
+              backend: getAttemptBackend(track)
+            })
+            return
+          }
+        }
+        const refreshedItem = targetQueueItemId
+          ? get().queueItems.find((item) => item.queueId === targetQueueItemId)
+          : null
+        if (refreshedItem?.entry.path === track.path) {
+          track = resolveQueueEntryTrack(refreshedItem.entry) ?? track
+        }
+        if (isUnavailableRemoteTrack(track)) {
+          completePlaybackAttempt(attempt, track, 'failed', {
+            backend: getAttemptBackend(track)
+          })
+          return
+        }
         set({
           restoredTrackNeedsLoad: false,
           restoredPlaybackTime: null
         })
-        const loaded = await get()._loadAndPlayTrack(track, { manualStart: true, startTime })
+        const loaded = await runSerializedTrackLoad(track, {
+          manualStart: true,
+          startTime,
+          attempt
+        }, 'resume')
         if (loaded === 'failed' && track.sourceType && track.sourceType !== 'local') {
           markTrackUnavailableInState(track.path)
         }
@@ -2073,16 +3554,62 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       }
 
       if (!state.currentTrack) {
+        const commandStartedAtMs = performance.now()
+        const playbackIntentId = beginPlaybackIntent()
         const candidate = findNextPlayableCandidate(state)
         if (!candidate || candidate.kind === 'current') return
+        clearNonmatchingPrebufferForIntent(playbackIntentId, candidate.track.path)
+        supersedeInteractiveLoudnessAnalysis(candidate.track.path)
 
         set(applyCandidateTransition(state, candidate, {
           pushCurrentToHistory: false
         }))
 
-        const loaded = await get()._loadAndPlayTrack(candidate.track, { manualStart: true })
-        if (loaded === 'failed' && candidate.track.sourceType && candidate.track.sourceType !== 'local') {
-          markTrackUnavailableInState(candidate.track.path)
+        const attempt = createPlaybackAttempt('resume', commandStartedAtMs, {
+          queuePreparationMs: performance.now() - commandStartedAtMs,
+          prebufferStatus: 'miss'
+        })
+        commitPlaybackTransition(attempt, playbackIntentId, candidate.track, {
+          queueItemId: candidate.item.queueId
+        })
+        let targetTrack = candidate.track
+        const contextHydration = getOrStartContextTrackHydration(
+          candidate.track.path,
+          candidate.item.queueId
+        )
+        if (contextHydration) {
+          const hydrationStartedAtMs = performance.now()
+          const hydratedTrack = await contextHydration
+          attempt.selectedTrackHydrationMs = performance.now() - hydrationStartedAtMs
+          if (!isCurrentPlaybackIntent(playbackIntentId)) {
+            completePlaybackAttempt(attempt, targetTrack, 'superseded', {
+              backend: getAttemptBackend(targetTrack)
+            })
+            return
+          }
+          const refreshedItem = get().queueItems.find((queueItem) => queueItem.queueId === candidate.item.queueId)
+          if (!refreshedItem) {
+            completePlaybackAttempt(attempt, targetTrack, 'superseded', {
+              backend: getAttemptBackend(targetTrack)
+            })
+            return
+          }
+          targetTrack = resolveQueueEntryTrack(refreshedItem.entry)
+            ?? (hydratedTrack ? dbTrackToTrack(hydratedTrack) : candidate.track)
+          if (isUnavailableRemoteTrack(targetTrack)) {
+            completePlaybackAttempt(attempt, targetTrack, 'failed', {
+              backend: getAttemptBackend(targetTrack)
+            })
+            return
+          }
+        }
+
+        const loaded = await runSerializedTrackLoad(targetTrack, {
+          manualStart: true,
+          attempt
+        }, 'resume')
+        if (loaded === 'failed' && targetTrack.sourceType && targetTrack.sourceType !== 'local') {
+          markTrackUnavailableInState(targetTrack.path)
         }
         return
       }
@@ -2096,7 +3623,25 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           : audioEngine.getPlaybackOutputMode() === 'standard' && !audioEngine.hasDecodedAudioBuffer()
       )
       if (needsReloadFromStopped) {
-        const reloaded = await get()._loadAndPlayTrack(state.currentTrack, { manualStart: true })
+        const commandStartedAtMs = performance.now()
+        const preserveStandaloneIdentity = standaloneTransitionTrackPath === state.currentTrack.path
+        const resumeIntentId = beginPlaybackIntent()
+        supersedeInteractiveLoudnessAnalysis(state.currentTrack.path)
+        if (preserveStandaloneIdentity) {
+          standaloneTransitionTrackPath = state.currentTrack.path
+          standaloneTransitionIntentId = resumeIntentId
+        }
+        const reloadAttempt = createPlaybackAttempt('resume', commandStartedAtMs, {
+          prebufferStatus: 'miss'
+        })
+        commitPlaybackTransition(reloadAttempt, resumeIntentId, state.currentTrack, {
+          queueItemId: state.currentQueueItemId,
+          standaloneTrackPath: preserveStandaloneIdentity ? state.currentTrack.path : null
+        })
+        const reloaded = await runSerializedTrackLoad(state.currentTrack, {
+          manualStart: true,
+          attempt: reloadAttempt
+        }, 'resume')
         if (reloaded === 'failed') {
           markTrackUnavailableInState(state.currentTrack.path)
         }
@@ -2106,7 +3651,55 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         showOutputDelayNotice(pendingManualLoadCueTrack)
         pendingManualLoadCueTrack = null
       }
-      await playWithParallaxIfNeeded(get().currentTrack)
+      const resumedTrack = get().currentTrack
+      if (!resumedTrack) return
+      const preserveStandaloneIdentity = standaloneTransitionTrackPath === resumedTrack.path
+      const resumeIntentId = beginPlaybackIntent()
+      if (preserveStandaloneIdentity) {
+        standaloneTransitionTrackPath = resumedTrack.path
+        standaloneTransitionIntentId = resumeIntentId
+      }
+      supersedeInteractiveLoudnessAnalysis(resumedTrack.path)
+      const resumeAttempt = createPlaybackAttempt('resume', performance.now(), {
+        prebufferStatus: 'not_applicable'
+      })
+      commitPlaybackTransition(resumeAttempt, resumeIntentId, resumedTrack, {
+        queueItemId: get().currentQueueItemId,
+        standaloneTrackPath: preserveStandaloneIdentity ? resumedTrack.path : null
+      })
+      const backendStart = performance.now()
+      try {
+        const resumePlayback = (): Promise<void> => playWithParallaxIfNeeded(
+          resumedTrack,
+          () => isCurrentPlaybackIntent(resumeIntentId)
+        )
+        if (audioEngine.getPlaybackOutputMode() !== 'standard') {
+          // Native play includes the device-start handshake. Publish it through
+          // the same control barrier as pause/stop/clear so a following target
+          // can supersede its state without overlapping native addon calls.
+          await runNativeControlAfterActiveTransition(resumeIntentId, resumePlayback)
+        } else {
+          await resumePlayback()
+        }
+        // A queued native control intentionally becomes a no-op if a newer
+        // intent wins before it starts; do not report that skipped resume as playing.
+        if (!isCurrentPlaybackIntent(resumeIntentId)) throw new SupersededPlaybackLoadError()
+        markPlaybackAttemptPlaying(resumeAttempt)
+        completePlaybackAttempt(resumeAttempt, resumedTrack, 'loaded', {
+          backend: getAttemptBackend(resumedTrack),
+          backendStartMs: performance.now() - backendStart
+        })
+      } catch (error) {
+        const superseded = error instanceof SupersededPlaybackLoadError
+          || isSupersededAudioLoadError(error)
+          || !isCurrentPlaybackIntent(resumeIntentId)
+        completePlaybackAttempt(resumeAttempt, resumedTrack, superseded ? 'superseded' : 'failed', {
+          backend: getAttemptBackend(resumedTrack),
+          backendStartMs: performance.now() - backendStart
+        })
+        if (superseded) return
+        throw error
+      }
       const currentTrack = get().currentTrack
       if ((previousPlaybackState === 'loading' || previousPlaybackState === 'stopped') && currentTrack) {
         void useLibraryStore.getState().markTrackLatestSyncSeen(currentTrack.path)
@@ -2116,7 +3709,59 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     pause: () => {
       if (blockLocalPlaybackInParallaxSinkMode()) return
-      audioEngine.pause()
+      const pendingTarget = getCommittedTransitionTarget()
+      if (pendingTarget) {
+        const standaloneTrackPath = standaloneTransitionTrackPath === pendingTarget.path
+          ? pendingTarget.path
+          : null
+        const intentId = beginPlaybackIntent()
+        supersedeInteractiveLoudnessAnalysis(null)
+        invalidateLoadRequest()
+        pendingManualLoadCueTrack = null
+        const reconciliation: PlaybackInterruptionReconciliation = {
+          intentId,
+          desiredState: 'paused',
+          track: pendingTarget,
+          standaloneTrackPath
+        }
+        pendingPlaybackInterruptionReconciliation = reconciliation
+        const waitsForNativeState = audioEngine.getPlaybackOutputMode() !== 'standard'
+        if (waitsForNativeState) {
+          clearScheduledPrebufferTimer()
+          invalidatePrebufferRequest()
+          const pauseControl = runNativeControlAfterActiveTransition(intentId, () => audioEngine.pause())
+          const reconcilePausedTarget = (): void => {
+            if (pendingPlaybackInterruptionReconciliation === reconciliation) {
+              pendingPlaybackInterruptionReconciliation = null
+              applyPlaybackInterruptionReconciliation(reconciliation)
+            }
+          }
+          void pauseControl.then(reconcilePausedTarget, reconcilePausedTarget)
+        } else {
+          clearBufferedNextTrack()
+          audioEngine.pause()
+        }
+        // Standard/remote state events are synchronous. If the engine had no
+        // active source and emitted nothing, reconcile here; native state is
+        // deliberately reconciled only when its asynchronous pause completes.
+        if (!waitsForNativeState && pendingPlaybackInterruptionReconciliation === reconciliation) {
+          pendingPlaybackInterruptionReconciliation = null
+          applyPlaybackInterruptionReconciliation(reconciliation)
+        }
+        void useParallaxStore.getState().pauseHostPlayback()
+        return
+      }
+      if (audioEngine.getPlaybackOutputMode() !== 'standard') {
+        clearScheduledPrebufferTimer()
+        invalidatePrebufferRequest()
+        audioEngine.cancelPendingNativeDecode()
+        void runNativeControlAfterActiveTransition(
+          playbackIntentGeneration,
+          () => audioEngine.pause()
+        )
+      } else {
+        audioEngine.pause()
+      }
       void useParallaxStore.getState().pauseHostPlayback()
     },
 
@@ -2124,6 +3769,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       if (blockLocalPlaybackInParallaxSinkMode()) return
 
       const state = get()
+      if (pendingPlaybackInterruptionReconciliation) {
+        await get().play()
+        return
+      }
       if (!state.currentTrack || state.playbackState === 'stopped' || state.restoredTrackNeedsLoad) {
         await get().play()
         return
@@ -2137,6 +3786,20 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     stop: () => {
       if (blockLocalPlaybackInParallaxSinkMode()) return
+      const pendingTarget = getCommittedTransitionTarget()
+      const standaloneTrackPath = pendingTarget && standaloneTransitionTrackPath === pendingTarget.path
+        ? pendingTarget.path
+        : null
+      playbackIntentGeneration += 1
+      cancelPendingTransitionLoads()
+      activeExecutingTransition = null
+      committedPlaybackTransition = null
+      pendingNativeSeek = null
+      preAppliedGaplessQueueItemId = null
+      completedPreAppliedGaplessQueueItemId = null
+      pendingPlaybackInterruptionReconciliation = null
+      audioEngine.cancelPendingNativeDecode()
+      supersedeInteractiveLoudnessAnalysis(null)
       void useParallaxStore.getState().stopHostPlayback()
       invalidateLoadRequest()
       pendingManualLoadCueTrack = null
@@ -2148,7 +3811,40 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         restoredTrackNeedsLoad: false,
         restoredPlaybackTime: null
       })
-      audioEngine.stop()
+      if (pendingTarget) {
+        pendingPlaybackInterruptionReconciliation = {
+          intentId: playbackIntentGeneration,
+          desiredState: 'stopped',
+          track: pendingTarget,
+          standaloneTrackPath
+        }
+      }
+      const waitsForNativeState = audioEngine.getPlaybackOutputMode() !== 'standard'
+      if (waitsForNativeState) {
+        const stopControl = runNativeControlAfterActiveTransition(
+          playbackIntentGeneration,
+          () => audioEngine.stop()
+        )
+        const reconcileStoppedTarget = (): void => {
+          const reconciliation = pendingPlaybackInterruptionReconciliation
+          if (
+            reconciliation
+            && reconciliation.intentId === playbackIntentGeneration
+            && reconciliation.desiredState === 'stopped'
+          ) {
+            pendingPlaybackInterruptionReconciliation = null
+            applyPlaybackInterruptionReconciliation(reconciliation)
+          }
+        }
+        void stopControl.then(reconcileStoppedTarget, reconcileStoppedTarget)
+      } else {
+        audioEngine.stop()
+      }
+      const reconciliation = pendingPlaybackInterruptionReconciliation
+      if (reconciliation && !waitsForNativeState) {
+        pendingPlaybackInterruptionReconciliation = null
+        applyPlaybackInterruptionReconciliation(reconciliation)
+      }
     },
 
     replaceLocalTrackPaths: async (replacements) => {
@@ -2194,6 +3890,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     seek: async (time: number) => {
       if (blockLocalPlaybackInParallaxSinkMode()) return
+      const seekIntentId = playbackIntentGeneration
 
       // §21 Gapless sink handoff — a seek moves the current track's boundary, invalidating the
       // pre-announced next stream's scheduled crossover. Withdraw it; this boundary falls back to the
@@ -2219,11 +3916,20 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         seekTime,
         state.playbackState === 'playing'
       )
+      if (!isCurrentPlaybackIntent(seekIntentId)) return
       if (parallaxSeekTimeline && state.playbackState === 'playing') {
         await audioEngine.playCurrentBufferOnParallaxTimeline(parallaxSeekTimeline)
+        if (!isCurrentPlaybackIntent(seekIntentId)) return
+        schedulePreBufferNextTrack()
         return
       }
-      await audioEngine.seek(seekTime)
+      if (audioEngine.getPlaybackOutputMode() !== 'standard') {
+        await runSerializedNativeSeek(seekIntentId, seekTime)
+      } else {
+        await audioEngine.seek(seekTime)
+      }
+      if (!isCurrentPlaybackIntent(seekIntentId)) return
+      schedulePreBufferNextTrack()
     },
 
     // Volume controls
@@ -2250,24 +3956,42 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     // Queue actions
     startPlaybackContext: async (tracks: Track[], startIndex = 0, options) => {
       if (blockLocalPlaybackInParallaxSinkMode()) return
-      await startPlaybackContextEntries(createQueueEntriesFromTracks(tracks), startIndex, options)
+      const commandStartedAtMs = performance.now()
+      const playbackIntentId = beginPlaybackIntent()
+      await startPlaybackContextEntries(createQueueEntriesFromTracks(tracks), startIndex, options, {
+        missingPaths: new Set<string>(),
+        commandStartedAtMs,
+        playbackIntentId
+      })
     },
 
     startPlaybackContextByPaths: async (paths: string[], startIndex = 0, options) => {
       if (blockLocalPlaybackInParallaxSinkMode()) return
-      await startPlaybackContextEntries(await createQueueEntriesFromPathsWithFetch(paths), startIndex, options)
+      const commandStartedAtMs = performance.now()
+      const playbackIntentId = beginPlaybackIntent()
+      const { entries, missingPaths } = preparePlaybackContextPaths(paths)
+      await startPlaybackContextEntries(
+        entries,
+        startIndex,
+        options,
+        {
+          missingPaths,
+          commandStartedAtMs,
+          playbackIntentId
+        }
+      )
     },
 
-    enqueueTrack: (track: Track, position = 'end') => {
-      get().enqueueTracks([track], position)
+    enqueueTrack: (track: Track, position = 'end', options) => {
+      get().enqueueTracks([track], position, options)
     },
 
-    enqueueTracks: (tracks: Track[], position = 'end') => {
-      enqueueEntries(createQueueEntriesFromTracks(tracks), position)
+    enqueueTracks: (tracks: Track[], position = 'end', options) => {
+      enqueueEntries(createQueueEntriesFromTracks(tracks), position, options)
     },
 
-    enqueueTrackPaths: async (paths: string[], position = 'end') => {
-      enqueueEntries(await createQueueEntriesFromPathsWithFetch(paths), position)
+    enqueueTrackPaths: async (paths: string[], position = 'end', options) => {
+      enqueueEntries(await createQueueEntriesFromPathsWithFetch(paths), position, options)
     },
 
     moveUpcomingItem: (queueId: string, toIndex: number) => {
@@ -2299,7 +4023,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       set({
         queueItems: state.queueItems.filter((item) => item.queueId !== queueId),
         baseUpcomingQueueIds: state.baseUpcomingQueueIds.filter((id) => id !== queueId),
-        upcomingQueueIds: state.upcomingQueueIds.filter((id) => id !== queueId)
+        upcomingQueueIds: state.upcomingQueueIds.filter((id) => id !== queueId),
+        playbackHistory: state.playbackHistory.filter((entry) => entry.item.queueId !== queueId)
       })
 
       clearBufferedNextTrack()
@@ -2307,6 +4032,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     },
 
     clearAllQueues: () => {
+      contextHydrationGeneration += 1
+      resetContextHydrationTracking()
       clearBufferedNextTrack()
       const state = get()
       const currentItem = state.currentQueueItemId
@@ -2434,6 +4161,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     },
 
     restoreSession: async (snapshot) => {
+      contextHydrationGeneration += 1
+      resetContextHydrationTracking()
+      activeExecutingTransition = null
+      committedPlaybackTransition = null
       const knownLibraryPaths = new Set<string>()
       const collectLibraryPath = (track: SessionQueueTrackSnapshot | null | undefined) => {
         if (!track) return
@@ -2444,7 +4175,6 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       collectLibraryPath(snapshot.currentTrack)
       snapshot.queueItems.forEach((item) => collectLibraryPath(item.entry.snapshot))
-      snapshot.playbackHistory.forEach((entry) => collectLibraryPath(entry.item.entry.snapshot))
 
       const resolvedLibraryPaths = knownLibraryPaths.size > 0
         ? new Set((await useLibraryStore.getState().resolveTrackPathsWithFetch([...knownLibraryPaths])).map((track) => track.path))
@@ -2465,9 +4195,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       const currentQueueItemId = snapshot.currentQueueItemId && queueItemIds.has(snapshot.currentQueueItemId)
         ? snapshot.currentQueueItemId
         : null
-      const playbackHistory = snapshot.playbackHistory
-        .filter((entry) => isRestorableTrack(entry.item.entry.snapshot))
-        .map((entry) => ({ item: sessionQueueItemToQueueItem(entry.item) }))
+      const playbackHistory = normalizeNavigationHistory(
+        queueItems,
+        snapshot.playbackHistory.map((entry) => ({ item: sessionQueueItemToQueueItem(entry.item) })),
+        currentQueueItemId
+      )
       const currentTrack = isRestorableTrack(snapshot.currentTrack)
         ? sessionTrackSnapshotToTrack(snapshot.currentTrack!)
         : null
@@ -2516,8 +4248,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     playQueuedItem: async (queueId, options) => {
       if (blockLocalPlaybackInParallaxSinkMode()) return
 
-      const state = get()
-      const item = state.queueItems.find((candidate) => candidate.queueId === queueId)
+      const commandStartedAtMs = performance.now()
+      const state = { ...get() }
+      let item = state.queueItems.find((candidate) => candidate.queueId === queueId)
+      if (item && !item.sourceContext && item.sourcePlaylistId === null && options?.manualStart !== false) {
+        item = { ...item, sourceContext: { type: 'track', trackPath: item.entry.path } }
+        state.queueItems = state.queueItems.map((entry) => entry.queueId === queueId ? item! : entry)
+      }
       const track = resolveQueueEntryTrack(item?.entry)
       const index = state.upcomingQueueIds.indexOf(queueId)
       const candidate: NextCandidate | null = item && track
@@ -2525,25 +4262,122 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         : null
 
       if (!candidate || isUnavailableRemoteTrack(candidate.track)) return
+      const playbackIntentId = beginPlaybackIntent()
+      clearNonmatchingPrebufferForIntent(playbackIntentId, candidate.track.path)
+      supersedeInteractiveLoudnessAnalysis(candidate.track.path)
 
-      set(applyCandidateTransition(state, candidate, {
+      set({ ...applyCandidateTransition(state, candidate, {
         pushCurrentToHistory: true
-      }))
+      }), queueItems: state.queueItems })
 
-      const loaded = await get()._loadAndPlayTrack(candidate.track, {
-        manualStart: options?.manualStart ?? true
+      const attempt = createPlaybackAttempt('queue', commandStartedAtMs, {
+        queuePreparationMs: performance.now() - commandStartedAtMs,
+        prebufferStatus: 'miss'
       })
-      if (loaded === 'failed' && candidate.track.sourceType && candidate.track.sourceType !== 'local') {
-        markTrackUnavailableInState(candidate.track.path)
+      commitPlaybackTransition(attempt, playbackIntentId, candidate.track, {
+        queueItemId: candidate.item.queueId
+      })
+      let targetTrack = candidate.track
+      const contextHydration = getOrStartContextTrackHydration(
+        candidate.track.path,
+        candidate.item.queueId
+      )
+      if (contextHydration) {
+        const hydrationStartedAtMs = performance.now()
+        const hydratedTrack = await contextHydration
+        attempt.selectedTrackHydrationMs = performance.now() - hydrationStartedAtMs
+        if (!isCurrentPlaybackIntent(playbackIntentId)) {
+          completePlaybackAttempt(attempt, targetTrack, 'superseded', {
+            backend: getAttemptBackend(targetTrack)
+          })
+          return
+        }
+        const refreshedItem = get().queueItems.find((queueItem) => queueItem.queueId === candidate.item.queueId)
+        if (!refreshedItem) {
+          completePlaybackAttempt(attempt, targetTrack, 'superseded', {
+            backend: getAttemptBackend(targetTrack)
+          })
+          return
+        }
+        targetTrack = resolveQueueEntryTrack(refreshedItem.entry)
+          ?? (hydratedTrack ? dbTrackToTrack(hydratedTrack) : candidate.track)
+        if (isUnavailableRemoteTrack(targetTrack)) {
+          completePlaybackAttempt(attempt, targetTrack, 'failed', {
+            backend: getAttemptBackend(targetTrack)
+          })
+          return
+        }
+      }
+
+      const loaded = await runSerializedTrackLoad(targetTrack, {
+        manualStart: options?.manualStart ?? true,
+        attempt
+      }, 'queue')
+      if (loaded === 'failed' && targetTrack.sourceType && targetTrack.sourceType !== 'local') {
+        markTrackUnavailableInState(targetTrack.path)
       }
     },
 
     playNext: async () => {
       if (blockLocalPlaybackInParallaxSinkMode()) return
 
+      const playbackIntent = nextPlaybackIntentOverride ?? 'next'
+      nextPlaybackIntentOverride = null
+      const commandStartedAtMs = performance.now()
       const state = get()
-      const candidate = findNextPlayableCandidate(state)
+      const candidate = findNextPlayableCandidate(state, {
+        respectRepeatOne: playbackIntent === 'automatic'
+      })
       if (!candidate) return
+      const playbackIntentId = beginPlaybackIntent()
+      clearNonmatchingPrebufferForIntent(playbackIntentId, candidate.track.path)
+      supersedeInteractiveLoudnessAnalysis(candidate.track.path)
+
+      const attempt = createPlaybackAttempt(playbackIntent, commandStartedAtMs, {
+        prebufferStatus: 'miss'
+      })
+
+      const contextHydration = candidate.kind === 'queue'
+        ? getOrStartContextTrackHydration(candidate.track.path, candidate.item.queueId)
+        : null
+      if (contextHydration && candidate.kind === 'queue') {
+        set(applyCandidateTransition(state, candidate, {
+          pushCurrentToHistory: true
+        }))
+        commitPlaybackTransition(attempt, playbackIntentId, candidate.track, {
+          queueItemId: candidate.item.queueId
+        })
+        attempt.queuePreparationMs = performance.now() - commandStartedAtMs
+        const hydrationStartedAtMs = performance.now()
+        const hydratedTrack = await contextHydration
+        attempt.selectedTrackHydrationMs = performance.now() - hydrationStartedAtMs
+        if (!isCurrentPlaybackIntent(playbackIntentId)) {
+          completePlaybackAttempt(attempt, candidate.track, 'superseded', {
+            backend: getAttemptBackend(candidate.track)
+          })
+          return
+        }
+        const refreshedItem = get().queueItems.find((queueItem) => queueItem.queueId === candidate.item.queueId)
+        if (!refreshedItem) {
+          completePlaybackAttempt(attempt, candidate.track, 'superseded', {
+            backend: getAttemptBackend(candidate.track)
+          })
+          return
+        }
+        const targetTrack = resolveQueueEntryTrack(refreshedItem.entry)
+          ?? (hydratedTrack ? dbTrackToTrack(hydratedTrack) : candidate.track)
+        if (isUnavailableRemoteTrack(targetTrack)) {
+          completePlaybackAttempt(attempt, targetTrack, 'failed', {
+            backend: getAttemptBackend(targetTrack)
+          })
+          return
+        }
+        const loaded = await runSerializedTrackLoad(targetTrack, { attempt }, playbackIntent)
+        if (loaded === 'failed' && targetTrack.sourceType && targetTrack.sourceType !== 'local') {
+          markTrackUnavailableInState(targetTrack.path)
+        }
+        return
+      }
 
       // Fast path: the track we're skipping to is already decoded as the prebuffered next
       // track. Promote it instantly in the engine (gapless) instead of cold-loading from disk.
@@ -2555,44 +4389,170 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         candidate.track?.path != null &&
         audioEngine.nextBufferedTrackPath === candidate.track.path
       ) {
+        const promotedPrebufferRequestId = completedPrebufferTrackPath === candidate.track.path
+          ? completedPrebufferRequestId
+          : null
+        attempt.prebufferStatus = 'ready'
         invalidateLoadRequest()
         manualGaplessTransitionInProgress = true
+        const backendStart = performance.now()
         try {
-          if (audioEngine.skipToPreBuffered()) return
+          if (audioEngine.skipToPreBuffered()) {
+            markPlaybackAttemptPlaying(attempt)
+            completePlaybackAttempt(
+              attempt,
+              candidate.track,
+              'loaded',
+              getPromotedPrebufferAttemptTimings(
+                promotedPrebufferRequestId,
+                performance.now() - backendStart
+              )
+            )
+            return
+          }
+        } catch (error) {
+          completePlaybackAttempt(
+            attempt,
+            candidate.track,
+            'failed',
+            getPromotedPrebufferAttemptTimings(
+              promotedPrebufferRequestId,
+              performance.now() - backendStart
+            )
+          )
+          throw error
         } finally {
           manualGaplessTransitionInProgress = false
         }
         // Fell through (buffer vanished): fall back to the cold-load path below.
+        attempt.prebufferStatus = 'miss'
+      }
+
+      if (
+        state.playbackState === 'playing'
+        && candidate.kind !== 'current'
+        && prebufferInFlightTrackPath === candidate.track.path
+        && prebufferInFlightPromise
+      ) {
+        attempt.prebufferStatus = 'in_flight'
+        const promotedPrebufferRequestId = prebufferInFlightRequestId
+        audioEngine.promoteMatchingPrebufferDecode(candidate.track.path)
+        // Preserve the transition immediately (so rapid Next presses still advance
+        // every queue/history step), while allowing the prebuffer request to finish
+        // against the target that is now current in queue state.
+        preAppliedGaplessQueueItemId = candidate.item.queueId
+        completedPreAppliedGaplessQueueItemId = null
+        set(applyCandidateTransition(state, candidate, {
+          pushCurrentToHistory: true
+        }))
+        attempt.queuePreparationMs = performance.now() - commandStartedAtMs
+
+        const inFlightPrebuffer = prebufferInFlightPromise
+        await inFlightPrebuffer.catch(() => undefined)
+        if (!isCurrentPlaybackIntent(playbackIntentId)) {
+          if (preAppliedGaplessQueueItemId === candidate.item.queueId) {
+            preAppliedGaplessQueueItemId = null
+          }
+          completePlaybackAttempt(
+            attempt,
+            candidate.track,
+            'superseded',
+            getPromotedPrebufferAttemptTimings(promotedPrebufferRequestId)
+          )
+          return
+        }
+
+        if (completedPreAppliedGaplessQueueItemId === candidate.item.queueId) {
+          completedPreAppliedGaplessQueueItemId = null
+          attempt.prebufferStatus = 'in_flight_promoted'
+          markPlaybackAttemptPlaying(attempt)
+          completePlaybackAttempt(
+            attempt,
+            candidate.track,
+            'loaded',
+            getPromotedPrebufferAttemptTimings(promotedPrebufferRequestId)
+          )
+          return
+        }
+
+        if (audioEngine.nextBufferedTrackPath === candidate.track.path) {
+          invalidateLoadRequest()
+          manualGaplessTransitionInProgress = true
+          const backendStart = performance.now()
+          try {
+            if (audioEngine.skipToPreBuffered()) {
+              attempt.prebufferStatus = 'in_flight_promoted'
+              markPlaybackAttemptPlaying(attempt)
+              completePlaybackAttempt(
+                attempt,
+                candidate.track,
+                'loaded',
+                getPromotedPrebufferAttemptTimings(
+                  promotedPrebufferRequestId,
+                  performance.now() - backendStart
+                )
+              )
+              return
+            }
+          } catch (error) {
+            preAppliedGaplessQueueItemId = null
+            completePlaybackAttempt(
+              attempt,
+              candidate.track,
+              'failed',
+              getPromotedPrebufferAttemptTimings(
+                promotedPrebufferRequestId,
+                performance.now() - backendStart
+              )
+            )
+            throw error
+          } finally {
+            manualGaplessTransitionInProgress = false
+          }
+          preAppliedGaplessQueueItemId = null
+        }
+
+        preAppliedGaplessQueueItemId = null
+        await runSerializedTrackLoad(candidate.track, { attempt }, playbackIntent)
+        return
       }
 
       set(applyCandidateTransition(state, candidate, {
         pushCurrentToHistory: true
       }))
+      commitPlaybackTransition(attempt, playbackIntentId, candidate.track, {
+        queueItemId: candidate.kind === 'current' ? state.currentQueueItemId : candidate.item.queueId
+      })
+      attempt.queuePreparationMs = performance.now() - commandStartedAtMs
 
-      await runSerializedTrackLoad(candidate.track)
+      await runSerializedTrackLoad(candidate.track, { attempt }, playbackIntent)
     },
 
     playPrevious: async () => {
       if (blockLocalPlaybackInParallaxSinkMode()) return
 
+      const commandStartedAtMs = performance.now()
       const state = get()
-      if (!state.currentTrack) return
+      const hasCommittedTransition = getCommittedTransitionTarget(state) !== null
 
       // If more than 3 seconds into track, restart it
-      if (state.currentTime > 3) {
-        await audioEngine.seek(0)
+      if (state.currentTrack && !hasCommittedTransition && state.currentTime > 3) {
+        await get().seek(0)
         return
       }
 
-      const previousEntry = state.playbackHistory[state.playbackHistory.length - 1]
+      const history = normalizeNavigationHistory(state.queueItems, state.playbackHistory, state.currentQueueItemId)
+      const previousEntry = history[history.length - 1]
       const previousTrack = resolveQueueEntryTrack(previousEntry?.item.entry)
       if (!previousEntry || !previousTrack || isUnavailableRemoteTrack(previousTrack)) return
+      const playbackIntentId = beginPlaybackIntent()
+      clearNonmatchingPrebufferForIntent(playbackIntentId, previousTrack.path)
+      supersedeInteractiveLoudnessAnalysis(previousTrack.path)
+      const attempt = createPlaybackAttempt('previous', commandStartedAtMs, {
+        prebufferStatus: 'miss'
+      })
 
       const currentEntry = getCurrentPlaybackEntry(state)
-      const queueItemsById = new Map(state.queueItems.map((item) => [item.queueId, item]))
-      if (currentEntry) queueItemsById.set(currentEntry.item.queueId, currentEntry.item)
-      queueItemsById.set(previousEntry.item.queueId, previousEntry.item)
-      const queueItems = [...queueItemsById.values()]
       const currentId = currentEntry?.item.queueId ?? null
       const baseUpcomingQueueIds = currentId
         ? [currentId, ...state.baseUpcomingQueueIds.filter((id) => id !== currentId && id !== previousEntry.item.queueId)]
@@ -2601,15 +4561,58 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         ? [currentId, ...state.upcomingQueueIds.filter((id) => id !== currentId && id !== previousEntry.item.queueId)]
         : state.upcomingQueueIds.filter((id) => id !== previousEntry.item.queueId)
       set({
-        queueItems,
         baseUpcomingQueueIds,
         upcomingQueueIds,
-        playbackHistory: state.playbackHistory.slice(0, -1),
+        playbackHistory: history.slice(0, -1),
         currentQueueItemId: previousEntry.item.queueId,
         currentTrackSource: previousEntry.item.origin
       })
+      commitPlaybackTransition(attempt, playbackIntentId, previousTrack, {
+        queueItemId: previousEntry.item.queueId
+      })
+      attempt.queuePreparationMs = performance.now() - commandStartedAtMs
 
-      await runSerializedTrackLoad(previousTrack, { manualStart: true })
+      let targetTrack = previousTrack
+      const contextHydration = getOrStartContextTrackHydration(
+        previousTrack.path,
+        previousEntry.item.queueId
+      )
+      if (contextHydration) {
+        const hydrationStartedAtMs = performance.now()
+        const hydratedTrack = await contextHydration
+        attempt.selectedTrackHydrationMs = performance.now() - hydrationStartedAtMs
+        if (!isCurrentPlaybackIntent(playbackIntentId)) {
+          completePlaybackAttempt(attempt, targetTrack, 'superseded', {
+            backend: getAttemptBackend(targetTrack)
+          })
+          return
+        }
+        const refreshedItem = get().queueItems.find(
+          (queueItem) => queueItem.queueId === previousEntry.item.queueId
+        )
+        if (!refreshedItem) {
+          completePlaybackAttempt(attempt, targetTrack, 'superseded', {
+            backend: getAttemptBackend(targetTrack)
+          })
+          return
+        }
+        targetTrack = resolveQueueEntryTrack(refreshedItem.entry)
+          ?? (hydratedTrack ? dbTrackToTrack(hydratedTrack) : previousTrack)
+        if (isUnavailableRemoteTrack(targetTrack)) {
+          completePlaybackAttempt(attempt, targetTrack, 'failed', {
+            backend: getAttemptBackend(targetTrack)
+          })
+          return
+        }
+      }
+
+      const loaded = await runSerializedTrackLoad(targetTrack, {
+        manualStart: true,
+        attempt
+      }, 'previous')
+      if (loaded === 'failed' && targetTrack.sourceType && targetTrack.sourceType !== 'local') {
+        markTrackUnavailableInState(targetTrack.path)
+      }
     },
 
     toggleShuffle: () => {
@@ -2650,8 +4653,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       return buildResolvedUpcomingEntries(get()).map((entry) => entry.track)
     },
 
-    getResolvedUpcomingEntries: () => {
-      return buildResolvedUpcomingEntries(get())
+    getResolvedUpcomingEntries: (limit) => {
+      return buildResolvedUpcomingEntries(get(), limit)
     },
 
     getResolvedPreviousTracks: () => {
@@ -2682,7 +4685,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     getResolvedQueueLength: () => {
       const state = get()
-      return state.playbackHistory.length + (state.currentTrack ? 1 : 0) + buildResolvedUpcomingEntries(state).length
+      return state.playbackHistory.length + (state.currentTrack ? 1 : 0) + state.upcomingQueueIds.length
     },
 
     _getNextEntry: () => {
@@ -2699,10 +4702,64 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     // Internal: Load and play a track from queue
     _loadAndPlayTrack: async (track: Track, options = {}) => {
-      if (blockLocalPlaybackInParallaxSinkMode()) return 'superseded'
-
       const loadStart = performance.now()
+      supersedeInteractiveLoudnessAnalysis(track.path)
+      const attempt = options.attempt ?? createPlaybackAttempt('direct', loadStart, {
+        prebufferStatus: 'miss'
+      })
+      let attemptBackend = getAttemptBackend(track)
+      let attemptLoadRequestId: number | null = null
+      let attemptFileReadMs: number | null = null
+      let localFilePreflightMs: number | null = null
+      let attemptDecodeMs: number | null = null
+      let attemptDecodeOnlyMs: number | null = null
+      let attemptStandardLoadPipelineMs: number | null = null
+      let attemptLoudnessMs: number | null = null
+      let attemptBackendStartMs: number | null = null
+      let attemptStandardPcmTimings: AudioLoadTimings | null = null
+      let nativeBinaryResolutionMs: number | null = null
+      let nativeProbeMs: number | null = null
+      let nativeDecodeMs: number | null = null
+      let nativeLoadMs: number | null = null
+      let nativeDeviceStartMs: number | null = null
+      const finishAttempt = (outcome: PlaybackLoadOutcome): void => {
+        if (attemptBackend === 'bitperfect' || attemptBackend === 'exclusive') {
+          const timings = audioEngine.getLastLoadTimings()
+          attemptDecodeMs ??= timings?.decodeMs ?? null
+          nativeBinaryResolutionMs ??= timings?.nativeBinaryResolutionMs ?? null
+          nativeProbeMs ??= timings?.nativeProbeMs ?? null
+          nativeDecodeMs ??= timings?.nativeDecodeMs ?? null
+          nativeLoadMs ??= timings?.nativeLoadMs ?? null
+          nativeDeviceStartMs ??= timings?.nativeDeviceStartMs ?? null
+        }
+        const pcmTimingDetails = getStandardPcmTimingDetails(attemptStandardPcmTimings)
+        completePlaybackAttempt(attempt, track, outcome, {
+          backend: attemptBackend,
+          loadRequestId: attemptLoadRequestId,
+          ...pcmTimingDetails,
+          fileReadMs: attemptFileReadMs,
+          localFilePreflightMs,
+          decodeMs: attemptDecodeMs,
+          decodeOnlyMs: attemptDecodeOnlyMs,
+          standardLoadPipelineMs: attemptStandardLoadPipelineMs,
+          decodeWorkMs: attemptDecodeOnlyMs ?? pcmTimingDetails.decodeWorkMs,
+          loudnessMs: attemptLoudnessMs,
+          backendStartMs: attemptBackendStartMs,
+          nativeBinaryResolutionMs,
+          nativeProbeMs,
+          nativeDecodeMs,
+          nativeLoadMs,
+          nativeDeviceStartMs
+        })
+      }
+
+      if (blockLocalPlaybackInParallaxSinkMode()) {
+        finishAttempt('superseded')
+        return 'superseded'
+      }
+
       const loadRequestId = beginLoadRequest()
+      attemptLoadRequestId = loadRequestId
       const manualStart = Boolean(options.manualStart)
       // Audiobooks pick up where they were left unless the caller asked for a specific start.
       const startTime = Number.isFinite(options.startTime)
@@ -2733,15 +4790,22 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         restoredPlaybackTime: null
       })
       startRecentPlaySession(track.path)
+      attempt.loadingStateAtMs = performance.now()
       const loadListeningSession = recentPlaySession
 
       try {
         await ensureCompatiblePlaybackMode(track)
         throwIfSupersededLoad(loadRequestId)
         const replayGainDb = getReplayGainCandidateDb(track, useAudioSettingsStore.getState().replayGainMode)
-        if (shouldUseBitPerfectPath(track)) {
+        if (shouldUseNativeExclusivePath(track)) {
+          attemptBackend = getAttemptBackend(track)
           audioEngine.setCurrentReplayGainDb(replayGainDb)
-          const loadResult = await audioEngine.loadTrackFromPath(track)
+          const loudnessAnalysis = requestTrackLoudnessAnalysis(track, replayGainDb)
+          const loadResult = await audioEngine.loadTrackFromPath(track, {
+            replayGainDb,
+            trackPath: track.path,
+            loudnessAnalysis
+          })
           throwIfSupersededLoad(loadRequestId)
           const resolvedTrack: Track = {
             ...track,
@@ -2763,27 +4827,58 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             showOutputDelayNotice(resolvedTrack)
           }
           throwIfSupersededLoad(loadRequestId)
-          await playWithParallaxIfNeeded(resolvedTrack)
+          const backendStart = performance.now()
+          try {
+            await playWithParallaxIfNeeded(resolvedTrack, () => isActiveLoadRequest(loadRequestId))
+          } finally {
+            attemptBackendStartMs = performance.now() - backendStart
+            const timings = audioEngine.getLastLoadTimings()
+            nativeBinaryResolutionMs = timings?.nativeBinaryResolutionMs ?? nativeBinaryResolutionMs
+            nativeProbeMs = timings?.nativeProbeMs ?? nativeProbeMs
+            nativeDecodeMs = timings?.nativeDecodeMs ?? nativeDecodeMs
+            nativeLoadMs = timings?.nativeLoadMs ?? nativeLoadMs
+            nativeDeviceStartMs = timings?.nativeDeviceStartMs ?? nativeDeviceStartMs
+          }
           throwIfSupersededLoad(loadRequestId)
+          markPlaybackAttemptPlaying(attempt)
           void useLibraryStore.getState().markTrackLatestSyncSeen(resolvedTrack.path)
           startRecentPlaySession(resolvedTrack.path)
           schedulePreBufferNextTrack()
           warmupUpcomingLoudness()
+          const engineTimings = audioEngine.getLastLoadTimings()
+          attemptDecodeMs = engineTimings?.decodeMs ?? null
+          nativeBinaryResolutionMs = engineTimings?.nativeBinaryResolutionMs ?? null
+          nativeProbeMs = engineTimings?.nativeProbeMs ?? null
+          nativeDecodeMs = engineTimings?.nativeDecodeMs ?? null
+          nativeLoadMs = engineTimings?.nativeLoadMs ?? null
+          nativeDeviceStartMs = engineTimings?.nativeDeviceStartMs ?? null
           logMemoryDiagnosticsEvent('track_load_success', {
+            attemptId: attempt.id,
+            loadRequestId,
+            prebufferRequestId: null,
+            decodeRequestId: null,
             trackPath: track.path,
             sourceType: track.sourceType ?? 'local',
-            loadPath: 'bitperfect',
+            loadPath: useAudioSettingsStore.getState().playbackOutputMode,
             durationSeconds: loadResult.duration,
-            channels: loadResult.channels
-          })
+            channels: loadResult.channels,
+            nativeBinaryResolutionMs,
+            nativeProbeMs,
+            nativeDecodeMs,
+            nativeLoadMs,
+            nativeDeviceStartMs
+          }, 'renderer', { captureSample: false })
           logSlowPath('queueLoadAndPlayTrack', loadStart, {
             trackPath: track.path,
-            usedNativeBitPerfect: true
+            usedNativeExclusive: true,
+            nativeOutputMode: useAudioSettingsStore.getState().playbackOutputMode
           })
+          finishAttempt('loaded')
           return 'loaded'
         }
 
         if (track.sourceType && track.sourceType !== 'local') {
+          attemptBackend = 'remote'
           try {
             const streamInfo = await audioEngine.loadRemoteStream(track, { replayGainDb })
             throwIfSupersededLoad(loadRequestId)
@@ -2811,8 +4906,14 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
               showOutputDelayNotice(resolvedTrack)
             }
             throwIfSupersededLoad(loadRequestId)
-            await playWithParallaxIfNeeded(resolvedTrack)
+            const backendStart = performance.now()
+            try {
+              await playWithParallaxIfNeeded(resolvedTrack, () => isActiveLoadRequest(loadRequestId))
+            } finally {
+              attemptBackendStartMs = performance.now() - backendStart
+            }
             throwIfSupersededLoad(loadRequestId)
+            markPlaybackAttemptPlaying(attempt)
             void useLibraryStore.getState().markTrackLatestSyncSeen(resolvedTrack.path)
             startRecentPlaySession(resolvedTrack.path)
             warmupUpcomingLoudness()
@@ -2824,17 +4925,22 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
               channels: streamInfo.channels
             })
             logMemoryDiagnosticsEvent('track_load_success', {
+              attemptId: attempt.id,
+              loadRequestId,
+              prebufferRequestId: null,
+              decodeRequestId: null,
               trackPath: track.path,
               sourceType: resolvedTrack.sourceType ?? 'local',
               loadPath: 'remote_stream',
               sessionId: streamInfo.sessionId,
               durationSeconds: resolvedTrack.duration,
               channels: streamInfo.channels
-            })
+            }, 'renderer', { captureSample: false })
             logSlowPath('queueLoadAndPlayTrack', loadStart, {
               trackPath: track.path,
               usedRemoteStream: true
             })
+            finishAttempt('loaded')
             return 'loaded'
           } catch (streamError) {
             if (isSupersededPlaybackLoad(streamError, loadRequestId)) {
@@ -2857,163 +4963,248 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           }
         }
 
-        const useLocalProgressive = await shouldUseLocalProgressivePath(track)
-        throwIfSupersededLoad(loadRequestId)
-        if (useLocalProgressive) {
+        const loadMandatoryLocalProgressive = async (
+          requirementReason: 'preflight' | 'native_pcm_limit',
+          existingLoudnessRequest?: ReturnType<typeof requestTrackLoudnessAnalysis>
+        ): Promise<PlaybackLoadOutcome> => {
+          attemptBackend = 'local_progressive'
           const skipLoudness = isTooLongForLoudnessAnalysis(track)
           const needsFixedLoudness = !skipLoudness && audioEngine.needsLoudnessAnalysisForLoad(replayGainDb)
+          const progressiveLoudnessStartedAt = needsFixedLoudness ? performance.now() : null
           const fixedLoudness = needsFixedLoudness
-            ? await resolveInteractiveLoudnessForProgressiveLoad(track, replayGainDb, loadRequestId)
-            : null
-          throwIfSupersededLoad(loadRequestId)
-
-          if (!needsFixedLoudness || fixedLoudness) {
-            try {
-              const streamInfo = await audioEngine.loadProgressiveStream(track, {
+            ? await resolveInteractiveLoudnessForProgressiveLoad(
+                track,
                 replayGainDb,
-                loudnessAnalysis: fixedLoudness,
-                allowMissingLoudness: skipLoudness
-              })
-              throwIfSupersededLoad(loadRequestId)
-              const resolvedTrack: Track = {
-                ...track,
-                duration: streamInfo.durationSeconds && streamInfo.durationSeconds > 0 ? streamInfo.durationSeconds : track.duration,
-                channels: streamInfo.channels ?? track.channels
-              }
-              set({
-                duration: resolvedTrack.duration,
-                currentTrack: resolvedTrack,
-                waveformData: null,
-                waveformBufferedRatio: 0,
-                waveformAnalyzedRatio: 0,
-                remoteLoadProgress: createInitialRemoteLoadProgress(resolvedTrack),
-                loadingStatus: null,
-                remoteBufferedSeconds: audioEngine.getRemoteBufferedSeconds(),
-                remoteStreamSessionId: streamInfo.sessionId,
-                currentTime: 0
-              })
-              hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
-              if (manualStart) {
-                showOutputDelayNotice(resolvedTrack)
-              }
-              throwIfSupersededLoad(loadRequestId)
-              await audioEngine.play()
-              throwIfSupersededLoad(loadRequestId)
-              void useLibraryStore.getState().markTrackLatestSyncSeen(resolvedTrack.path)
-              startRecentPlaySession(resolvedTrack.path)
-              schedulePreBufferNextTrack()
-              warmupUpcomingLoudness()
-              logMemoryDiagnosticsEvent('track_load_success', {
-                trackPath: track.path,
-                sourceType: 'local',
-                loadPath: 'local_progressive_stream',
-                sessionId: streamInfo.sessionId,
-                durationSeconds: resolvedTrack.duration,
-                channels: streamInfo.channels,
-                usedReplayGain: replayGainDb != null,
-                usedStoredLoudness: Boolean(fixedLoudness)
-              })
-              logSlowPath('queueLoadAndPlayTrack', loadStart, {
-                trackPath: track.path,
-                usedLocalProgressiveStream: true
-              })
-              return 'loaded'
-            } catch (streamError) {
-              if (isSupersededPlaybackLoad(streamError, loadRequestId)) {
-                throw streamError
-              }
-              console.warn(`Local progressive stream setup failed for ${track.path}; falling back to full decode.`, streamError)
-              logMemoryDiagnosticsEvent('local_progressive_stream_fallback', {
-                trackPath: track.path,
-                message: streamError instanceof Error ? streamError.message : 'Local progressive stream setup failed.'
-              })
-              set({
-                loadingStatus: null,
-                remoteLoadProgress: null,
-                remoteBufferedSeconds: 0,
-                remoteStreamSessionId: null,
-                waveformData: null,
-                waveformBufferedRatio: 1,
-                waveformAnalyzedRatio: 1
-              })
-            }
-          } else {
-            logMemoryDiagnosticsEvent('local_progressive_loudness_fallback', {
-              trackPath: track.path
+                loadRequestId,
+                existingLoudnessRequest
+              )
+            : null
+          if (progressiveLoudnessStartedAt !== null) {
+            attemptLoudnessMs = performance.now() - progressiveLoudnessStartedAt
+          }
+          throwIfSupersededLoad(loadRequestId)
+          const normalizationBypassed = needsFixedLoudness && !fixedLoudness
+
+          if (normalizationBypassed) {
+            logMemoryDiagnosticsEvent('local_progressive_loudness_bypassed', {
+              trackPath: track.path,
+              requirementReason,
+              gainDb: 0
             })
-            set({ loadingStatus: null })
+          }
+
+          try {
+            const streamInfo = await audioEngine.loadProgressiveStream(track, {
+              replayGainDb,
+              loudnessAnalysis: fixedLoudness,
+              allowMissingLoudness: skipLoudness
+            })
+            throwIfSupersededLoad(loadRequestId)
+            const resolvedTrack: Track = {
+              ...track,
+              duration: streamInfo.durationSeconds && streamInfo.durationSeconds > 0 ? streamInfo.durationSeconds : track.duration,
+              channels: streamInfo.channels ?? track.channels
+            }
+            set({
+              duration: resolvedTrack.duration,
+              currentTrack: resolvedTrack,
+              waveformData: null,
+              waveformBufferedRatio: 0,
+              waveformAnalyzedRatio: 0,
+              remoteLoadProgress: createInitialRemoteLoadProgress(resolvedTrack),
+              loadingStatus: null,
+              remoteBufferedSeconds: audioEngine.getRemoteBufferedSeconds(),
+              remoteStreamSessionId: streamInfo.sessionId,
+              currentTime: 0
+            })
+            hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
+            if (manualStart) {
+              showOutputDelayNotice(resolvedTrack)
+            }
+            throwIfSupersededLoad(loadRequestId)
+            const backendStart = performance.now()
+            try {
+              await audioEngine.play()
+            } finally {
+              attemptBackendStartMs = performance.now() - backendStart
+            }
+            throwIfSupersededLoad(loadRequestId)
+            markPlaybackAttemptPlaying(attempt)
+            void useLibraryStore.getState().markTrackLatestSyncSeen(resolvedTrack.path)
+            startRecentPlaySession(resolvedTrack.path)
+            schedulePreBufferNextTrack()
+            warmupUpcomingLoudness()
+            logMemoryDiagnosticsEvent('track_load_success', {
+              attemptId: attempt.id,
+              loadRequestId,
+              prebufferRequestId: null,
+              decodeRequestId: null,
+              trackPath: track.path,
+              sourceType: 'local',
+              loadPath: 'local_progressive_stream',
+              progressiveRequirementReason: requirementReason,
+              sessionId: streamInfo.sessionId,
+              durationSeconds: resolvedTrack.duration,
+              channels: streamInfo.channels,
+              usedReplayGain: replayGainDb != null,
+              usedFixedLoudness: Boolean(fixedLoudness),
+              normalizationBypassed
+            }, 'renderer', { captureSample: false })
+            logSlowPath('queueLoadAndPlayTrack', loadStart, {
+              trackPath: track.path,
+              usedLocalProgressiveStream: true,
+              progressiveRequirementReason: requirementReason
+            })
+            finishAttempt('loaded')
+            return 'loaded'
+          } catch (streamError) {
+            if (isSupersededPlaybackLoad(streamError, loadRequestId)) {
+              throw streamError
+            }
+            console.warn(`Required local progressive stream setup failed for ${track.path}.`, streamError)
+            logMemoryDiagnosticsEvent('local_progressive_stream_failed', {
+              trackPath: track.path,
+              requirementReason,
+              normalizationBypassed,
+              message: streamError instanceof Error ? streamError.message : 'Local progressive stream setup failed.'
+            })
+            set({
+              loadingStatus: null,
+              remoteLoadProgress: null,
+              remoteBufferedSeconds: 0,
+              remoteStreamSessionId: null,
+              waveformData: null,
+              waveformBufferedRatio: 1,
+              waveformAnalyzedRatio: 1
+            })
+            throw streamError
           }
         }
 
-        const fileLoadStart = performance.now()
-        // Resolve loudness (stored value or main-process ffmpeg pass) in
-        // parallel with the file read + decode below.
-        const loudnessAnalysis = requestTrackLoudnessAnalysis(track, replayGainDb)
-        // Load audio file from path
-        const result = await window.electronAPI.loadAudioFile(track.path, { metadataMode: 'none' })
+        const localPreflightStartedAt = performance.now()
+        const useLocalProgressive = await shouldUseLocalProgressivePath(track)
+        localFilePreflightMs = performance.now() - localPreflightStartedAt
         throwIfSupersededLoad(loadRequestId)
-        const fileLoadMs = Math.round(performance.now() - fileLoadStart)
-        if (!result) {
-          console.error('Failed to load audio file:', track.path)
-          logSlowPath('queueLoadAndPlayTrack', loadStart, {
-            trackPath: track.path,
-            failed: true,
-            stage: 'fileLoad'
-          })
-          set({
-            playbackState: 'stopped',
-            remoteLoadProgress: null,
-            loadingStatus: null,
-            remoteBufferedSeconds: 0,
-            remoteStreamSessionId: null
-          })
-          if (recentPlaySession === loadListeningSession) finalizeRecentPlaySession()
-          return 'failed'
-        }
-        if (!result.data) {
-          throw new Error('Audio file data missing from full decode load.')
+        if (useLocalProgressive) {
+          return await loadMandatoryLocalProgressive('preflight')
         }
 
+        attemptBackend = 'standard'
+        // Resolve loudness (stored value or main-process ffmpeg pass) in
+        // parallel with whichever decoder wins below. The same promise is
+        // reused if the native float32 path needs Chromium fallback.
+        const loudnessAnalysis = requestTrackLoudnessAnalysis(track, replayGainDb)
+        let result: Awaited<ReturnType<typeof window.electronAPI.loadAudioFile>> = null
+        let fileLoadMs: number | null = null
+        let usedFfmpegPcm = false
         let usedFfmpegFallback = false
+        let nativePcmRequiresProgressive = false
         const decodeStart = performance.now()
         try {
-          await audioEngine.loadAudioData(result.data, { replayGainDb, trackPath: track.path, loudnessAnalysis })
-          throwIfSupersededLoad(loadRequestId)
-        } catch (primaryDecodeError) {
-          if (isSupersededPlaybackLoad(primaryDecodeError, loadRequestId)) {
-            throw primaryDecodeError
-          }
-          // ffmpeg 6.0 cannot decode IAMF; the fallback would fail anyway.
-          if (isIamfTrack(track)) {
-            throw primaryDecodeError
-          }
-          const fallbackData = await window.electronAPI.decodeAudioWithFfmpeg(track.path)
-          throwIfSupersededLoad(loadRequestId)
-          if (!fallbackData) {
-            throw primaryDecodeError
+          const canUseFfmpegPcm = !isIamfTrack(track)
+            && Number.isInteger(track.channels)
+            && Number(track.channels) >= 1
+            && Number(track.channels) <= 8
+            && typeof window.electronAPI.decodeLocalAudioToPcm === 'function'
+
+          if (canUseFfmpegPcm) {
+            const pcmOutcome = await audioEngine.loadStandardTrackFromPath(track, {
+              replayGainDb,
+              trackPath: track.path,
+              loudnessAnalysis,
+              priority: 'interactive'
+            })
+            throwIfSupersededLoad(loadRequestId)
+            if (pcmOutcome === 'cancelled') {
+              throw new SupersededPlaybackLoadError()
+            }
+            nativePcmRequiresProgressive = pcmOutcome === 'progressive_required'
+            usedFfmpegPcm = pcmOutcome === 'loaded'
+            if (usedFfmpegPcm) {
+              attemptStandardPcmTimings = audioEngine.getLastLoadTimings()
+            }
           }
 
-          usedFfmpegFallback = true
-          console.warn(`Primary decode failed for ${track.path}; using FFmpeg compatibility decode.`)
-          await audioEngine.loadAudioData(fallbackData, { replayGainDb, trackPath: track.path, loudnessAnalysis })
-          throwIfSupersededLoad(loadRequestId)
+          if (!usedFfmpegPcm && !nativePcmRequiresProgressive) {
+            const fileLoadStart = performance.now()
+            result = await window.electronAPI.loadAudioFile(track.path, { metadataMode: 'none' })
+              .finally(() => {
+                attemptFileReadMs = performance.now() - fileLoadStart
+              })
+            throwIfSupersededLoad(loadRequestId)
+            fileLoadMs = Math.round(performance.now() - fileLoadStart)
+            if (!result) {
+              console.error('Failed to load audio file:', track.path)
+              logSlowPath('queueLoadAndPlayTrack', loadStart, {
+                trackPath: track.path,
+                failed: true,
+                stage: 'fileLoad'
+              })
+              set({
+                playbackState: 'stopped',
+                remoteLoadProgress: null,
+                loadingStatus: null,
+                remoteBufferedSeconds: 0,
+                remoteStreamSessionId: null
+              })
+              if (recentPlaySession === loadListeningSession) finalizeRecentPlaySession()
+              finishAttempt('failed')
+              return 'failed'
+            }
+            if (!result.data) {
+              throw new Error('Audio file data missing from full decode load.')
+            }
+
+            try {
+              await audioEngine.loadAudioData(result.data, { replayGainDb, trackPath: track.path, loudnessAnalysis })
+              throwIfSupersededLoad(loadRequestId)
+            } catch (primaryDecodeError) {
+              if (isSupersededPlaybackLoad(primaryDecodeError, loadRequestId)) {
+                throw primaryDecodeError
+              }
+              // ffmpeg 6.0 cannot decode IAMF; the fallback would fail anyway.
+              if (isIamfTrack(track)) {
+                throw primaryDecodeError
+              }
+              const fallbackData = await window.electronAPI.decodeAudioWithFfmpeg(track.path)
+              throwIfSupersededLoad(loadRequestId)
+              if (!fallbackData) {
+                throw primaryDecodeError
+              }
+
+              usedFfmpegFallback = true
+              console.warn(`Primary decode failed for ${track.path}; using FFmpeg compatibility decode.`)
+              await audioEngine.loadAudioData(fallbackData, { replayGainDb, trackPath: track.path, loudnessAnalysis })
+              throwIfSupersededLoad(loadRequestId)
+            }
+          }
+        } finally {
+          attemptStandardLoadPipelineMs = performance.now() - decodeStart
+          attemptDecodeMs = attemptStandardLoadPipelineMs
         }
-        const decodeMs = Math.round(performance.now() - decodeStart)
+        if (nativePcmRequiresProgressive) {
+          logMemoryDiagnosticsEvent('native_pcm_limit_progressive_escalation', {
+            trackPath: track.path,
+            sourceType: track.sourceType ?? 'local'
+          })
+          return await loadMandatoryLocalProgressive('native_pcm_limit', loudnessAnalysis)
+        }
+        const decodeMs = Math.round(attemptStandardLoadPipelineMs)
         const detectedChannels = audioEngine.getCurrentTrackChannelCount()
         const metadataResolvedTrack: Track = {
           ...track,
-          title: result.metadata?.title ?? track.title,
-          artist: result.metadata?.artist ?? track.artist,
-          album: result.metadata?.album ?? track.album,
-          albumArtist: result.metadata?.albumArtist ?? track.albumArtist,
-          duration: result.metadata?.duration ?? track.duration,
-          channels: detectedChannels ?? result.metadata?.channels ?? track.channels,
-          codec: result.metadata?.codec ?? track.codec,
-          codecProfile: result.metadata?.codecProfile ?? track.codecProfile,
-          isAtmosJoc: result.metadata?.isAtmosJoc ?? track.isAtmosJoc,
-          isIamf: result.metadata?.isIamf ?? track.isIamf,
-          replayGainTrackDb: result.metadata?.replayGainTrackDb ?? track.replayGainTrackDb,
-          replayGainAlbumDb: result.metadata?.replayGainAlbumDb ?? track.replayGainAlbumDb
+          title: result?.metadata?.title ?? track.title,
+          artist: result?.metadata?.artist ?? track.artist,
+          album: result?.metadata?.album ?? track.album,
+          albumArtist: result?.metadata?.albumArtist ?? track.albumArtist,
+          duration: result?.metadata?.duration ?? track.duration,
+          channels: detectedChannels ?? result?.metadata?.channels ?? track.channels,
+          codec: result?.metadata?.codec ?? track.codec,
+          codecProfile: result?.metadata?.codecProfile ?? track.codecProfile,
+          isAtmosJoc: result?.metadata?.isAtmosJoc ?? track.isAtmosJoc,
+          isIamf: result?.metadata?.isIamf ?? track.isIamf,
+          replayGainTrackDb: result?.metadata?.replayGainTrackDb ?? track.replayGainTrackDb,
+          replayGainAlbumDb: result?.metadata?.replayGainAlbumDb ?? track.replayGainAlbumDb
         }
         const resolvedDuration = resolvePositiveDuration(audioEngine.duration, metadataResolvedTrack.duration)
         const resolvedTrack: Track = {
@@ -3042,21 +5233,49 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           showOutputDelayNotice(resolvedTrack)
         }
         throwIfSupersededLoad(loadRequestId)
-        await playWithParallaxIfNeeded(resolvedTrack)
+        const backendStart = performance.now()
+        try {
+          await playWithParallaxIfNeeded(resolvedTrack, () => isActiveLoadRequest(loadRequestId))
+        } finally {
+          attemptBackendStartMs = performance.now() - backendStart
+        }
         throwIfSupersededLoad(loadRequestId)
+        markPlaybackAttemptPlaying(attempt)
         void useLibraryStore.getState().markTrackLatestSyncSeen(resolvedTrack.path)
         startRecentPlaySession(resolvedTrack.path)
         const engineTimings = audioEngine.getLastLoadTimings()
+        // Chromium fallback also reports context initialization and loudness
+        // origin; its absent PCM-specific fields remain null in diagnostics.
+        attemptStandardPcmTimings = engineTimings ?? attemptStandardPcmTimings
+        attemptDecodeOnlyMs = engineTimings?.decodeWorkMs ?? engineTimings?.decodeMs ?? null
+        attemptLoudnessMs = engineTimings?.analysisMs ?? null
+        nativeProbeMs = usedFfmpegPcm ? engineTimings?.nativeProbeMs ?? null : null
+        nativeDecodeMs = usedFfmpegPcm ? engineTimings?.nativeDecodeMs ?? null : null
+        const pcmTimingDetails = getStandardPcmTimingDetails(attemptStandardPcmTimings)
         logMemoryDiagnosticsEvent('track_load_success', {
+          attemptId: attempt.id,
+          loadRequestId,
+          prebufferRequestId: null,
           trackPath: track.path,
           sourceType: resolvedTrack.sourceType ?? 'local',
-          loadPath: usedFfmpegFallback ? 'file_ffmpeg_fallback' : 'file_decode',
+          loadPath: usedFfmpegPcm
+            ? 'file_ffmpeg_pcm'
+            : usedFfmpegFallback
+              ? 'file_ffmpeg_fallback'
+              : 'file_decode',
           fileLoadMs,
+          ...pcmTimingDetails,
           decodeMs,
-          decodeOnlyMs: engineTimings?.decodeMs ?? null,
+          decodeOnlyMs: attemptDecodeOnlyMs,
+          standardLoadPipelineMs: decodeMs,
+          decodeWorkMs: attemptDecodeOnlyMs,
+          loudnessMs: engineTimings?.analysisMs ?? null,
           loudnessAnalysisMs: engineTimings?.analysisMs ?? null,
+          nativePcmProbeMs: usedFfmpegPcm ? engineTimings?.nativeProbeMs ?? null : null,
+          nativePcmDecodeMs: usedFfmpegPcm ? engineTimings?.nativeDecodeMs ?? null : null,
+          usedFfmpegPcm,
           usedFfmpegFallback
-        })
+        }, 'renderer', { captureSample: false })
 
         // Schedule next-track prebuffering for the gapless handoff window.
         schedulePreBufferNextTrack()
@@ -3067,11 +5286,16 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           decodeMs,
           decodeOnlyMs: engineTimings?.decodeMs ?? null,
           loudnessAnalysisMs: engineTimings?.analysisMs ?? null,
+          nativePcmProbeMs: usedFfmpegPcm ? engineTimings?.nativeProbeMs ?? null : null,
+          nativePcmDecodeMs: usedFfmpegPcm ? engineTimings?.nativeDecodeMs ?? null : null,
+          usedFfmpegPcm,
           usedFfmpegFallback
         })
+        finishAttempt('loaded')
         return 'loaded'
       } catch (error) {
         if (isSupersededPlaybackLoad(error, loadRequestId)) {
+          finishAttempt('superseded')
           return 'superseded'
         }
         if (recentPlaySession === loadListeningSession) finalizeRecentPlaySession()
@@ -3085,10 +5309,14 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           console.error('Failed to load track:', error)
         }
         logMemoryDiagnosticsEvent('track_load_failed', {
+          attemptId: attempt.id,
+          loadRequestId,
+          prebufferRequestId: null,
+          decodeRequestId: attemptStandardPcmTimings?.decodeRequestId ?? null,
           trackPath: track.path,
           sourceType: track.sourceType ?? 'local',
           message: failureMessage
-        })
+        }, 'renderer', { captureSample: false })
         logSlowPath('queueLoadAndPlayTrack', loadStart, {
           trackPath: track.path,
           failed: true,
@@ -3104,6 +5332,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           remoteBufferedSeconds: 0,
           remoteStreamSessionId: null
         })
+        finishAttempt('failed')
         return 'failed'
       }
     },
@@ -3122,10 +5351,19 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       prebufferInFlightRequestId = prebufferRequestId
       prebufferInFlightTrackPath = expectedPrebufferTrackPath
       prebufferAttemptedTrackPath = expectedPrebufferTrackPath
+      if (prebufferRetryAtLateTrackPath !== expectedPrebufferTrackPath) {
+        prebufferRetryAtLateTrackPath = null
+      }
 
       const canApplyPrebufferResult = (nextTrack: Track): boolean => {
+        const preAppliedItem = preAppliedGaplessQueueItemId
+          ? get().queueItems.find((item) => item.queueId === preAppliedGaplessQueueItemId)
+          : null
         return isActivePrebufferRequest(prebufferRequestId)
-          && resolveExpectedPrebufferTrackPath() === nextTrack.path
+          && (
+            resolveExpectedPrebufferTrackPath() === nextTrack.path
+            || preAppliedItem?.entry.path === nextTrack.path
+          )
       }
 
       try {
@@ -3133,14 +5371,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           return
         }
 
-        if (state.repeat === 'one') {
+        if (state.repeat === 'one' || !expectedPrebufferTrackPath) {
           return
         }
 
-        const candidates = collectNextCandidates(state)
-        if (candidates.length === 0) return
-
-        for (const candidate of candidates) {
+        for (const candidate of iterateNextCandidates(state)) {
           const nextTrack = candidate.track
           if (!nextTrack) continue
           if (nextTrack.sourceType && nextTrack.sourceType !== 'local') {
@@ -3148,6 +5383,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             continue
           }
           if (isUnavailableRemoteTrack(nextTrack)) continue
+          const activeOutputMode = audioEngine.getPlaybackOutputMode()
+          if (activeOutputMode !== 'standard' && !shouldUseNativeExclusivePath(nextTrack)) {
+            return
+          }
           if (await shouldUseLocalProgressivePath(nextTrack)) {
             logMemoryDiagnosticsEvent('prebuffer_skipped_local_progressive', {
               trackPath: nextTrack.path
@@ -3161,17 +5400,32 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
           try {
             if (!canApplyPrebufferResult(nextTrack)) return
-            if (shouldUseBitPerfectPath(nextTrack)) {
-              await audioEngine.preBufferNextTrackFromPath(nextTrack)
+            if (shouldUseNativeExclusivePath(nextTrack)) {
+              const nativePrebufferIntentId = playbackIntentGeneration
+              const nextReplayGainDb = getReplayGainCandidateDb(nextTrack, useAudioSettingsStore.getState().replayGainMode)
+              const nextLoudnessAnalysis = requestTrackLoudnessAnalysis(nextTrack, nextReplayGainDb)
+              await runNativeControlAfterActiveTransition(nativePrebufferIntentId, async () => {
+                if (!canApplyPrebufferResult(nextTrack)) return
+                await audioEngine.preBufferNextTrackFromPath(nextTrack, {
+                  replayGainDb: nextReplayGainDb,
+                  trackPath: nextTrack.path,
+                  loudnessAnalysis: nextLoudnessAnalysis
+                })
+              })
               if (!canApplyPrebufferResult(nextTrack)) {
-                audioEngine.clearNextBuffer()
+                // Leave a just-completed native prebuffer in place. Clearing it
+                // here can overlap an active device handshake; path checks keep
+                // it ineligible, and the next serialized native load/stop clears
+                // or promotes it safely.
                 return
               }
               logSlowPath('preBufferNextTrack', bufferStart, {
                 trackPath: nextTrack.path,
                 loaded: true,
-                usedNativeBitPerfect: true
+                usedNativeExclusive: true,
+                nativeOutputMode: useAudioSettingsStore.getState().playbackOutputMode
               })
+              prebufferRetryAtLateTrackPath = null
               return
             }
 
@@ -3206,40 +5460,123 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             }
 
             const nextReplayGainDb = getReplayGainCandidateDb(nextTrack, useAudioSettingsStore.getState().replayGainMode)
-            // Resolve loudness in parallel with the prebuffer file read + decode.
-            const nextLoudnessAnalysis = requestTrackLoudnessAnalysis(nextTrack, nextReplayGainDb)
-            const result = await window.electronAPI.loadAudioFile(nextTrack.path, { metadataMode: 'none' })
-            if (!canApplyPrebufferResult(nextTrack)) {
-              return
-            }
-            if (result?.data) {
-              await audioEngine.preBufferNext(result.data, {
-                replayGainDb: nextReplayGainDb,
-                trackPath: nextTrack.path,
-                loudnessAnalysis: nextLoudnessAnalysis
-              })
+            // Resolve loudness in parallel with the native decode. Reuse the
+            // same result if this track needs the Chromium fallback.
+            const nextLoudnessAnalysis = requestTrackLoudnessAnalysis(
+              nextTrack,
+              nextReplayGainDb,
+              'background'
+            )
+            const canUseFfmpegPcm = !isIamfTrack(nextTrack)
+              && Number.isInteger(nextTrack.channels)
+              && Number(nextTrack.channels) >= 1
+              && Number(nextTrack.channels) <= 8
+              && typeof window.electronAPI.decodeLocalAudioToPcm === 'function'
+            let usedFfmpegPcm = false
+            let standardLoadPipelineMs: number | null = null
+
+            if (canUseFfmpegPcm) {
+              const standardLoadStartedAt = performance.now()
+              let pcmOutcome: Awaited<ReturnType<typeof audioEngine.preBufferNextStandardTrackFromPath>>
+              try {
+                pcmOutcome = await audioEngine.preBufferNextStandardTrackFromPath(nextTrack, {
+                  replayGainDb: nextReplayGainDb,
+                  trackPath: nextTrack.path,
+                  loudnessAnalysis: nextLoudnessAnalysis,
+                  priority: 'background'
+                })
+              } finally {
+                standardLoadPipelineMs = performance.now() - standardLoadStartedAt
+              }
               if (!canApplyPrebufferResult(nextTrack)) {
-                audioEngine.clearNextBuffer()
+                if (pcmOutcome === 'loaded') audioEngine.clearNextBuffer()
                 return
               }
-              logSlowPath('preBufferNextTrack', bufferStart, {
-                trackPath: nextTrack.path,
-                loaded: true
-              })
-              // §21 Gapless sink handoff — the next track is decoded; pre-announce it to connected
-              // sinks so they pre-buffer and cross the boundary gaplessly. No-op unless hosting with
-              // sinks on a non-bitperfect local track.
-              void useParallaxStore.getState().publishHostNextStream(nextTrack)
+              if (pcmOutcome === 'cancelled') return
+              if (pcmOutcome === 'progressive_required') {
+                logMemoryDiagnosticsEvent('prebuffer_skipped_native_pcm_limit', {
+                  prebufferRequestId,
+                  trackPath: nextTrack.path
+                })
+                logSlowPath('preBufferNextTrack', bufferStart, {
+                  trackPath: nextTrack.path,
+                  skippedNativePcmLimit: true
+                })
+                return
+              }
+              usedFfmpegPcm = pcmOutcome === 'loaded'
+            }
+
+            if (!usedFfmpegPcm) {
+              const result = await window.electronAPI.loadAudioFile(nextTrack.path, { metadataMode: 'none' })
+              if (!canApplyPrebufferResult(nextTrack)) {
+                return
+              }
+              if (result?.data) {
+                await audioEngine.preBufferNext(result.data, {
+                  replayGainDb: nextReplayGainDb,
+                  trackPath: nextTrack.path,
+                  loudnessAnalysis: nextLoudnessAnalysis
+                })
+                if (!canApplyPrebufferResult(nextTrack)) {
+                  audioEngine.clearNextBuffer()
+                  return
+                }
+              } else {
+                if (isActivePrebufferRequest(prebufferRequestId)) {
+                  prebufferRetryAtLateTrackPath = nextTrack.path
+                }
+                return
+              }
+            }
+
+            // Both decoders intentionally install an ordinary AudioBuffer.
+            // Verify ownership before declaring success; an eager miss gets
+            // one retry in the final 15-second window.
+            if (audioEngine.nextBufferedTrackPath !== nextTrack.path) {
+              if (isActivePrebufferRequest(prebufferRequestId)) {
+                prebufferRetryAtLateTrackPath = nextTrack.path
+              }
               return
             }
-            if (isActivePrebufferRequest(prebufferRequestId) && nextTrack.sourceType && nextTrack.sourceType !== 'local') {
-              markTrackUnavailableInState(nextTrack.path)
-            }
+            logSlowPath('preBufferNextTrack', bufferStart, {
+              trackPath: nextTrack.path,
+              loaded: true,
+              usedFfmpegPcm
+            })
+            completedPrebufferRequestId = prebufferRequestId
+            completedPrebufferTrackPath = nextTrack.path
+            const engineTimings = audioEngine.getLastPrebufferLoadTimings()
+            const pcmTimingDetails = getStandardPcmTimingDetails(usedFfmpegPcm ? engineTimings : null)
+            const roundedStandardLoadPipelineMs = standardLoadPipelineMs === null
+              ? engineTimings?.standardLoadPipelineMs ?? null
+              : Math.round(standardLoadPipelineMs)
+            const decodeWorkMs = engineTimings?.decodeWorkMs ?? engineTimings?.decodeMs ?? null
+            logMemoryDiagnosticsEvent('prebuffer_complete', {
+              attemptId: null,
+              loadRequestId: null,
+              prebufferRequestId,
+              trackPath: nextTrack.path,
+              decoder: usedFfmpegPcm ? 'ffmpeg_pcm' : 'webaudio',
+              ...pcmTimingDetails,
+              decodeMs: roundedStandardLoadPipelineMs,
+              decodeOnlyMs: decodeWorkMs,
+              standardLoadPipelineMs: roundedStandardLoadPipelineMs,
+              decodeWorkMs,
+              loudnessMs: engineTimings?.analysisMs ?? null
+            })
+            prebufferRetryAtLateTrackPath = null
+            // §21 Gapless sink handoff — the next track is decoded; pre-announce it to connected
+            // sinks so they pre-buffer and cross the boundary gaplessly. No-op unless hosting with
+            // sinks on a Standard-mode local track.
+            void useParallaxStore.getState().publishHostNextStream(nextTrack)
+            return
           } catch (error) {
             if (isSupersededAudioLoadError(error) || !isActivePrebufferRequest(prebufferRequestId)) {
               return
             }
             console.error('Failed to pre-buffer next track:', error)
+            prebufferRetryAtLateTrackPath = nextTrack.path
             if (isActivePrebufferRequest(prebufferRequestId) && nextTrack.sourceType && nextTrack.sourceType !== 'local') {
               markTrackUnavailableInState(nextTrack.path)
             }
@@ -3259,6 +5596,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     _schedulePreBufferNextTrack: (options = {}) => {
       schedulePreBufferNextTrack(options)
+    },
+
+    _clearBufferedNextTrack: () => {
+      clearBufferedNextTrack()
     },
 
     // Initialize audio engine event listeners
@@ -3282,6 +5623,63 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           }
         })
       })
+
+      const scheduleRendererWaveformFallback = (trackPath: string, buffer: AudioBuffer): void => {
+        scheduleDeferredWaveformExtraction(() => {
+          const track = get().currentTrack
+          if (!track || track.path !== trackPath) return
+          const extractStart = performance.now()
+          const peaks = extractWaveformPeaks(buffer)
+          logSlowPath('extractWaveformPeaks', extractStart, { trackPath })
+          if (shouldUseWaveformCache(track)) {
+            setWaveformCacheEntry(trackPath, peaks)
+          }
+          set({
+            waveformData: peaks,
+            waveformBufferedRatio: 1,
+            waveformAnalyzedRatio: 1
+          })
+        })
+      }
+
+      staticWaveformResultUnsubscribe?.()
+      staticWaveformResultListenerAvailable =
+        typeof window.electronAPI.onStaticTrackWaveformResult === 'function'
+      staticWaveformResultUnsubscribe = staticWaveformResultListenerAvailable
+        ? window.electronAPI.onStaticTrackWaveformResult(
+          (result: StaticTrackWaveformResult) => {
+            const pending = pendingStaticWaveformBuffers.get(result.requestId)
+            pendingStaticWaveformBuffers.delete(result.requestId)
+
+            if (result.status === 'ready') {
+              const waveform = new Float32Array(result.waveformData)
+              setWaveformCacheEntry(result.trackPath, waveform)
+              if (get().currentTrack?.path === result.trackPath) {
+                set({
+                  waveformData: waveform,
+                  waveformBufferedRatio: 1,
+                  waveformAnalyzedRatio: 1
+                })
+              }
+              return
+            }
+
+            if (pending?.trackPath === result.trackPath) {
+              if (get().currentTrack?.path === result.trackPath) {
+                scheduleRendererWaveformFallback(result.trackPath, pending.buffer)
+              }
+              return
+            }
+
+            failedStaticWaveformRequests.set(result.requestId, result.trackPath)
+            while (failedStaticWaveformRequests.size > MAX_WAVEFORM_CACHE_ENTRIES) {
+              const oldestRequestId = failedStaticWaveformRequests.keys().next().value
+              if (oldestRequestId === undefined) break
+              failedStaticWaveformRequests.delete(oldestRequestId)
+            }
+          }
+        )
+        : null
 
       audioEngine.on('stateChange', (state) => {
         const nextPlaybackState = state as PlaybackState
@@ -3313,10 +5711,22 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           playbackState: nextPlaybackState,
           currentTime: nextPlaybackState === 'paused' ? audioEngine.currentTime : 0
         })
+        const reconciliation = pendingPlaybackInterruptionReconciliation
+        if (
+          reconciliation
+          && reconciliation.intentId === playbackIntentGeneration
+          && (
+            reconciliation.desiredState === nextPlaybackState
+            || (reconciliation.desiredState === 'paused' && nextPlaybackState === 'stopped')
+          )
+        ) {
+          pendingPlaybackInterruptionReconciliation = null
+          applyPlaybackInterruptionReconciliation(reconciliation)
+        }
       })
 
       audioEngine.on('nativeCapabilitiesChange', (capabilities) => {
-        if (useAudioSettingsStore.getState().playbackOutputMode !== 'bitperfect') {
+        if (useAudioSettingsStore.getState().playbackOutputMode === 'standard') {
           return
         }
         useAudioSettingsStore.setState({
@@ -3330,10 +5740,6 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         maybeCommitRecentPlay()
 
         const state = get()
-        if (state.playbackState === 'playing' || state.playbackState === 'paused') {
-          schedulePreBufferNextTrack()
-        }
-
         if (state.playbackState === 'loading') {
           if (normalizedTime !== 0) {
             return
@@ -3408,9 +5814,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         }))
       })
 
-      audioEngine.on('bufferReady', (buffer) => {
+      audioEngine.on('bufferReady', (buffer, metadataValue) => {
         const track = get().currentTrack
         if (!track || !buffer) return
+        const metadata = metadataValue as AudioBufferReadyMetadata | undefined
+        if (metadata && metadata.trackPath !== track.path) return
+
+        pendingStaticWaveformBuffers.clear()
 
         if (shouldUseWaveformCache(track)) {
           const cached = getWaveformCacheEntry(track.path)
@@ -3424,35 +5834,43 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           }
         }
 
+        if (
+          staticWaveformResultListenerAvailable
+          && metadata?.waveformRequestId !== null
+          && metadata?.waveformRequestId !== undefined
+        ) {
+          const failedTrackPath = failedStaticWaveformRequests.get(metadata.waveformRequestId)
+          if (failedTrackPath === track.path) {
+            failedStaticWaveformRequests.delete(metadata.waveformRequestId)
+            scheduleRendererWaveformFallback(track.path, buffer as AudioBuffer)
+            return
+          }
+          pendingStaticWaveformBuffers.set(metadata.waveformRequestId, {
+            trackPath: track.path,
+            buffer: buffer as AudioBuffer,
+          })
+          return
+        }
+
         // bufferReady fires synchronously inside loadAudioData (before play())
         // and at gapless transitions; extraction is a full pass over the
         // decoded samples, so keep it off the playback-start critical path.
-        const trackPath = track.path
-        scheduleDeferredWaveformExtraction(() => {
-          if (get().currentTrack?.path !== trackPath) return
-          const extractStart = performance.now()
-          const peaks = extractWaveformPeaks(buffer as AudioBuffer)
-          logSlowPath('extractWaveformPeaks', extractStart, { trackPath })
-          if (shouldUseWaveformCache(track)) {
-            setWaveformCacheEntry(trackPath, peaks)
-          }
-          set({
-            waveformData: peaks,
-            waveformBufferedRatio: 1,
-            waveformAnalyzedRatio: 1
-          })
-        })
+        scheduleRendererWaveformFallback(track.path, buffer as AudioBuffer)
       })
 
       // Handle gapless transition - advance queue without reloading
       audioEngine.on('gaplessTransition', () => {
         if (isParallaxSinkModeActive()) return
+        const state = get()
+        // A queued gapless callback can outlive the buffer it belongs to. Once a
+        // newer explicit transition has committed its target, only the matching
+        // in-flight prebuffer promotion may advance that already-applied queue.
+        if (preAppliedGaplessQueueItemId === null && getCommittedTransitionTarget(state)) return
         finalizeRecentPlaySession('playing', {
           completedNaturally: !manualGaplessTransitionInProgress
         })
-        const state = get()
 
-        if (state.repeat === 'one') {
+        if (state.repeat === 'one' && !manualGaplessTransitionInProgress && preAppliedGaplessQueueItemId === null) {
           // Safety net: AudioEngine already swapped to the wrong buffer.
           // Reload the correct track to fix audio/UI desync.
           const correctTrack = state.currentTrack
@@ -3462,29 +5880,37 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           return
         }
 
-        const nextCandidate = findNextPlayableCandidate(state)
-        if (!nextCandidate || nextCandidate.kind === 'current') return
-
-        const nextTrack = nextCandidate.track
+        const preAppliedQueueItem = preAppliedGaplessQueueItemId
+          ? state.queueItems.find((item) => item.queueId === preAppliedGaplessQueueItemId)
+          : null
+        const nextCandidate = preAppliedQueueItem ? null : findNextPlayableCandidate(state, {
+          respectRepeatOne: !manualGaplessTransitionInProgress
+        })
+        const nextTrack = preAppliedQueueItem
+          ? resolveQueueEntryTrack(preAppliedQueueItem.entry)
+          : nextCandidate && nextCandidate.kind !== 'current'
+            ? nextCandidate.track
+            : null
+        if (!nextTrack) {
+          preAppliedGaplessQueueItemId = null
+          return
+        }
         if (isUnavailableRemoteTrack(nextTrack)) return
         logMemoryDiagnosticsEvent('gapless_transition_state', {
           previousTrackPath: state.currentTrack?.path ?? null,
           nextTrackPath: nextTrack.path
         })
 
-        const transitionState = applyCandidateTransition(state, nextCandidate, {
-          pushCurrentToHistory: true
-        })
-        const nextState: typeof transitionState & {
-          currentTrack: Track
-          currentTime: number
-          duration: number
-          waveformData: Float32Array | null
-          waveformBufferedRatio: number
-          waveformAnalyzedRatio: number
-          remoteBufferedSeconds: number
-          remoteStreamSessionId: number | null
-        } = {
+        const transitionState = preAppliedQueueItem
+          ? {}
+          : applyCandidateTransition(state, nextCandidate!, {
+              pushCurrentToHistory: true
+            })
+        if (preAppliedQueueItem) {
+          completedPreAppliedGaplessQueueItemId = preAppliedQueueItem.queueId
+        }
+        preAppliedGaplessQueueItemId = null
+        const nextState = {
           ...transitionState,
           currentTrack: nextTrack,
           currentTime: 0,
@@ -3521,6 +5947,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       // Handle non-gapless track end (when no next track buffered)
       audioEngine.on('ended', () => {
         if (isParallaxSinkModeActive()) return
+        // Ignore a stale end notification while a newer click/skip owns the
+        // committed target. Its load will establish the next authoritative state.
+        if (getCommittedTransitionTarget(get())) return
         finalizeRecentPlaySession('playing', { completedNaturally: true })
         set({
           currentTime: 0,
@@ -3528,12 +5957,17 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           remoteStreamSessionId: null
         })
         // Auto-play next track (non-gapless fallback)
+        nextPlaybackIntentOverride = 'automatic'
         get().playNext()
       })
 
       audioEngine.on('error', (error) => {
         finalizeRecentPlaySession()
-        console.error('Audio engine error:', error)
+        const currentTrack = get().currentTrack
+        const surfacedNativeFailure = currentTrack
+          ? showBitPerfectFormatNotice(currentTrack, error)
+          : false
+        if (!surfacedNativeFailure) console.error('Audio engine error:', error)
         logMemoryDiagnosticsEvent('audio_engine_error', {
           message: error instanceof Error ? error.message : String(error)
         })
@@ -3546,12 +5980,24 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     // Cleanup listeners
     _cleanupListeners: () => {
       finalizeRecentPlaySession()
+      playbackIntentGeneration += 1
+      cancelPendingTransitionLoads()
+      activeExecutingTransition = null
+      committedPlaybackTransition = null
+      pendingNativeSeek = null
       clearScheduledPrebufferTimer()
       // Audio engine handles its own cleanup
       if (remoteLoadProgressUnsubscribe) {
         remoteLoadProgressUnsubscribe()
         remoteLoadProgressUnsubscribe = null
       }
+      if (staticWaveformResultUnsubscribe) {
+        staticWaveformResultUnsubscribe()
+        staticWaveformResultUnsubscribe = null
+      }
+      staticWaveformResultListenerAvailable = false
+      pendingStaticWaveformBuffers.clear()
+      failedStaticWaveformRequests.clear()
       if (listeningBeforeUnloadHandler) {
         window.removeEventListener('beforeunload', listeningBeforeUnloadHandler)
         listeningBeforeUnloadHandler = null
@@ -3567,7 +6013,7 @@ useAudioSettingsStore.subscribe((nextState, prevState) => {
   const playerState = usePlayerStore.getState()
   const replayGainDb = getReplayGainCandidateDb(playerState.currentTrack, nextState.replayGainMode)
   audioEngine.setCurrentReplayGainDb(replayGainDb)
-  audioEngine.clearNextBuffer()
+  playerState._clearBufferedNextTrack()
   playerState._schedulePreBufferNextTrack({ invalidatePending: true })
 })
 
@@ -3575,7 +6021,7 @@ useAudioSettingsStore.subscribe((nextState, prevState) => {
   if (nextState.disableGaplessPrebufferDev === prevState.disableGaplessPrebufferDev) return
 
   const playerState = usePlayerStore.getState()
-  audioEngine.clearNextBuffer()
+  playerState._clearBufferedNextTrack()
   playerState._schedulePreBufferNextTrack({ invalidatePending: true })
 })
 

@@ -9,9 +9,11 @@ import {
   type CustomTheme
 } from '../../shared/theme/customTheme'
 
-export type ThemePresetId = 'default' | 'graphite' | 'midnight' | 'studio' | 'crimson' | 'light'
+export type ThemePresetId = 'default' | 'graphite' | 'editor' | 'midnight' | 'studio' | 'crimson' | 'light'
 export type AccentSource = 'theme' | 'cover-art'
-export type CoverArtAccentMethod = 'dominant' | 'average' | 'vibrant'
+export type CoverArtAccentMethod = 'adaptive' | 'dominant' | 'average' | 'vibrant'
+
+const COVER_ART_ACCENT_METHODS: readonly CoverArtAccentMethod[] = ['adaptive', 'dominant', 'average', 'vibrant']
 
 export interface ResolvedThemeTokens {
   bgPrimary: string
@@ -38,6 +40,7 @@ export interface ResolvedThemeTokens {
   controlBgSoft: string
   controlBg: string
   controlBgStrong: string
+  controlBorder: string
   // Faint eyebrow/section-label text (needs more contrast on light than inverted tint).
   eyebrow: string
   // Emphatic text that was a solid white literal (flips to near-black on light).
@@ -47,6 +50,8 @@ export interface ResolvedThemeTokens {
   stageSurface: string
   stageBorder: string
   stageGrid: string
+  // Phase-risk shading follows each surface palette, independent of custom/cover-art accents.
+  stageWarning: string
   stageText: string
   stageTextMuted: string
   shadowSoft: string
@@ -66,12 +71,14 @@ type SurfaceTokens = Pick<
   | 'controlBgSoft'
   | 'controlBg'
   | 'controlBgStrong'
+  | 'controlBorder'
   | 'eyebrow'
   | 'textStrong'
   | 'stageBg'
   | 'stageSurface'
   | 'stageBorder'
   | 'stageGrid'
+  | 'stageWarning'
   | 'stageText'
   | 'stageTextMuted'
   | 'shadowSoft'
@@ -90,12 +97,14 @@ const DARK_SURFACE_DEFAULTS: SurfaceTokens = {
   controlBgSoft: 'rgba(0, 0, 0, 0.18)',
   controlBg: 'rgba(0, 0, 0, 0.3)',
   controlBgStrong: 'rgba(0, 0, 0, 0.45)',
+  controlBorder: 'rgba(255, 255, 255, 0.1)',
   eyebrow: 'rgba(255, 255, 255, 0.4)',
   textStrong: '#ffffff',
   stageBg: '#0a0e14',
   stageSurface: 'rgba(8, 10, 14, 0.985)',
   stageBorder: 'rgba(255, 255, 255, 0.08)',
   stageGrid: 'rgba(255, 255, 255, 0.1)',
+  stageWarning: '#8bafbd',
   stageText: 'rgba(255, 255, 255, 0.88)',
   stageTextMuted: 'rgba(255, 255, 255, 0.46)',
   shadowSoft: 'rgba(0, 0, 0, 0.28)',
@@ -110,12 +119,14 @@ const LIGHT_SURFACE_DEFAULTS: SurfaceTokens = {
   controlBgSoft: 'rgba(0, 0, 0, 0.035)',
   controlBg: 'rgba(0, 0, 0, 0.05)',
   controlBgStrong: 'rgba(0, 0, 0, 0.08)',
+  controlBorder: 'rgba(0, 0, 0, 0.1)',
   eyebrow: 'rgba(0, 0, 0, 0.55)',
   textStrong: '#0b0d12',
   stageBg: '#f1f4f8',
   stageSurface: 'rgba(255, 255, 255, 0.92)',
   stageBorder: 'rgba(15, 23, 42, 0.12)',
   stageGrid: 'rgba(15, 23, 42, 0.13)',
+  stageWarning: '#607d96',
   stageText: 'rgba(15, 23, 42, 0.82)',
   stageTextMuted: 'rgba(15, 23, 42, 0.48)',
   shadowSoft: 'rgba(15, 23, 42, 0.12)',
@@ -134,7 +145,10 @@ interface ThemePresetDefinition {
   description: string
   // Light presets derive accent text by darkening (not lightening) the accent.
   isLight?: boolean
+  // Some presets intentionally specify exact hover/glow values instead of deriving them.
+  usePresetAccentVariants?: boolean
   tokens: PresetBaseTokens
+  surfaceOverrides?: Partial<SurfaceTokens>
   accent: string
   accentHover: string
   accentGlow: string
@@ -182,7 +196,7 @@ export const THEME_STORAGE_KEY = 'astra-theme-settings-v1'
 const CUSTOM_THEMES_STORAGE_KEY = 'astra-custom-themes-v1'
 const DEFAULT_PRESET_ID: ThemePresetId = 'default'
 const DEFAULT_ACCENT_SOURCE: AccentSource = 'theme'
-const DEFAULT_COVER_ART_ACCENT_METHOD: CoverArtAccentMethod = 'dominant'
+const DEFAULT_COVER_ART_ACCENT_METHOD: CoverArtAccentMethod = 'adaptive'
 const DEFAULT_ACCENT = '#38bdf8'
 const ACCENT_TRANSITION_MS = 280
 const REDUCED_MOTION_ACCENT_TRANSITION_MS = 80
@@ -222,9 +236,51 @@ const THEME_PRESETS: Record<ThemePresetId, ThemePresetDefinition> = {
       textSecondary: 'rgba(219, 226, 239, 0.72)',
       textTertiary: 'rgba(190, 202, 223, 0.46)',
     },
+    surfaceOverrides: { stageWarning: '#929dad' },
     accent: '#4fc3f7',
     accentHover: '#8bdaf9',
     accentGlow: 'rgba(79, 195, 247, 0.34)',
+  },
+  editor: {
+    id: 'editor',
+    label: 'Editor',
+    description: 'High-clarity neutral dark',
+    usePresetAccentVariants: true,
+    tokens: {
+      bgPrimary: '#0f0f0f',
+      bgSecondary: '#171717',
+      bgTertiary: '#1c1c1c',
+      glassBg: 'rgba(28, 28, 28, 0.82)',
+      glassBorder: '#2a2a2a',
+      glassHighlight: 'rgba(255, 255, 255, 0.04)',
+      textPrimary: '#f0f0f0',
+      textSecondary: '#9a9a9a',
+      // XLRCDB's #6a6a6a is reserved for decorative/disabled content; meaningful
+      // Astra helper text uses its AA-safe secondary value as a readability floor.
+      textTertiary: '#9a9a9a',
+    },
+    surfaceOverrides: {
+      surfaceOverlay: 'rgba(15, 15, 15, 0.98)',
+      scrimSoft: 'rgba(0, 0, 0, 0.18)',
+      scrimStrong: 'rgba(0, 0, 0, 0.38)',
+      onAccent: '#0f0f0f',
+      controlBgSoft: '#171717',
+      controlBg: '#1c1c1c',
+      controlBgStrong: '#262626',
+      controlBorder: '#3d3d3d',
+      eyebrow: '#9a9a9a',
+      stageBg: '#0f0f0f',
+      stageSurface: '#171717',
+      stageBorder: '#2a2a2a',
+      stageGrid: 'rgba(240, 240, 240, 0.1)',
+      stageWarning: '#829bad',
+      stageText: '#d6d6d6',
+      stageTextMuted: '#9a9a9a',
+      shadowSoft: 'rgba(0, 0, 0, 0.45)',
+    },
+    accent: '#38bdf8',
+    accentHover: '#70d3ff',
+    accentGlow: 'rgba(56, 189, 248, 0.14)',
   },
   midnight: {
     id: 'midnight',
@@ -241,6 +297,7 @@ const THEME_PRESETS: Record<ThemePresetId, ThemePresetDefinition> = {
       textSecondary: 'rgba(194, 213, 242, 0.72)',
       textTertiary: 'rgba(165, 187, 222, 0.48)',
     },
+    surfaceOverrides: { stageWarning: '#8097bc' },
     accent: '#4f9bff',
     accentHover: '#89b8ff',
     accentGlow: 'rgba(79, 155, 255, 0.34)',
@@ -260,6 +317,7 @@ const THEME_PRESETS: Record<ThemePresetId, ThemePresetDefinition> = {
       textSecondary: 'rgba(242, 214, 188, 0.67)',
       textTertiary: 'rgba(222, 182, 150, 0.44)',
     },
+    surfaceOverrides: { stageWarning: '#bf9a7b' },
     accent: '#ff9f5b',
     accentHover: '#ffbf8f',
     accentGlow: 'rgba(255, 159, 91, 0.34)',
@@ -279,6 +337,7 @@ const THEME_PRESETS: Record<ThemePresetId, ThemePresetDefinition> = {
       textSecondary: 'rgba(255, 255, 255, 0.6)',
       textTertiary: 'rgba(255, 255, 255, 0.4)',
     },
+    surfaceOverrides: { stageWarning: '#b9818d' },
     accent: '#ef4444',
     accentHover: '#f87171',
     accentGlow: 'rgba(239, 68, 68, 0.32)',
@@ -392,6 +451,21 @@ function deriveHueFromRgb({ r, g, b }: { r: number; g: number; b: number }): num
   return Math.round(hue)
 }
 
+/**
+ * 0 for grey accents, 1 otherwise. Hue-only consumers (the logo draws
+ * `hsl(var(--accent-h) 100% 50%)`) multiply their saturation by this, so a
+ * neutral cover-art accent gives a grey logo instead of hue 0's red.
+ */
+export function deriveAccentSaturationScale(hex: string): number {
+  const rgb = hexToRgb(hex)
+  if (!rgb) return 1
+  const max = Math.max(rgb.r, rgb.g, rgb.b) / 255
+  const min = Math.min(rgb.r, rgb.g, rgb.b) / 255
+  const lightness = (max + min) / 2
+  const saturation = max === min ? 0 : (max - min) / (1 - Math.abs(2 * lightness - 1))
+  return saturation < 0.08 ? 0 : 1
+}
+
 export function deriveAccentHue(hex: string): number {
   const rgb = hexToRgb(hex)
   if (rgb) return deriveHueFromRgb(rgb)
@@ -414,7 +488,7 @@ function deriveAccentText(hex: string, amount: number, fallbackHex: string, dark
   )
 }
 
-function resolveThemeTokens(
+export function resolveThemeTokens(
   presetId: ThemePresetId,
   customAccent: string | null,
   accentSource: AccentSource,
@@ -441,16 +515,18 @@ function resolveThemeTokens(
     : themeAccent
   const isLight = Boolean(preset.isLight)
   const usesPresetAccent = customAccent === null && !(accentSource === 'cover-art' && coverArtAccent)
+  const usesExactPresetAccentVariants = usesPresetAccent && (isLight || preset.usePresetAccentVariants)
 
   return {
     ...preset.tokens,
     ...(isLight ? LIGHT_SURFACE_DEFAULTS : DARK_SURFACE_DEFAULTS),
+    ...preset.surfaceOverrides,
     isLight,
     accent: effectiveAccent,
-    accentHover: isLight && usesPresetAccent
+    accentHover: usesExactPresetAccentVariants
       ? preset.accentHover
       : deriveAccentHover(effectiveAccent, isLight),
-    accentGlow: isLight && usesPresetAccent
+    accentGlow: usesExactPresetAccentVariants
       ? preset.accentGlow
       : deriveAccentGlow(effectiveAccent),
   }
@@ -479,12 +555,14 @@ function applyNonAccentTokensToDocument(tokens: ResolvedThemeTokens): void {
   root.style.setProperty('--control-bg-soft', tokens.controlBgSoft)
   root.style.setProperty('--control-bg', tokens.controlBg)
   root.style.setProperty('--control-bg-strong', tokens.controlBgStrong)
+  root.style.setProperty('--control-border', tokens.controlBorder)
   root.style.setProperty('--eyebrow', tokens.eyebrow)
   root.style.setProperty('--text-strong', tokens.textStrong)
   root.style.setProperty('--stage-bg', tokens.stageBg)
   root.style.setProperty('--stage-surface', tokens.stageSurface)
   root.style.setProperty('--stage-border', tokens.stageBorder)
   root.style.setProperty('--stage-grid', tokens.stageGrid)
+  root.style.setProperty('--stage-warning', tokens.stageWarning)
   root.style.setProperty('--stage-text', tokens.stageText)
   root.style.setProperty('--stage-text-muted', tokens.stageTextMuted)
   root.style.setProperty('--shadow-soft', tokens.shadowSoft)
@@ -518,6 +596,7 @@ function applyAccentTokensToDocument(
   root.style.setProperty('--accent-text', accentText)
   root.style.setProperty('--accent-text-strong', accentTextStrong)
   root.style.setProperty('--accent-h', `${accentHue}`)
+  root.style.setProperty('--accent-sat-scale', `${deriveAccentSaturationScale(accent)}`)
 }
 
 function persistThemeSettings(
@@ -553,6 +632,7 @@ function readSavedThemeSettings(): SavedThemeSettings | null {
     const presetId = (
       presetCandidate === 'default'
       || presetCandidate === 'graphite'
+      || presetCandidate === 'editor'
       || presetCandidate === 'midnight'
       || presetCandidate === 'studio'
       || presetCandidate === 'crimson'
@@ -569,11 +649,10 @@ function readSavedThemeSettings(): SavedThemeSettings | null {
       ? 'cover-art'
       : DEFAULT_ACCENT_SOURCE
 
-    const coverArtAccentMethod = (
-      parsed.coverArtAccentMethod === 'average'
-      || parsed.coverArtAccentMethod === 'vibrant'
-    )
-      ? parsed.coverArtAccentMethod
+    // Every method is listed explicitly: a saved 'dominant' must survive the
+    // default moving to 'adaptive'.
+    const coverArtAccentMethod = COVER_ART_ACCENT_METHODS.includes(parsed.coverArtAccentMethod as CoverArtAccentMethod)
+      ? parsed.coverArtAccentMethod as CoverArtAccentMethod
       : DEFAULT_COVER_ART_ACCENT_METHOD
 
     return {

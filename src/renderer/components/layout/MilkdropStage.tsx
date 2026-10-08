@@ -39,10 +39,6 @@ export default function MilkdropStage({
   const resizeRef = useRef<(() => void) | null>(null)
   const forceFramesRef = useRef(0)
   const lastLoadedPresetRef = useRef<string | null>(null)
-  const qualityRef = useRef(quality)
-  const fpsCapRef = useRef(fpsCap)
-  qualityRef.current = quality
-  fpsCapRef.current = fpsCap
   const [status, setStatus] = useState<Status>('loading')
   const [presets, setPresets] = useState<PresetEntry[]>([])
   const [noAudio, setNoAudio] = useState(false)
@@ -57,6 +53,10 @@ export default function MilkdropStage({
   const setBlendSeconds = useMilkdropStore((s) => s.setBlendSeconds)
   const quality = useMilkdropStore((s) => s.quality)
   const fpsCap = useMilkdropStore((s) => s.fpsCap)
+  const qualityRef = useRef(quality)
+  const fpsCapRef = useRef(fpsCap)
+  qualityRef.current = quality
+  fpsCapRef.current = fpsCap
   const setQuality = useMilkdropStore((s) => s.setQuality)
   const setFpsCap = useMilkdropStore((s) => s.setFpsCap)
   const collections = useMilkdropStore((s) => s.collections)

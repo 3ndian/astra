@@ -8,11 +8,13 @@ import { useHorizontalWheelScroll } from '../../hooks/useHorizontalWheelScroll'
 import { buildAlbumIdentityKeyFromTrack, buildAlbumKey, getAlbumIdentityArtist, normalizeKey, splitCollaborators } from '../../utils/albumIdentity'
 import { formatExactDuration } from '../../utils/collectionDuration'
 import { formatPlaylistImportStatus, type PlaylistImportStatus } from '../../utils/playlistImportStatus'
-import { buildPlaylistDisplaySections } from '../../utils/playlistSystem'
+import { buildHomePlaylists } from '../../utils/playlistSystem'
 import AlbumArtwork from '../library/AlbumArtwork'
+import HomeBinaryClock from '../home/HomeBinaryClock'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import PlaylistCover from '../playlists/PlaylistCover'
-import type { DynamicPlaylistRulesV1 } from '../../../shared/playlists/dynamicPlaylist'
+import type { DynamicPlaylistRulesV2 } from '../../../shared/playlists/dynamicPlaylist'
+import { isGenericArtistName } from '../../../shared/library/artistCredits'
 
 interface HomeTrack {
   path: string
@@ -68,11 +70,11 @@ interface GreetingCopy {
   subline: string
 }
 
-interface GreetingSelection extends GreetingCopy {
+export interface GreetingSelection extends GreetingCopy {
   bucket: TimeBucket
 }
 
-interface BucketPalette {
+export interface BucketPalette {
   top: [number, number, number]
   mid: [number, number, number]
   bottom: [number, number, number]
@@ -101,7 +103,7 @@ interface PixelCluster {
   gy: number
 }
 
-interface StarField {
+export interface StarField {
   stars: PixelStar[]
   clusters: PixelCluster[]
 }
@@ -137,7 +139,6 @@ const STAR_OPACITY_SCALE = 0.52
 const GREETING_WEIGHT_TIME_AWARE = 0.4
 const GREETING_WEIGHT_DAY_AWARE = 0.28
 const GREETING_WEIGHT_PLAYFUL = 0.32
-const GENERIC_ARTIST_KEYS = new Set(['various artists', 'various artist', 'va', 'v a'])
 
 const SKY_COLOR_KEYFRAMES: SkyColorKeyframe[] = [
   { hour: 0, top: [10, 13, 28], mid: [7, 8, 15], bottom: [4, 4, 10], stars: 1.0 },
@@ -487,7 +488,7 @@ function getTimeAwareGreetings(date: Date): GreetingCopy[] {
   return window?.messages ?? []
 }
 
-function getMinuteStamp(date: Date): number {
+export function getMinuteStamp(date: Date): number {
   return Math.floor(date.getTime() / 60000)
 }
 
@@ -514,7 +515,7 @@ function pickWeightedGreetingPool(pools: WeightedGreetingPool[]): WeightedGreeti
   return pools[pools.length - 1]
 }
 
-function chooseGreeting(previousId: string | null, now: Date): GreetingSelection {
+export function chooseGreeting(previousId: string | null, now: Date): GreetingSelection {
   const bucket = getTimeBucket(now)
   const timeAware = getTimeAwareGreetings(now)
   const dayAware = getDayAwareGreetings(now)
@@ -575,7 +576,7 @@ function lerpColor(
   ]
 }
 
-function getAdaptivePalette(date: Date): BucketPalette {
+export function getAdaptivePalette(date: Date): BucketPalette {
   const hour = date.getHours() + date.getMinutes() / 60
 
   for (let i = 0; i < SKY_COLOR_KEYFRAMES.length - 1; i++) {
@@ -605,7 +606,7 @@ function getAdaptivePalette(date: Date): BucketPalette {
   }
 }
 
-function drawPixelSky(
+export function drawPixelSky(
   canvas: HTMLCanvasElement,
   context: CanvasRenderingContext2D,
   width: number,
@@ -637,17 +638,33 @@ function drawPixelSky(
 
     for (let x = 0; x < lowWidth; x++) {
       const index = (y * lowWidth + x) * 4
-      data[index] = rgb[0]
-      data[index + 1] = rgb[1]
-      data[index + 2] = rgb[2]
+      const dither = (x * 17 + y * 29) % 13 === 0 ? 2 : 0
+      data[index] = Math.min(255, rgb[0] + dither)
+      data[index + 1] = Math.min(255, rgb[1] + dither)
+      data[index + 2] = Math.min(255, rgb[2] + dither)
       data[index + 3] = 255
     }
   }
 
   context.putImageData(imageData, 0, 0)
+  context.imageSmoothingEnabled = false
+
+  if (lowWidth < 12 || lowHeight < 8) return
+
+  const horizonTop = Math.max(1, Math.floor(lowHeight * 0.78))
+  context.fillStyle = 'rgba(2, 4, 10, 0.2)'
+  context.beginPath()
+  context.moveTo(0, lowHeight)
+  for (let x = 0; x <= lowWidth; x += 1) {
+    const ridge = Math.round(Math.sin(x * 0.19) * 1.2 + Math.sin(x * 0.07 + 1.8) * 1.5)
+    context.lineTo(x, horizonTop + ridge)
+  }
+  context.lineTo(lowWidth, lowHeight)
+  context.closePath()
+  context.fill()
 }
 
-function createStarField(width: number, height: number): StarField {
+export function createStarField(width: number, height: number): StarField {
   const columns = Math.max(1, Math.ceil(width / STAR_GRID_SIZE))
   const rows = Math.max(1, Math.ceil((height * 0.8) / STAR_GRID_SIZE))
   const starCount = Math.max(24, Math.min(120, Math.round(columns * rows * 0.035)))
@@ -670,7 +687,7 @@ function createStarField(width: number, height: number): StarField {
   return { stars, clusters }
 }
 
-function drawStarField(
+export function drawStarField(
   context: CanvasRenderingContext2D,
   width: number,
   height: number,
@@ -742,9 +759,7 @@ function getRecentArtistCandidate(
     return albumArtist || track.artist.replace(/\s+/g, ' ').trim() || 'Unknown Artist'
   }
 
-  const albumArtistKey = normalizeKey(albumArtist)
-
-  if (albumArtist && !GENERIC_ARTIST_KEYS.has(albumArtistKey)) {
+  if (albumArtist && !isGenericArtistName(albumArtist)) {
     return getPrimaryContributor(albumArtist)
   }
 
@@ -758,14 +773,14 @@ function getRecentArtistCandidate(
   return getPrimaryContributor(track.artist)
 }
 
-function formatHomeClockTime(date: Date): string {
+export function formatHomeClockTime(date: Date): string {
   return new Intl.DateTimeFormat(undefined, {
     hour: 'numeric',
     minute: '2-digit'
   }).format(date)
 }
 
-function formatHomeClockDate(date: Date): string {
+export function formatHomeClockDate(date: Date): string {
   return new Intl.DateTimeFormat(undefined, {
     weekday: 'long',
     month: 'long',
@@ -842,18 +857,21 @@ export default function HomeView() {
   }, [])
 
   useEffect(() => {
-    if (homeGreetingTextMode !== 'clock') return
+    if (homeGreetingTextMode !== 'clock' && homeGreetingTextMode !== 'binary-clock') return
 
     let intervalId: number | null = null
     const updateClock = () => setClockNow(new Date())
     updateClock()
 
     const now = new Date()
-    const msUntilNextMinute = 60000 - (now.getSeconds() * 1000 + now.getMilliseconds())
+    const intervalMs = homeGreetingTextMode === 'binary-clock' ? 1000 : 60000
+    const elapsedInInterval = homeGreetingTextMode === 'binary-clock'
+      ? now.getMilliseconds()
+      : now.getSeconds() * 1000 + now.getMilliseconds()
     const timeoutId = window.setTimeout(() => {
       updateClock()
-      intervalId = window.setInterval(updateClock, 60000)
-    }, Math.max(100, msUntilNextMinute))
+      intervalId = window.setInterval(updateClock, intervalMs)
+    }, Math.max(100, intervalMs - elapsedInInterval))
 
     return () => {
       window.clearTimeout(timeoutId)
@@ -1090,10 +1108,10 @@ export default function HomeView() {
   }, [recentlyPlayed, albumByIdentityKey, albumByKey, recentLimits])
 
   const homePlaylists = useMemo(
-    () => buildPlaylistDisplaySections(playlists, {
+    () => buildHomePlaylists(playlists, {
       trackCount: favoriteTracks.length,
       topArtworkHash: favoriteTracks[0]?.artwork_hash ?? null
-    }, 3).homePlaylists,
+    }),
     [playlists, favoriteTracks]
   )
 
@@ -1104,7 +1122,7 @@ export default function HomeView() {
 
   const handlePlayRecentList = async (_track: HomeTrack, index: number) => {
     await startPlaybackContextByPaths(recentTracks.map((recentTrack) => recentTrack.path), index, {
-      contextLabel: 'Recently Played'
+      recordSelectedTrack: true, contextLabel: 'Recently Played'
     })
   }
 
@@ -1114,7 +1132,7 @@ export default function HomeView() {
     setActiveView('playlist')
   }
 
-  const handleCreateDynamicPlaylist = async (name: string, coverImagePath: string | null, rules: DynamicPlaylistRulesV1) => {
+  const handleCreateDynamicPlaylist = async (name: string, coverImagePath: string | null, rules: DynamicPlaylistRulesV2) => {
     const playlist = await createDynamicPlaylistWithOptions({ name, coverImagePath, rules })
     await selectPlaylist(playlist.id)
     setActiveView('playlist')
@@ -1194,13 +1212,19 @@ export default function HomeView() {
             <div className="home-greeting-content" aria-hidden="true" />
           ) : (
             <div className="home-greeting-content">
-              <h1 className="home-greeting-message">
-                {homeGreetingTextMode === 'clock' ? clockGreeting.primary : greeting.primary}
-              </h1>
-              {(homeGreetingTextMode === 'clock' ? clockGreeting.subline : greeting.subline).trim().length > 0 && (
-                <p className="home-greeting-subline">
-                  {homeGreetingTextMode === 'clock' ? clockGreeting.subline : greeting.subline}
-                </p>
+              {homeGreetingTextMode === 'binary-clock' ? (
+                <HomeBinaryClock date={clockNow} dateLabel={formatHomeClockDate(clockNow)} />
+              ) : (
+                <>
+                  <h1 className="home-greeting-message">
+                    {homeGreetingTextMode === 'clock' ? clockGreeting.primary : greeting.primary}
+                  </h1>
+                  {(homeGreetingTextMode === 'clock' ? clockGreeting.subline : greeting.subline).trim().length > 0 && (
+                    <p className="home-greeting-subline">
+                      {homeGreetingTextMode === 'clock' ? clockGreeting.subline : greeting.subline}
+                    </p>
+                  )}
+                </>
               )}
             </div>
           )}

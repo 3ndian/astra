@@ -1,7 +1,12 @@
 /// <reference types="vite/client" />
+import type { NotchAPI } from '../types/notch'
 
 import type { SectionFlagKey, SectionKind, SectionsMutationResult, SectionsPayload } from '../types/sections'
 import { VisualizerDSP } from './audio/native/visualizer-dsp'
+import type {
+    LocalPcmDecodeLimitRefusal,
+    StaticTrackWaveformResult,
+} from '../shared/localPcmStream'
 import type {
     MiniPlayerCommand,
     MiniPlayerSnapshot,
@@ -33,6 +38,7 @@ import type {
   PhoneRemotePendingPairingRequest,
   PhoneRemoteStatus
 } from '../types/phoneRemote'
+import type { PhoneSyncConflictResolution } from '../types/phoneSync'
 import type {
   ParallaxAudioChunk,
   ParallaxDiscoveryEvent,
@@ -53,6 +59,13 @@ import type {
     LastFmCustomProfileInput,
     LastFmStatus
 } from '../types/lastFm'
+import type {
+    HrtfProfileBytesResult,
+    HrtfProfileCandidateResult,
+    HrtfProfileCommitResult,
+    HrtfProfileRemoveResult,
+    HrtfProfileSummary,
+} from '../types/hrtfProfiles'
 import type {
     LyricsFormat,
     LyricsManualClearResult,
@@ -93,14 +106,14 @@ import type {
 import type {
     AudioBufferMemoryStats,
     NativeAudioCapabilities,
+    NativeAudioDiagnosticReport,
     NativeAudioDeviceFormatProbe,
     NativeAudioEvent,
     NativeAudioPlaybackSnapshot,
     NativeAudioTrackLoadResult,
     NativeAudioTrackMetadata,
     NativeAudioVisualizerTapDemand,
-    NativeAudioVUMeterChunk,
-    NativeAudioVectorscopeChunk
+    NativeAudioVisualizerChunk
 } from '../types/nativeAudio'
 import type {
     ProgressiveAudioLoadProgress,
@@ -113,22 +126,34 @@ import type {
     RemoteStreamInfo
 } from '../types/remoteStream'
 import type {
+    LocalAudioPcmTransportTimings,
     MemoryDiagnosticsBlinkResourceUsageSnapshot,
     MemoryDiagnosticsCaptureBundleResult,
     MemoryDiagnosticsEventPayload,
+    MemoryDiagnosticsLogEventOptions,
     MemoryDiagnosticsProcessMemoryStats,
     MemoryDiagnosticsRendererSnapshot,
     MemoryDiagnosticsRendererMemoryStats,
     MemoryDiagnosticsSnapshotRequest,
-    MemoryDiagnosticsStatus
+    MemoryDiagnosticsStatus,
+    PcmTransferBenchmarkProbeResult
 } from '../types/diagnostics'
 import type { AppBuildInfo } from '../types/appBuildInfo'
+import type {
+    LibraryDiagnosticsRendererTimingEvent,
+    LibraryDiagnosticsStatus
+} from '../types/libraryDiagnostics'
 import type {
   GlobalShortcutRegistrationRequest,
   GlobalShortcutRegistrationResult,
   InputActionId,
   RawBindingInput
 } from '../types/inputBindings'
+import type {
+  DesktopIntegrationPrefs,
+  TrayRendererCommand,
+  TrayRendererState,
+} from '../types/desktopIntegration'
 
 type RuntimeIconImageSetPayload = {
     images: Array<{
@@ -150,7 +175,9 @@ interface DbTrack {
     album_artist_names: string[]
     duration: number
     track_number: number | null
+	    track_total: number | null
 	    disc_number: number | null
+	    disc_total: number | null
 	    year: number | null
 	    genre: string | null
 	    genres: string[]
@@ -196,6 +223,21 @@ interface LibraryTrackPage {
     hasMore: boolean
 }
 
+interface LocalAudioPcmDecodeResult {
+    requestId: number
+    sampleRate: number
+    channels: number
+    frames: number
+    pcmByteLength: number
+    interleavedPcm: ArrayBuffer
+    probeMs: number
+    decodeMs: number
+    backgroundPriorityApplied: boolean
+    transportTimings?: LocalAudioPcmTransportTimings
+}
+
+type LocalAudioPcmDecodeResponse = LocalAudioPcmDecodeResult | LocalPcmDecodeLimitRefusal | null
+
 declare global {
     interface Window {
         // §22 Commit 1 — Parallax loopback (Windows-only WASAPI). See preload/index.ts for
@@ -235,18 +277,17 @@ declare global {
             loadTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
             preloadNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
             promoteNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
+            cancelPendingDecode: () => Promise<void>
             play: () => Promise<NativeAudioPlaybackSnapshot>
             pause: () => Promise<NativeAudioPlaybackSnapshot>
             stop: () => Promise<NativeAudioPlaybackSnapshot>
             seek: (seconds: number) => Promise<NativeAudioPlaybackSnapshot>
             clearNextTrack: () => Promise<void>
             getPlaybackSnapshot: () => Promise<NativeAudioPlaybackSnapshot>
+            getNativeAudioDiagnosticReport: () => Promise<NativeAudioDiagnosticReport>
             getBufferMemoryStats: () => Promise<AudioBufferMemoryStats>
             setVisualizerTapDemand: (demand: NativeAudioVisualizerTapDemand) => Promise<void>
-            flushOscilloscopeChunks: () => Float32Array[]
-            flushSpectrumChunks: () => Float32Array[]
-            flushVectorscopeChunks: () => NativeAudioVectorscopeChunk[]
-            flushVUMeterChunks: () => NativeAudioVUMeterChunk[]
+            flushVisualizerChunks: () => NativeAudioVisualizerChunk[]
             onEvent: (callback: (event: NativeAudioEvent) => void) => () => void
         }
         electronAPI: {
@@ -254,10 +295,23 @@ declare global {
             maximize: () => void
             close: () => void
             isMaximized: () => Promise<boolean>
+            setUIScale: (scale: number) => void
             associatedOpenFiles: {
                 markReady: () => void
                 onOpenFiles: (callback: (paths: string[]) => void) => () => void
             }
+            desktopIntegration: {
+                getPrefs: () => Promise<DesktopIntegrationPrefs>
+                setTrayEnabled: (enabled: boolean) => Promise<DesktopIntegrationPrefs>
+                setCloseToTray: (enabled: boolean) => Promise<DesktopIntegrationPrefs>
+            }
+            trayControls: {
+                markReady: () => void
+                markNotReady: () => void
+                publishRendererState: (state: TrayRendererState) => void
+                onCommand: (callback: (command: TrayRendererCommand) => void) => () => void
+            }
+            notch: NotchAPI
             miniPlayer: {
                 open: () => Promise<void>
                 close: () => Promise<void>
@@ -323,9 +377,27 @@ declare global {
                 getBlinkResourceUsage: () => MemoryDiagnosticsBlinkResourceUsageSnapshot
                 clearRendererCache: () => void
                 publishRendererSnapshot: (requestId: string, snapshot: MemoryDiagnosticsRendererSnapshot) => void
-                logEvent: (payload: MemoryDiagnosticsEventPayload) => Promise<boolean>
+                logEvent: (
+                    payload: MemoryDiagnosticsEventPayload,
+                    options?: MemoryDiagnosticsLogEventOptions
+                ) => Promise<boolean>
+                benchmarkMainPcmTransfer: (sizeBytes: number) => Promise<PcmTransferBenchmarkProbeResult>
+                benchmarkPreloadPcmTransfer: (sizeBytes: number) => PcmTransferBenchmarkProbeResult
+                openMainPcmStreamBenchmark: (
+                    requestId: number,
+                    sizeBytes: number,
+                    nonce: string
+                ) => boolean
                 onStatus: (callback: (status: MemoryDiagnosticsStatus) => void) => () => void
                 onSnapshotRequest: (callback: (request: MemoryDiagnosticsSnapshotRequest) => void) => () => void
+            }
+            libraryDiagnostics: {
+                getStatus: () => Promise<LibraryDiagnosticsStatus>
+                setEnabled: (enabled: boolean) => Promise<LibraryDiagnosticsStatus>
+                revealCurrentLog: () => Promise<boolean>
+                revealPreviousLog: () => Promise<boolean>
+                logRendererTiming: (timing: LibraryDiagnosticsRendererTimingEvent) => Promise<boolean>
+                onStatus: (callback: (status: LibraryDiagnosticsStatus) => void) => () => void
             }
             updates: {
                 checkForUpdates: () => Promise<{
@@ -401,6 +473,9 @@ declare global {
                 revokeAllPairedDevices: () => Promise<number>
                 setEnabled: (enabled: boolean) => Promise<PhoneRemoteStatus>
                 setPort: (port: number) => Promise<PhoneRemoteStatus>
+                setSyncEnabled: (enabled: boolean) => Promise<PhoneRemoteStatus>
+                requestSync: () => Promise<PhoneRemoteStatus>
+                resolveSyncConflict: (syncUid: string, resolution: PhoneSyncConflictResolution) => Promise<PhoneRemoteStatus>
                 resetToDefaults: () => Promise<PhoneRemoteStatus>
                 onStatus: (callback: (status: PhoneRemoteStatus) => void) => () => void
             }
@@ -450,7 +525,7 @@ declare global {
                 publishHostAudioChunk: (chunk: ParallaxAudioChunk) => Promise<void>
                 publishHostTimeline: (timeline: ParallaxTimelineState, options?: ParallaxHostTimelinePublishOptions) => Promise<void>
                 publishHostEmitAnchor: (anchor: Omit<Extract<ParallaxTimelineEvent, { type: 'host-emit-anchor' }>, 'emittedAtHostTimeMs'>) => Promise<void>
-                stopHostStream: () => Promise<void>
+                stopHostStream: (streamId?: string) => Promise<void>
                 publishSinkTelemetry: (telemetry: ParallaxSinkTelemetry) => Promise<void>
                 reportHostLatency: (metrics: ParallaxOutputLatencyMetrics) => Promise<void>
                 revokePairedSink: (id: string) => Promise<ParallaxPairedSink | null>
@@ -571,6 +646,15 @@ declare global {
             } | null>
             openAudioFolder: () => Promise<string | null>
             getSpatialWasmBytes: () => Promise<ArrayBuffer>
+            getAdaptiveUpmixerWasmBytes: () => Promise<ArrayBuffer>
+            getSpatialHrtfPrepWasmBytes: () => Promise<ArrayBuffer>
+            hrtfProfiles: {
+                list: () => Promise<HrtfProfileSummary[]>
+                chooseCandidate: () => Promise<HrtfProfileCandidateResult>
+                commit: (fileName: string, bytes: ArrayBuffer) => Promise<HrtfProfileCommitResult>
+                read: (profileId: string) => Promise<HrtfProfileBytesResult>
+                remove: (profileId: string) => Promise<HrtfProfileRemoveResult>
+            }
             getIamfWasmBytes: () => Promise<ArrayBuffer>
             loadAudioFile: (
                 filePath: string,
@@ -627,6 +711,26 @@ declare global {
                 mtimeMs: number
             } | null>
             decodeAudioWithFfmpeg: (filePath: string) => Promise<ArrayBuffer | null>
+            openLocalAudioPcmStream: (
+                requestId: number,
+                filePath: string,
+                outputSampleRate: number,
+                expectedChannels: number | null,
+                priority: 'interactive' | 'background',
+                nonce: string
+            ) => boolean
+            decodeLocalAudioToPcm: (
+                requestId: number,
+                filePath: string,
+                outputSampleRate: number,
+                expectedChannels?: number | null,
+                priority?: 'interactive' | 'background'
+            ) => Promise<LocalAudioPcmDecodeResponse>
+            cancelLocalAudioDecode: (requestId: number) => Promise<void>
+            promoteLocalAudioDecode: (requestId: number) => Promise<void>
+            onStaticTrackWaveformResult: (
+                callback: (result: StaticTrackWaveformResult) => void
+            ) => () => void
             analyzeTrackLoudness: (filePath: string) => Promise<{
                 loudnessLufs: number
                 peakLinear: number | null
@@ -637,6 +741,7 @@ declare global {
                 peakLinear: number | null
                 method: string
             } | null>
+            supersedeTrackLoudness: (filePath: string | null) => Promise<void>
             storeTrackLoudness: (
                 filePath: string,
                 payload: { loudnessLufs: number; peakLinear?: number | null; method?: string }
@@ -647,6 +752,7 @@ declare global {
                 expectedChannels?: number | null,
                 options?: { startTimeSeconds?: number | null }
             ) => Promise<ProgressiveStreamInfo>
+            updateProgressiveStreamPosition: (sessionId: number, currentFrame: number) => void
             cancelProgressiveStream: (sessionId: number) => Promise<void>
             startRemoteStream: (
                 filePath: string,

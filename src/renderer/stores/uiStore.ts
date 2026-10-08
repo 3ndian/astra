@@ -1,4 +1,6 @@
 import { create } from 'zustand'
+import { useLyricsEditorStore } from './lyricsEditorStore'
+import { useMetadataEditorStore } from './metadataEditorStore'
 import type { SettingsSectionId } from '../constants/settingsSections'
 import type { Track } from '../types/audio'
 import {
@@ -9,13 +11,27 @@ import {
 } from '../../types/miniPlayer.ts'
 import type { UIScaleShortcutAction } from '../../types/uiScale'
 import { TRANSPORT_INFO_LINE_MODE_STORAGE_KEY } from '../constants/settingsStorageKeys'
+import { HOME_LAYOUT_STORAGE_KEY, HOME_SKY_TIME_STORAGE_KEY, PLAYLIST_OVERVIEW_ADAPTIVE_HEADER_STORAGE_KEY } from '../constants/settingsStorageKeys'
 import { runAppViewTransition, type AppViewTransitionDirection } from '../utils/viewTransitions.ts'
-import { normalizeAppView, type UISessionSnapshot } from '../utils/sessionState'
+import { normalizeAppView, type SessionTrackSortState, type UISessionSnapshot } from '../utils/sessionState'
 import type { SignalShareTarget } from '../utils/signalShare'
+import {
+  DEFAULT_HOME_LAYOUT_PREFERENCE,
+  DEFAULT_HOME_SKY_TIME_PREFERENCE,
+  moveHomeModule,
+  normalizeHomeLayoutPreference,
+  normalizeHomeSkyTimePreference,
+  setHomeSkyTimeModePreference,
+  setHomeModuleVisible,
+  type HomeLayoutPreference,
+  type HomeModuleId,
+  type HomeSkyTimeMode,
+  type HomeSkyTimePreference
+} from '../utils/homePreferences'
 
 export type AppView = 'home' | 'library' | 'stats' | 'graph' | 'eq' | 'settings' | 'playlist' | 'spotify' | 'wanted'
 export type WaveformTimeDisplayMode = MiniPlayerTimeDisplayMode
-export type HomeGreetingTextMode = 'messages' | 'clock' | 'off'
+export type HomeGreetingTextMode = 'messages' | 'clock' | 'binary-clock' | 'off'
 export type JumpToPlayingDestination = 'smart-source' | 'library-tracks' | 'album' | 'artist' | 'queue'
 export type TransportInfoLineMode = 'output' | 'album' | 'hidden'
 export const DEFAULT_ANALYZER_HEIGHT_PX = 196
@@ -30,6 +46,7 @@ export const UI_SCALE_STEP_PERCENT = 5
 export const UI_SCALE_STORAGE_KEY = 'astra-ui-scale-percent-v1'
 export const HOME_GREETING_TEXT_MODE_STORAGE_KEY = 'astra-home-greeting-text-mode-v1'
 export const DEFAULT_HOME_GREETING_TEXT_MODE: HomeGreetingTextMode = 'messages'
+export const DEFAULT_PLAYLIST_OVERVIEW_ADAPTIVE_HEADER_ENABLED = true
 export const ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY = 'astra-experimental-activity-indicator-enabled-v1'
 export const CONTROLLER_SUPPORT_EXPERIMENT_STORAGE_KEY = 'astra-experimental-controller-support-enabled-v1'
 export const JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY = 'astra-jump-to-playing-destination-v1'
@@ -80,6 +97,12 @@ export interface QueueNowPlayingRevealRequest {
   id: number
 }
 
+export interface PlaylistNavigationRestoreRequest {
+  id: number
+  playlistId: number | null
+  sortState: SessionTrackSortState | null
+}
+
 export type CollectionQueueTarget =
   | {
       kind: 'album'
@@ -99,7 +122,36 @@ export interface CollectionQueueMenuRequest {
   y: number
 }
 
-export type TrackDragSurface = 'queue' | 'sidebar'
+export type TrackDragSurface = 'queue' | 'sidebar' | 'playlist'
+
+export interface TrackDragItem {
+  key: string
+  path: string
+  title: string
+  artist: string
+  track: Track | null
+  playlistEntryId: number | null
+  missing: boolean
+}
+
+export type TrackDragSource =
+  | {
+      kind: 'track-list'
+      playlistId: number | null
+    }
+  | {
+      kind: 'queue'
+      section: 'current' | 'upcoming' | 'history'
+      queueId: string | null
+      index: number | null
+    }
+
+export interface TrackDragOriginSnapshot {
+  activeView: AppView
+  showQueue: boolean
+  selectedPlaylistId: number | null
+  playlistSortState: SessionTrackSortState | null
+}
 
 export interface QueueTrackDragDropTarget {
   surface: 'queue'
@@ -118,16 +170,43 @@ export interface SidebarCreatePlaylistTrackDragDropTarget {
   kind: 'create-playlist'
 }
 
+export interface PlaylistTrackDragDropTarget {
+  surface: 'playlist'
+  kind: 'insert'
+  playlistId: number
+  index: number
+}
+
 export type TrackDragDropTarget =
   | QueueTrackDragDropTarget
   | SidebarPlaylistTrackDragDropTarget
   | SidebarCreatePlaylistTrackDragDropTarget
+  | PlaylistTrackDragDropTarget
+
+export type TrackDragSpringTarget =
+  | { kind: 'playlist'; playlistId: number }
+  | { kind: 'queue' }
+  | { kind: 'sidebar-overflow' }
+  | { kind: 'playlist-browser' }
+  | { kind: 'playlist-back' }
 
 export interface TrackDragState {
-  tracks: Track[]
+  pointerId: number
+  items: TrackDragItem[]
+  source: TrackDragSource
+  origin: TrackDragOriginSnapshot
   pointerX: number
   pointerY: number
   dropTarget: TrackDragDropTarget | null
+  springTarget: TrackDragSpringTarget | null
+  springOpened: boolean
+  phase: 'dragging' | 'dropping'
+}
+
+interface TrackDragCommittedNavigation {
+  origin: TrackDragOriginSnapshot
+  destinationView: AppView
+  historyDepth: number
 }
 
 export interface SidebarPlaylistCreateRequest {
@@ -144,19 +223,11 @@ function areTrackDragDropTargetsEqual(
   if (left.surface === 'queue' && right.surface === 'queue') {
     return left.index === right.index
   }
+  if (left.surface === 'playlist' && right.surface === 'playlist') {
+    return left.playlistId === right.playlistId && left.index === right.index
+  }
   if (left.kind === 'playlist' && right.kind === 'playlist') {
     return left.playlistId === right.playlistId
-  }
-  return true
-}
-
-function areTrackDragTracksEqual(left: Track[], right: Track[]): boolean {
-  if (left === right) return true
-  if (left.length !== right.length) return false
-  for (let index = 0; index < left.length; index += 1) {
-    if (left[index]?.path !== right[index]?.path) {
-      return false
-    }
   }
   return true
 }
@@ -195,7 +266,7 @@ export function getNextUIScalePercent(currentPercent: number, action: UIScaleSho
 }
 
 export function normalizeHomeGreetingTextMode(value: unknown): HomeGreetingTextMode {
-  return value === 'clock' || value === 'off' || value === 'messages'
+  return value === 'clock' || value === 'binary-clock' || value === 'off' || value === 'messages'
     ? value
     : DEFAULT_HOME_GREETING_TEXT_MODE
 }
@@ -309,6 +380,49 @@ function persistHomeGreetingTextModePreference(mode: HomeGreetingTextMode): void
   } catch {
     // Ignore storage failures and continue with in-memory preference.
   }
+}
+
+function readPlaylistOverviewAdaptiveHeaderPreference(): boolean {
+  try {
+    return localStorage.getItem(PLAYLIST_OVERVIEW_ADAPTIVE_HEADER_STORAGE_KEY) === '0'
+      ? false
+      : DEFAULT_PLAYLIST_OVERVIEW_ADAPTIVE_HEADER_ENABLED
+  } catch {
+    return DEFAULT_PLAYLIST_OVERVIEW_ADAPTIVE_HEADER_ENABLED
+  }
+}
+
+function persistPlaylistOverviewAdaptiveHeaderPreference(enabled: boolean): void {
+  try {
+    localStorage.setItem(PLAYLIST_OVERVIEW_ADAPTIVE_HEADER_STORAGE_KEY, enabled ? '1' : '0')
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
+function readJsonPreference(key: string): unknown {
+  try {
+    const raw = localStorage.getItem(key)
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
+
+function persistJsonPreference(key: string, value: unknown): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    // Ignore storage failures and retain the in-memory preference.
+  }
+}
+
+function readHomeSkyTimePreference(): HomeSkyTimePreference {
+  return normalizeHomeSkyTimePreference(readJsonPreference(HOME_SKY_TIME_STORAGE_KEY))
+}
+
+function readHomeLayoutPreference(): HomeLayoutPreference {
+  return normalizeHomeLayoutPreference(readJsonPreference(HOME_LAYOUT_STORAGE_KEY))
 }
 
 function readActivityIndicatorExperimentPreference(): boolean {
@@ -456,6 +570,9 @@ const initialAnalyzerRackVisible = readAnalyzerRackVisibilityPreference()
 const initialSidebarExpanded = readSidebarExpandedPreference()
 const initialUIScalePercent = readUIScalePreference()
 const initialHomeGreetingTextMode = readHomeGreetingTextModePreference()
+const initialPlaylistOverviewAdaptiveHeaderEnabled = readPlaylistOverviewAdaptiveHeaderPreference()
+const initialHomeSkyTimePreference = readHomeSkyTimePreference()
+const initialHomeLayoutPreference = readHomeLayoutPreference()
 const initialActivityIndicatorExperimentEnabled = readActivityIndicatorExperimentPreference()
 const initialControllerSupportEnabled = readControllerSupportExperimentPreference()
 const initialJumpToPlayingDestination = readJumpToPlayingDestinationPreference()
@@ -472,7 +589,9 @@ const MAX_VIEW_HISTORY_ENTRIES = 50
 let nextLibraryTrackRevealRequestId = 0
 let nextPlaylistTrackRevealRequestId = 0
 let nextQueueNowPlayingRevealRequestId = 0
+let nextPlaylistNavigationRestoreRequestId = 0
 let pendingActiveView: AppView | null = null
+const fullscreenEntryGuards = new Set<() => boolean>()
 
 interface UIStore {
   activeView: AppView
@@ -497,6 +616,9 @@ interface UIStore {
   analyzerHeightPx: number
   uiScalePercent: number
   homeGreetingTextMode: HomeGreetingTextMode
+  playlistOverviewAdaptiveHeaderEnabled: boolean
+  homeSkyTimePreference: HomeSkyTimePreference
+  homeLayoutPreference: HomeLayoutPreference
   activityIndicatorExperimentEnabled: boolean
   controllerSupportEnabled: boolean
   jumpToPlayingDestination: JumpToPlayingDestination
@@ -505,18 +627,22 @@ interface UIStore {
   libraryTrackRevealRequest: LibraryTrackRevealRequest | null
   playlistTrackRevealRequest: PlaylistTrackRevealRequest | null
   queueNowPlayingRevealRequest: QueueNowPlayingRevealRequest | null
+  playlistNavigationRestoreRequest: PlaylistNavigationRestoreRequest | null
   isQuickLaunchOpen: boolean
   pendingLibrarySearchQuery: string | null
   pendingSettingsSection: SettingsSectionId | null
   trackDrag: TrackDragState | null
+  trackDragCommittedNavigation: TrackDragCommittedNavigation | null
   sidebarPlaylistCreateRequest: SidebarPlaylistCreateRequest | null
   collectionQueueMenu: CollectionQueueMenuRequest | null
   signalShareTarget: SignalShareTarget | null
   setActiveView: (view: AppView) => void
   replaceActiveView: (view: AppView) => void
+  commitTransientView: (origin: TrackDragOriginSnapshot) => void
   navigateViewBack: () => boolean
   navigateViewForward: () => boolean
   toggleQueue: () => void
+  setQueueVisible: (visible: boolean) => void
   toggleInfoSidebar: () => void
   togglePipelineShelf: () => void
   toggleLyricsShelf: () => void
@@ -531,6 +657,7 @@ interface UIStore {
   hideAnalyzerRack: () => void
   toggleAnalyzerRack: () => void
   toggleSidebarExpanded: () => void
+  registerFullscreenEntryGuard: (guard: () => boolean) => () => void
   setFullscreen: (fs: boolean) => void
   setOpenZoneDisplayOnLaunch: (enabled: boolean) => void
   setParallaxExperimentEnabled: (enabled: boolean) => void
@@ -545,6 +672,14 @@ interface UIStore {
   resetUIScalePercent: () => void
   setHomeGreetingTextMode: (mode: HomeGreetingTextMode) => void
   resetHomeGreetingTextMode: () => void
+  setPlaylistOverviewAdaptiveHeaderEnabled: (enabled: boolean) => void
+  resetPlaylistOverviewAdaptiveHeaderEnabled: () => void
+  setHomeSkyTimeMode: (mode: HomeSkyTimeMode, now?: Date) => void
+  setHomeSkyFixedMinutes: (minutes: number) => void
+  resetHomeSkyTimePreference: () => void
+  setHomeModuleVisible: (moduleId: HomeModuleId, visible: boolean) => void
+  moveHomeModule: (moduleId: HomeModuleId, targetIndex: number) => void
+  resetHomeLayoutPreference: () => void
   setActivityIndicatorExperimentEnabled: (enabled: boolean) => void
   setControllerSupportEnabled: (enabled: boolean) => void
   setJumpToPlayingDestination: (destination: JumpToPlayingDestination) => void
@@ -558,6 +693,7 @@ interface UIStore {
   clearPlaylistTrackRevealRequest: (requestId: number) => void
   requestQueueNowPlayingReveal: () => void
   clearQueueNowPlayingRevealRequest: (requestId: number) => void
+  clearPlaylistNavigationRestoreRequest: (requestId: number) => void
   openQuickLaunch: () => void
   closeQuickLaunch: () => void
   toggleQuickLaunch: () => void
@@ -565,10 +701,19 @@ interface UIStore {
   consumePendingLibrarySearchQuery: () => string | null
   setPendingSettingsSection: (section: SettingsSectionId | null) => void
   consumePendingSettingsSection: () => SettingsSectionId | null
-  startTrackDrag: (tracks: Track[], pointerX: number, pointerY: number) => void
-  setTrackDragTracks: (tracks: Track[]) => void
-  updateTrackDragPointer: (pointerX: number, pointerY: number) => void
+  startTrackDrag: (
+    items: TrackDragItem[],
+    source: TrackDragSource,
+    origin: TrackDragOriginSnapshot,
+    pointerId: number,
+    pointerX: number,
+    pointerY: number
+  ) => void
+  setTrackDragItems: (items: TrackDragItem[]) => void
   setTrackDragDropTarget: (surface: TrackDragSurface, target: TrackDragDropTarget | null) => void
+  setTrackDragSpringTarget: (target: TrackDragSpringTarget | null) => void
+  markTrackDragSpringOpened: () => void
+  setTrackDragPhase: (phase: TrackDragState['phase']) => void
   clearTrackDrag: () => void
   openSidebarPlaylistCreateRequest: (trackPaths: string[]) => void
   clearSidebarPlaylistCreateRequest: () => void
@@ -602,6 +747,9 @@ export const useUIStore = create<UIStore>((set, get) => ({
   analyzerHeightPx: initialAnalyzerHeightPx,
   uiScalePercent: initialUIScalePercent,
   homeGreetingTextMode: initialHomeGreetingTextMode,
+  playlistOverviewAdaptiveHeaderEnabled: initialPlaylistOverviewAdaptiveHeaderEnabled,
+  homeSkyTimePreference: initialHomeSkyTimePreference,
+  homeLayoutPreference: initialHomeLayoutPreference,
   activityIndicatorExperimentEnabled: initialActivityIndicatorExperimentEnabled,
   controllerSupportEnabled: initialControllerSupportEnabled,
   jumpToPlayingDestination: initialJumpToPlayingDestination,
@@ -610,10 +758,12 @@ export const useUIStore = create<UIStore>((set, get) => ({
   libraryTrackRevealRequest: null,
   playlistTrackRevealRequest: null,
   queueNowPlayingRevealRequest: null,
+  playlistNavigationRestoreRequest: null,
   isQuickLaunchOpen: false,
   pendingLibrarySearchQuery: null,
   pendingSettingsSection: null,
   trackDrag: null,
+  trackDragCommittedNavigation: null,
   sidebarPlaylistCreateRequest: null,
   collectionQueueMenu: null,
   signalShareTarget: null,
@@ -643,21 +793,54 @@ export const useUIStore = create<UIStore>((set, get) => ({
       set({ activeView: view })
     }, direction)
   },
+  commitTransientView: (origin) => set((state) => {
+    const viewBackHistory = [...state.viewBackHistory, origin.activeView].slice(-MAX_VIEW_HISTORY_ENTRIES)
+    return {
+      viewBackHistory,
+      viewForwardHistory: [],
+      trackDragCommittedNavigation: {
+        origin,
+        destinationView: state.activeView,
+        historyDepth: viewBackHistory.length
+      }
+    }
+  }),
   navigateViewBack: () => {
     const state = get()
     const target = state.viewBackHistory[state.viewBackHistory.length - 1]
     if (!target) return false
+    const committedNavigation = state.trackDragCommittedNavigation
+    const restoresTrackDragOrigin = Boolean(
+      committedNavigation
+      && committedNavigation.historyDepth === state.viewBackHistory.length
+      && committedNavigation.destinationView === state.activeView
+    )
     const sourceView = pendingActiveView ?? state.activeView
     const direction = resolveAppViewTransitionDirection(sourceView, target)
     pendingActiveView = target
     runAppViewTransition(() => {
       if (pendingActiveView !== target) return
       pendingActiveView = null
-      set((latest) => ({
-        activeView: target,
-        viewBackHistory: latest.viewBackHistory.slice(0, -1),
-        viewForwardHistory: [...latest.viewForwardHistory, latest.activeView].slice(-MAX_VIEW_HISTORY_ENTRIES)
-      }))
+      set((latest) => {
+        const origin = restoresTrackDragOrigin ? latest.trackDragCommittedNavigation?.origin ?? null : null
+        if (origin) {
+          nextPlaylistNavigationRestoreRequestId += 1
+        }
+        return {
+          activeView: target,
+          viewBackHistory: latest.viewBackHistory.slice(0, -1),
+          viewForwardHistory: [...latest.viewForwardHistory, latest.activeView].slice(-MAX_VIEW_HISTORY_ENTRIES),
+          ...(origin ? {
+            showQueue: origin.showQueue,
+            trackDragCommittedNavigation: null,
+            playlistNavigationRestoreRequest: {
+              id: nextPlaylistNavigationRestoreRequestId,
+              playlistId: origin.selectedPlaylistId,
+              sortState: origin.playlistSortState
+            }
+          } : {})
+        }
+      })
     }, direction)
     return true
   },
@@ -680,6 +863,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
     return true
   },
   toggleQueue: () => set((s) => ({ showQueue: !s.showQueue })),
+  setQueueVisible: (visible) => set((state) => state.showQueue === visible ? state : { showQueue: visible }),
   toggleInfoSidebar: () => set((s) => ({ showInfoSidebar: !s.showInfoSidebar })),
   togglePipelineShelf: () => set((s) => ({ showPipelineShelf: !s.showPipelineShelf })),
   toggleLyricsShelf: () => set((s) => {
@@ -734,7 +918,26 @@ export const useUIStore = create<UIStore>((set, get) => ({
     persistSidebarExpandedPreference(next)
     return { isSidebarExpanded: next }
   }),
-  setFullscreen: (fs) => set({ isFullscreen: fs }),
+  registerFullscreenEntryGuard: (guard) => {
+    fullscreenEntryGuards.add(guard)
+    return () => { fullscreenEntryGuards.delete(guard) }
+  },
+  setFullscreen: (fs) => {
+    if (get().isFullscreen === fs) return
+    if (!fs) {
+      set({ isFullscreen: false })
+      return
+    }
+
+    // Confirm every editor can close before changing any panel state.
+    for (const canEnterFullscreen of fullscreenEntryGuards) {
+      if (!canEnterFullscreen()) return
+    }
+
+    useMetadataEditorStore.getState().closePanel()
+    useLyricsEditorStore.getState().closePanel()
+    set({ isAnalyzerEditMode: false, isFullscreen: true })
+  },
   setOpenZoneDisplayOnLaunch: (enabled) => {
     persistOpenZoneDisplayOnLaunchPreference(enabled)
     set({ openZoneDisplayOnLaunch: enabled })
@@ -791,6 +994,48 @@ export const useUIStore = create<UIStore>((set, get) => ({
   resetHomeGreetingTextMode: () => {
     persistHomeGreetingTextModePreference(DEFAULT_HOME_GREETING_TEXT_MODE)
     set({ homeGreetingTextMode: DEFAULT_HOME_GREETING_TEXT_MODE })
+  },
+  setPlaylistOverviewAdaptiveHeaderEnabled: (enabled) => {
+    const normalized = Boolean(enabled)
+    persistPlaylistOverviewAdaptiveHeaderPreference(normalized)
+    set({ playlistOverviewAdaptiveHeaderEnabled: normalized })
+  },
+  resetPlaylistOverviewAdaptiveHeaderEnabled: () => {
+    persistPlaylistOverviewAdaptiveHeaderPreference(DEFAULT_PLAYLIST_OVERVIEW_ADAPTIVE_HEADER_ENABLED)
+    set({ playlistOverviewAdaptiveHeaderEnabled: DEFAULT_PLAYLIST_OVERVIEW_ADAPTIVE_HEADER_ENABLED })
+  },
+  setHomeSkyTimeMode: (mode, now = new Date()) => set((state) => {
+    const nextPreference = setHomeSkyTimeModePreference(state.homeSkyTimePreference, mode, now)
+    persistJsonPreference(HOME_SKY_TIME_STORAGE_KEY, nextPreference)
+    return { homeSkyTimePreference: nextPreference }
+  }),
+  setHomeSkyFixedMinutes: (minutes) => set((state) => {
+    const nextPreference = normalizeHomeSkyTimePreference({
+      mode: state.homeSkyTimePreference.mode,
+      fixedMinutes: minutes
+    })
+    persistJsonPreference(HOME_SKY_TIME_STORAGE_KEY, nextPreference)
+    return { homeSkyTimePreference: nextPreference }
+  }),
+  resetHomeSkyTimePreference: () => {
+    const nextPreference = { ...DEFAULT_HOME_SKY_TIME_PREFERENCE }
+    persistJsonPreference(HOME_SKY_TIME_STORAGE_KEY, nextPreference)
+    set({ homeSkyTimePreference: nextPreference })
+  },
+  setHomeModuleVisible: (moduleId, visible) => set((state) => {
+    const nextPreference = setHomeModuleVisible(state.homeLayoutPreference, moduleId, visible)
+    persistJsonPreference(HOME_LAYOUT_STORAGE_KEY, nextPreference)
+    return { homeLayoutPreference: nextPreference }
+  }),
+  moveHomeModule: (moduleId, targetIndex) => set((state) => {
+    const nextPreference = moveHomeModule(state.homeLayoutPreference, moduleId, targetIndex)
+    persistJsonPreference(HOME_LAYOUT_STORAGE_KEY, nextPreference)
+    return { homeLayoutPreference: nextPreference }
+  }),
+  resetHomeLayoutPreference: () => {
+    const nextPreference = normalizeHomeLayoutPreference(DEFAULT_HOME_LAYOUT_PREFERENCE)
+    persistJsonPreference(HOME_LAYOUT_STORAGE_KEY, nextPreference)
+    set({ homeLayoutPreference: nextPreference })
   },
   setActivityIndicatorExperimentEnabled: (enabled) => {
     const normalized = Boolean(enabled)
@@ -864,6 +1109,10 @@ export const useUIStore = create<UIStore>((set, get) => ({
     if (state.queueNowPlayingRevealRequest?.id !== requestId) return {}
     return { queueNowPlayingRevealRequest: null }
   }),
+  clearPlaylistNavigationRestoreRequest: (requestId) => set((state) => {
+    if (state.playlistNavigationRestoreRequest?.id !== requestId) return {}
+    return { playlistNavigationRestoreRequest: null }
+  }),
   openQuickLaunch: () => set({ isQuickLaunchOpen: true }),
   closeQuickLaunch: () => set({ isQuickLaunchOpen: false }),
   toggleQuickLaunch: () => set((s) => ({ isQuickLaunchOpen: !s.isQuickLaunchOpen })),
@@ -883,38 +1132,30 @@ export const useUIStore = create<UIStore>((set, get) => ({
     }
     return section
   },
-  startTrackDrag: (tracks, pointerX, pointerY) => set({
+  startTrackDrag: (items, source, origin, pointerId, pointerX, pointerY) => set({
     trackDrag: {
-      tracks,
+      pointerId,
+      items,
+      source,
+      origin,
       pointerX,
       pointerY,
-      dropTarget: null
+      dropTarget: null,
+      springTarget: null,
+      springOpened: false,
+      phase: 'dragging'
     }
   }),
-  setTrackDragTracks: (tracks) => set((state) => {
-    if (!state.trackDrag) return state
-    if (areTrackDragTracksEqual(state.trackDrag.tracks, tracks)) {
+  setTrackDragItems: (items) => set((state) => {
+    if (!state.trackDrag || state.trackDrag.phase !== 'dragging') return state
+    const currentItems = state.trackDrag.items
+    if (
+      currentItems.length === items.length
+      && currentItems.every((item, index) => item.key === items[index]?.key)
+    ) {
       return state
     }
-    return {
-      trackDrag: {
-        ...state.trackDrag,
-        tracks
-      }
-    }
-  }),
-  updateTrackDragPointer: (pointerX, pointerY) => set((state) => {
-    if (!state.trackDrag) return state
-    if (state.trackDrag.pointerX === pointerX && state.trackDrag.pointerY === pointerY) {
-      return state
-    }
-    return {
-      trackDrag: {
-        ...state.trackDrag,
-        pointerX,
-        pointerY
-      }
-    }
+    return { trackDrag: { ...state.trackDrag, items } }
   }),
   setTrackDragDropTarget: (surface, target) => set((state) => {
     if (!state.trackDrag) return state
@@ -934,6 +1175,24 @@ export const useUIStore = create<UIStore>((set, get) => ({
       }
     }
   }),
+  setTrackDragSpringTarget: (target) => set((state) => {
+    if (!state.trackDrag) return state
+    const current = state.trackDrag.springTarget
+    const equal = current === target
+      || (current?.kind === 'queue' && target?.kind === 'queue')
+      || (current?.kind === 'sidebar-overflow' && target?.kind === 'sidebar-overflow')
+      || (current?.kind === 'playlist-browser' && target?.kind === 'playlist-browser')
+      || (current?.kind === 'playlist-back' && target?.kind === 'playlist-back')
+      || (current?.kind === 'playlist' && target?.kind === 'playlist' && current.playlistId === target.playlistId)
+    if (equal) return state
+    return { trackDrag: { ...state.trackDrag, springTarget: target } }
+  }),
+  markTrackDragSpringOpened: () => set((state) => state.trackDrag && !state.trackDrag.springOpened
+    ? { trackDrag: { ...state.trackDrag, springOpened: true } }
+    : state),
+  setTrackDragPhase: (phase) => set((state) => state.trackDrag && state.trackDrag.phase !== phase
+    ? { trackDrag: { ...state.trackDrag, phase } }
+    : state),
   clearTrackDrag: () => set({ trackDrag: null }),
   openSidebarPlaylistCreateRequest: (trackPaths) => set({
     sidebarPlaylistCreateRequest: {
@@ -985,10 +1244,12 @@ export const useUIStore = create<UIStore>((set, get) => ({
       isQuickLaunchOpen: false,
       pendingLibrarySearchQuery: null,
       pendingSettingsSection: null,
+      playlistNavigationRestoreRequest: null,
       collectionQueueMenu: null,
       signalShareTarget: null,
       sidebarPlaylistCreateRequest: null,
-      trackDrag: null
+      trackDrag: null,
+      trackDragCommittedNavigation: null
     })
   }
 }))

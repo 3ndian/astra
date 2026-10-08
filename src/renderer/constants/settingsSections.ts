@@ -9,7 +9,7 @@ export const SETTINGS_SECTIONS = [
   {
     id: 'appearance',
     label: 'Appearance',
-    keywords: ['theme', 'accent', 'cover art', 'color', 'visual', 'dark', 'light', 'background']
+    keywords: ['theme', 'accent', 'cover art', 'color', 'visual', 'dark', 'light', 'background', 'playlist header', 'adaptive']
   },
   {
     id: 'library',
@@ -23,7 +23,10 @@ export const SETTINGS_SECTIONS = [
       'artist',
       'artist parsing',
       'file tags',
-      'astra grouping',
+      'astra resolve',
+      'resolve',
+      'identity',
+      'grouping',
       'import',
       'path',
       'replaygain',
@@ -54,12 +57,17 @@ export const SETTINGS_SECTIONS = [
   {
     id: 'playback',
     label: 'Playback',
-    keywords: ['sleep timer', 'timer', 'countdown', 'pause', 'gapless', 'crossfade', 'shuffle', 'repeat', 'jump to playing', 'now playing', 'queue', 'playlist', 'album', 'artist']
+    keywords: ['sleep timer', 'timer', 'countdown', 'pause', 'fade', 'fade in', 'fade out', 'audio transitions', 'gapless', 'crossfade', 'shuffle', 'repeat', 'jump to playing', 'now playing', 'queue', 'playlist', 'album', 'artist']
   },
   {
     id: 'keybinds',
     label: 'Keybinds',
     keywords: ['keyboard', 'shortcut', 'shortcuts', 'keybind', 'binding', 'mouse', 'back', 'forward', 'controls']
+  },
+  {
+    id: 'devices',
+    label: 'Devices',
+    keywords: ['hardware', 'astra thing', 'car thing', 'connect', 'pair', 'pairing', 'controller', 'usb', 'companion']
   },
   {
     id: 'integrations',

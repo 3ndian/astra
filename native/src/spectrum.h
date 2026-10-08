@@ -5,10 +5,12 @@
 #include <memory>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 namespace Visualizer {
 
 struct SpectrumBarConfig {
+    std::string scaleMode = "log";
     size_t requestedBarCount = 64;
     float minFrequency = 20.0f;
     float maxFrequency = 20000.0f;
@@ -30,6 +32,7 @@ public:
     size_t getFFTSize() const { return fftSize_; }
     void setSampleRate(float sampleRate);
     void setSmoothing(float smoothing); // 0.0 - 1.0
+    void setSideEnabled(bool enabled);
 
     // Feed new samples into the rolling history and update the latest magnitudes.
     void pushSamples(const float* input, size_t length);
@@ -62,6 +65,7 @@ private:
     size_t fftSize_;
     float sampleRate_;
     float smoothing_;
+    bool sideEnabled_ = false;
 
     std::unique_ptr<DSP::FFT> fft_;
     std::vector<float> historyBuffer_;
@@ -73,12 +77,15 @@ private:
     std::vector<float> sideRawMagnitudes_;
     std::vector<float> sideSmoothedMagnitudes_;
     size_t bufferedSamples_;
+    size_t sideBufferedSamples_ = 0;
+    bool sideNeedsPrime_ = false;
 
     SpectrumBarConfig barConfig_;
     size_t barCount_ = 0;
     bool barMappingDirty_ = true;
     bool barStateInitialized_ = false;
     std::vector<float> barFrequencyEdges_;
+    std::vector<float> barCenterFrequencies_;
     std::vector<float> barHeatDb_;
     std::vector<float> barPeakDb_;
     std::vector<double> barPeakHoldUntilMs_;
@@ -94,10 +101,13 @@ private:
     void updateMagnitudesForHistory(
         const std::vector<float>& history,
         std::vector<float>& rawMagnitudes,
-        std::vector<float>& smoothedMagnitudes
+        std::vector<float>& smoothedMagnitudes,
+        size_t bufferedSamples,
+        bool bypassSmoothing = false
     );
     void updateSilentSideMagnitudes();
     void updateMagnitudes();
+    void resetSideState();
     void rebuildBarMapping();
     void resetBarState();
     float getInterpolatedMagnitude(const std::vector<float>& data, float bin) const;

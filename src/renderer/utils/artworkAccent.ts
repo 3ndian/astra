@@ -1,4 +1,10 @@
 import type { CoverArtAccentMethod } from '../stores/themeStore'
+import {
+  extractAdaptiveAccent,
+  extractAdaptivePalette,
+  type AdaptiveAccentTarget,
+  type AdaptivePalette
+} from './adaptiveAccent'
 
 const SAMPLE_SIZE = 128
 const MIN_ALPHA = 24
@@ -347,9 +353,16 @@ function sampleArtworkPixels(image: HTMLImageElement): Uint8ClampedArray | null 
   }
 }
 
+const DEFAULT_ADAPTIVE_TARGET: AdaptiveAccentTarget = { isLight: false, onAccent: '#050505' }
+
+/**
+ * `target` only affects the 'adaptive' method, which tones its result for the
+ * theme; the older methods return the same colour for every theme.
+ */
 export async function extractArtworkAccent(
   artworkDataUrl: string,
-  method: CoverArtAccentMethod
+  method: CoverArtAccentMethod,
+  target: AdaptiveAccentTarget = DEFAULT_ADAPTIVE_TARGET
 ): Promise<string | null> {
   if (!artworkDataUrl || typeof artworkDataUrl !== 'string') return null
 
@@ -357,6 +370,10 @@ export async function extractArtworkAccent(
     const image = await loadImage(artworkDataUrl)
     const pixels = sampleArtworkPixels(image)
     if (!pixels) return null
+
+    if (method === 'adaptive') {
+      return extractAdaptiveAccent(pixels, target).hex
+    }
 
     if (method === 'average') {
       return extractAverageColor(pixels)
@@ -367,6 +384,68 @@ export async function extractArtworkAccent(
     }
 
     return extractDominantColor(pixels)
+  } catch {
+    return null
+  }
+}
+
+function hexToRgb(hex: string): Rgb | null {
+  const match = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim())
+  if (!match) return null
+  const digits = match[1].length === 3
+    ? match[1].split('').map((digit) => digit + digit).join('')
+    : match[1]
+  return {
+    r: parseInt(digits.slice(0, 2), 16),
+    g: parseInt(digits.slice(2, 4), 16),
+    b: parseInt(digits.slice(4, 6), 16),
+  }
+}
+
+function relativeLuminance({ r, g, b }: Rgb): number {
+  const channel = (value: number) => {
+    const normalized = clampByte(value) / 255
+    return normalized <= 0.03928 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4
+  }
+  return (0.2126 * channel(r)) + (0.7152 * channel(g)) + (0.0722 * channel(b))
+}
+
+export function contrastRatio(foreground: string, background: string): number {
+  const fg = hexToRgb(foreground)
+  const bg = hexToRgb(background)
+  if (!fg || !bg) return 1
+  const a = relativeLuminance(fg)
+  const b = relativeLuminance(bg)
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)
+}
+
+/**
+ * Raise a colour's lightness, keeping its hue, until it reaches `minContrast`
+ * against a dark background. Vibrant artwork accents may sit at L≈0.38, which
+ * for deep blues and reds is unreadable as text on near-black.
+ */
+export function ensureReadableOnDark(color: string, background: string, minContrast = 4.5): string {
+  const rgb = hexToRgb(color)
+  if (!rgb) return color
+  if (contrastRatio(color, background) >= minContrast) return rgbToHex(rgb)
+
+  const hsl = rgbToHsl(rgb)
+  for (let lightness = hsl.l; lightness <= 1; lightness += 0.02) {
+    const candidate = rgbToHex(hslToRgb({ ...hsl, l: lightness }))
+    if (contrastRatio(candidate, background) >= minContrast) return candidate
+  }
+  return '#ffffff'
+}
+
+/** Adaptive accent plus the cover's mood colour (for tinting backgrounds), from one sample. */
+export async function extractArtworkPalette(
+  artworkDataUrl: string,
+  target: AdaptiveAccentTarget
+): Promise<AdaptivePalette | null> {
+  if (!artworkDataUrl || typeof artworkDataUrl !== 'string') return null
+  try {
+    const pixels = sampleArtworkPixels(await loadImage(artworkDataUrl))
+    return pixels ? extractAdaptivePalette(pixels, target) : null
   } catch {
     return null
   }

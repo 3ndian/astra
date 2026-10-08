@@ -82,6 +82,7 @@ function TransportWaveformSection({
       </button>
       <WaveformSeekBar
         waveformData={waveformData}
+        waveformKey={currentTrack?.path ?? null}
         progress={progress}
         duration={duration}
         currentTime={compensatedTime}
@@ -151,6 +152,7 @@ export default function TransportBar() {
   const replayGainScanEnabled = useAudioSettingsStore((s) => s.replayGainScanEnabled)
   const playbackOutputMode = useAudioSettingsStore((s) => s.playbackOutputMode)
   const nativeAudioCapabilities = useAudioSettingsStore((s) => s.nativeAudioCapabilities)
+  const nativeAudioOutputStatus = useAudioSettingsStore((s) => s.nativeAudioOutputStatus)
   const playbackModeStatusMessage = useAudioSettingsStore((s) => s.playbackModeStatusMessage)
   const parallaxSinkConnected = useParallaxStore((s) => Boolean(s.status?.sink.connected))
   const jumpToNowPlaying = useJumpToNowPlaying()
@@ -219,6 +221,7 @@ export default function TransportBar() {
   }, [playbackOutputMode, showEQPopover])
 
   const bitPerfectModeActive = playbackOutputMode === 'bitperfect'
+  const exclusiveDspModeActive = playbackOutputMode === 'exclusive'
   const disabledControlMessage = playbackModeStatusMessage ?? BIT_PERFECT_DSP_DISABLED_MESSAGE
   const eqControlDisabled = bitPerfectModeActive
   const transportControlsLocked = parallaxSinkConnected
@@ -281,7 +284,7 @@ export default function TransportBar() {
     currentTrack?.album
   )
   const bitPerfectStatusLabel = (() => {
-    if (!bitPerfectModeActive) return null
+    if (!bitPerfectModeActive || !nativeAudioOutputStatus?.bitPerfectActive) return null
 
     const backendLabel = (() => {
       switch (nativeAudioCapabilities.activeBackend) {
@@ -296,10 +299,18 @@ export default function TransportBar() {
       }
     })()
 
-    const sampleRate = nativeAudioCapabilities.activeSampleRate ?? audioEngine.getSampleRate()
+    const sampleRate = nativeAudioOutputStatus.wireFormat.sampleRate ?? audioEngine.getSampleRate()
     const sampleRateLabel = sampleRate > 0 ? `${(sampleRate / 1000).toFixed(1)} kHz` : 'native rate'
-    const exclusivityLabel = nativeAudioCapabilities.activeDeviceExclusive ? 'Exclusive' : 'Direct'
+    const exclusivityLabel = nativeAudioOutputStatus.transport ?? 'Native transport'
     return `${backendLabel} • ${sampleRateLabel} • ${exclusivityLabel}`
+  })()
+  const exclusiveDspStatusLabel = (() => {
+    if (!exclusiveDspModeActive || !nativeAudioOutputStatus?.processing.exclusiveActive) return null
+    const sampleRate = nativeAudioOutputStatus.processing.targetSampleRate
+      ?? nativeAudioOutputStatus.wireFormat.sampleRate
+    const rateLabel = sampleRate ? `${(sampleRate / 1000).toFixed(1)} kHz` : 'native rate'
+    const resamplerLabel = nativeAudioOutputStatus.processing.resamplingActive ? 'Resampling' : 'Source rate'
+    return `${rateLabel} • ${resamplerLabel} • ${nativeAudioOutputStatus.transport ?? 'Native transport'}`
   })()
   const normalizationReadout = (() => {
     if (bitPerfectModeActive) {
@@ -471,7 +482,9 @@ export default function TransportBar() {
                   )
                 }}
               >
-                <span className="transport-output-line-prefix">{transportInfoLine.prefix}</span>
+                {transportInfoLine.prefix && (
+                  <span className="transport-output-line-prefix">{transportInfoLine.prefix}</span>
+                )}
                 <span className="transport-output-line-value">{transportInfoLine.value}</span>
               </button>
             ) : transportInfoLineMode === 'output' ? (
@@ -487,7 +500,9 @@ export default function TransportBar() {
               </button>
             ) : (
               <div className="transport-output-line" title={transportInfoLine.title}>
-                <span className="transport-output-line-prefix">{transportInfoLine.prefix}</span>
+                {transportInfoLine.prefix && (
+                  <span className="transport-output-line-prefix">{transportInfoLine.prefix}</span>
+                )}
                 <span className="transport-output-line-value">{transportInfoLine.value}</span>
               </div>
             )
@@ -496,6 +511,12 @@ export default function TransportBar() {
             <div className="transport-output-line" title={disabledControlMessage}>
               <span className="transport-output-line-prefix">BP</span>
               <span className="transport-output-line-value">{bitPerfectStatusLabel}</span>
+            </div>
+          )}
+          {exclusiveDspStatusLabel && (
+            <div className="transport-output-line" title="Verified native exclusive ownership with DSP processing active">
+              <span className="transport-output-line-prefix">EX</span>
+              <span className="transport-output-line-value">{exclusiveDspStatusLabel}</span>
             </div>
           )}
         </div>
@@ -558,11 +579,11 @@ export default function TransportBar() {
             aria-busy={isLoadingTrack}
           >
             {isPlaying || isLoadingTrack ? (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z"/>
               </svg>
             ) : (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M8 5v14l11-7z"/>
               </svg>
             )}
@@ -664,6 +685,7 @@ export default function TransportBar() {
             className={`transport-qi-btn ${showQueue ? 'active' : ''}`}
             onClick={toggleQueue}
             title="Toggle queue"
+            data-track-drop-queue-toggle
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
               <path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/>

@@ -6,10 +6,17 @@ import test from 'node:test'
 import { pathToFileURL } from 'url'
 import { createRequire } from 'module'
 import * as library from './library.ts'
+import { resolveAlbumFixtureTracks, type ResolveAlbumFixtureTrack } from '../../shared/library/__fixtures__/resolveAlbums.ts'
 import type { StatsTransferTrackTuple } from '../../shared/stats/statsTransfer.ts'
 import {
   createDefaultDynamicPlaylistRules,
-  type DynamicPlaylistCondition
+  normalizeDynamicPlaylistRules,
+  serializeDynamicPlaylistRules,
+  type DynamicPlaylistRulesV2,
+  type DynamicPlaylistCondition,
+  type DynamicPlaylistRulesV1,
+  type DynamicPlaylistTextField,
+  type DynamicPlaylistTextOperator
 } from '../../shared/playlists/dynamicPlaylist.ts'
 
 interface TestSqliteStatement {
@@ -96,11 +103,15 @@ function createRemoteTrack(
     path: overrides.path,
     title: overrides.title,
     artist: overrides.artist,
+    artist_names: overrides.artist_names ?? null,
     album: overrides.album,
     album_artist: overrides.album_artist ?? null,
+    album_artist_names: overrides.album_artist_names ?? null,
     duration: overrides.duration ?? 180,
     track_number: overrides.track_number ?? null,
+    track_total: overrides.track_total ?? null,
     disc_number: overrides.disc_number ?? null,
+    disc_total: overrides.disc_total ?? null,
     year: overrides.year ?? null,
     genre: overrides.genre ?? null,
     genres: overrides.genres ?? (overrides.genre ? [overrides.genre] : []),
@@ -264,6 +275,90 @@ async function setupLegacyPlaycountLibrary(t: test.TestContext): Promise<string>
 
   return dir
 }
+
+test('Home dashboard defaults to 30 releases with stable ordering, bounds, and exclusions', async (t) => {
+  const userDataDir = await setupEmptyLibrary(t)
+  const day = 24 * 60 * 60 * 1000
+  const now = Date.now()
+  const albumName = (index: number) => `Home Album ${String(index).padStart(2, '0')}`
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    const insert = directDb.prepare(`
+      INSERT INTO tracks (
+        path, title, artist, album, duration, format, added_at, modified_at,
+        play_count, last_played_at, is_available
+      ) VALUES (?, ?, 'Home Artist', ?, 180, 'flac', ?, ?, 1, ?, ?)
+    `)
+    for (let index = 0; index <= 80; index += 1) {
+      insert.run(
+        `/home/track-${index}.flac`, `Home Track ${index}`, albumName(index),
+        now - (200 + index) * day, now, now - (120 + index) * day,
+        index === 80 ? 0 : 1
+      )
+    }
+  })
+
+  const defaultDashboard = library.getHomeDashboard()
+  const expectedRecentAlbums = Array.from({ length: 30 }, (_, index) => albumName(index))
+  assert.deepEqual(defaultDashboard.recent_releases.map((entry) => entry.album), expectedRecentAlbums)
+  assert.deepEqual(defaultDashboard.newly_added_releases.map((entry) => entry.album), expectedRecentAlbums)
+  assert.equal(defaultDashboard.rediscover_releases.length, 30)
+
+  const excludedRelease = defaultDashboard.rediscover_releases[0]!
+  const query = { excludedReleaseIdentityKeys: [excludedRelease.identity_key] }
+  const dashboard = library.getHomeDashboard(query)
+  assert.deepEqual(library.getHomeDashboard(query), dashboard)
+  assert.equal(dashboard.rediscover_releases.length, 30)
+  const recentKeys = new Set(dashboard.recent_releases.map((entry) => entry.identity_key))
+  for (const row of [dashboard.recent_releases, dashboard.rediscover_releases, dashboard.newly_added_releases]) {
+    assert.equal(new Set(row.map((entry) => entry.identity_key)).size, 30)
+    assert.ok(row.every((entry) => entry.available_track_count > 0 && entry.album !== albumName(80)))
+  }
+  assert.ok(dashboard.rediscover_releases.every((entry) => (
+    !recentKeys.has(entry.identity_key) && entry.identity_key !== excludedRelease.identity_key
+  )))
+  assert.deepEqual(library.getHomeDashboard({
+    ...query, jumpBackInReleaseLimit: 100, rediscoverLimit: 100, newlyAddedLimit: 100
+  }), dashboard)
+  assert.deepEqual(library.getHomeDashboard({
+    ...query, jumpBackInReleaseLimit: NaN, rediscoverLimit: Infinity, newlyAddedLimit: NaN
+  }), dashboard)
+  const smaller = library.getHomeDashboard({
+    jumpBackInReleaseLimit: 6.9, rediscoverLimit: 12.9, newlyAddedLimit: 12.9
+  })
+  assert.equal(smaller.recent_releases.length, 30)
+  assert.equal(smaller.rediscover_releases.length, 12)
+  assert.equal(smaller.newly_added_releases.length, 12)
+  assert.ok(smaller.rediscover_releases.every((entry) => !expectedRecentAlbums.slice(0, 6).includes(entry.album)))
+  const minimums = library.getHomeDashboard({
+    jumpBackInReleaseLimit: -1, rediscoverLimit: -1, newlyAddedLimit: -1
+  })
+  assert.equal(minimums.rediscover_releases.length, 8)
+  assert.equal(minimums.newly_added_releases.length, 8)
+})
+
+test('Home dashboard leaves empty and smaller eligible collections short', async (t) => {
+  const userDataDir = await setupEmptyLibrary(t)
+  const empty = library.getHomeDashboard()
+  assert.deepEqual(empty.recent_releases, [])
+  assert.deepEqual(empty.rediscover_releases, [])
+  assert.deepEqual(empty.newly_added_releases, [])
+
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    const insert = directDb.prepare(`
+      INSERT INTO tracks (
+        path, title, artist, album, duration, format, added_at, modified_at,
+        play_count, last_played_at, is_available
+      ) VALUES (?, 'Home Track', 'Home Artist', ?, 180, 'flac', 1, 1, ?, ?, ?)
+    `)
+    insert.run('/home/recent.flac', 'Recent', 1, 2, 1)
+    insert.run('/home/unplayed.flac', 'Unplayed', 0, null, 1)
+    insert.run('/home/unavailable.flac', 'Unavailable', 0, null, 0)
+  })
+  const dashboard = library.getHomeDashboard()
+  assert.deepEqual(dashboard.recent_releases.map((entry) => entry.album), ['Recent'])
+  assert.deepEqual(dashboard.rediscover_releases.map((entry) => entry.album), ['Unplayed'])
+  assert.deepEqual(new Set(dashboard.newly_added_releases.map((entry) => entry.album)), new Set(['Recent', 'Unplayed']))
+})
 
 test('playcount migration adds fresh aggregate fields without backfilling recent history', async (t) => {
   await setupLegacyPlaycountLibrary(t)
@@ -861,6 +956,35 @@ test('metadata file writes rebuild core tags instead of layering changed fields'
   ])
 })
 
+test('metadata number edits preserve known track and disc totals', () => {
+  const args = library.buildFfmpegMetadataRewriteArgs({
+    title: 'Numbered Song',
+    artist: 'Numbered Artist',
+    album: 'Numbered Album',
+    albumArtist: null,
+    genre: null,
+    year: null,
+    trackNumber: 7,
+    trackTotal: 12,
+    discNumber: 1,
+    discTotal: 2
+  })
+
+  assert.ok(args.includes('track=7/12'))
+  assert.ok(args.includes('disc=1/2'))
+})
+
+test('library diagnostics opt-in metadata persists across database sessions', async (t) => {
+  await setupEmptyLibrary(t)
+  assert.equal(library.getAppMeta('library_diagnostics_enabled_v1'), null)
+
+  await library.setAppMeta('library_diagnostics_enabled_v1', '1')
+  library.closeDatabase()
+  await library.initDatabase()
+
+  assert.equal(library.getAppMeta('library_diagnostics_enabled_v1'), '1')
+})
+
 test('total track duration sums positive durations and returns zero for empty libraries', async (t) => {
   await setupEmptyLibrary(t)
 
@@ -922,8 +1046,229 @@ test('library grouping queries preserve shared-cover compilation identities', as
   const byArtist = library.getTracksByArtist('Artist A')
   assert.deepEqual(byArtist.map((track) => track.title), ['Split A'])
   assert.equal(byArtist[0].album_identity_key, splitAlbum.identity_key)
-  assert.deepEqual(byArtist[0].artist_names, [])
+  assert.deepEqual(byArtist[0].artist_names, ['Artist A'])
   assert.deepEqual(byArtist[0].album_artist_names, [])
+
+  const allTrack = library.getAllTracks().find((track) => track.path === 'subsonic://1/split-a')
+  const pagedTrack = library.getTrackPage({ offset: 0, limit: 10 }).tracks.find(
+    (track) => track.path === 'subsonic://1/split-a'
+  )
+  assert.deepEqual(allTrack?.artist_names, ['Artist A'])
+  assert.deepEqual(pagedTrack?.artist_names, ['Artist A'])
+})
+
+test('derived identity rebuild reconciles live history and latest-sync keys atomically', async (t) => {
+  const userDataDir = await setupEmptyLibrary(t)
+  const source = await library.createSubsonicSource({
+    name: 'Identity Source',
+    base_url: 'https://identity.example.test',
+    username: 'tester',
+    secret_encrypted: 'secret',
+    enabled: 1,
+    last_status: 'ok'
+  })
+  const firstPath = `subsonic://${source.id}/identity-a`
+  const secondPath = `subsonic://${source.id}/identity-b`
+  await library.upsertSubsonicTracks(source.id, [
+    createRemoteTrack({
+      path: firstPath,
+      title: 'Identity A',
+      artist: 'Artist A',
+      album: 'Shared Release',
+      artwork_hash: 'shared-cover'
+    }),
+    createRemoteTrack({
+      path: secondPath,
+      title: 'Identity B',
+      artist: 'Artist B',
+      album: 'Shared Release',
+      artwork_hash: 'shared-cover'
+    })
+  ], { syncSessionKey: 'identity-sync' })
+
+  const before = library.getTrackByPath(firstPath)
+  assert.ok(before)
+  const beforeIdentityKey = before.album_identity_key
+  assert.ok(beforeIdentityKey)
+  const historyStatus = library.getListeningHistoryStatus()
+  await library.checkpointListeningSession({
+    generation: historyStatus.generation,
+    sessionKey: 'identity-live-session',
+    segmentKey: 'identity-live-segment',
+    trackPath: firstPath,
+    sourcePlaylistId: null,
+    sessionStartedAt: 1_000,
+    segmentStartedAt: 1_000,
+    observedAt: 31_000,
+    sessionListenedSeconds: 30,
+    segmentListenedSeconds: 30,
+    trackDurationSeconds: 180,
+    qualificationEligible: true,
+    finalizeSegment: true,
+    finalizeSession: true
+  })
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    directDb.prepare(`
+      INSERT INTO listening_sessions (
+        generation, session_key, track_id, track_path, title, artist, album,
+        album_identity_key, source_type, duration_seconds, started_at, listened_seconds
+      ) VALUES ('orphan-generation', 'identity-orphan-session', NULL, '/missing.flac',
+        'Missing', 'Missing Artist', 'Missing Album', 'orphan-key', 'local', 180, 1, 1)
+    `).run()
+  })
+  await library.setLatestLibrarySyncSummary({
+    sessionKey: 'identity-sync',
+    completedAt: 50_000,
+    newAlbumIdentityKeys: [beforeIdentityKey]
+  })
+
+  await library.upsertSubsonicTracks(source.id, [createRemoteTrack({
+    path: firstPath,
+    title: 'Identity A',
+    artist: 'Artist A',
+    album: 'Different Release',
+    artwork_hash: 'shared-cover'
+  })], { syncSessionKey: 'identity-sync' })
+
+  const afterFirst = library.getTrackByPath(firstPath)
+  const afterSecond = library.getTrackByPath(secondPath)
+  assert.ok(afterFirst)
+  assert.ok(afterSecond)
+  assert.notEqual(afterFirst.album_identity_key, beforeIdentityKey)
+  const afterFirstIdentityKey = afterFirst.album_identity_key
+  const afterSecondIdentityKey = afterSecond.album_identity_key
+  assert.ok(afterFirstIdentityKey)
+  assert.ok(afterSecondIdentityKey)
+  const stored = withDirectLibraryDb(userDataDir, (directDb) => ({
+    liveKey: (directDb.prepare(
+      "SELECT album_identity_key FROM listening_sessions WHERE session_key = 'identity-live-session'"
+    ).get() as { album_identity_key: string }).album_identity_key,
+    orphanKey: (directDb.prepare(
+      "SELECT album_identity_key FROM listening_sessions WHERE session_key = 'identity-orphan-session'"
+    ).get() as { album_identity_key: string }).album_identity_key,
+    cacheCount: (directDb.prepare('SELECT COUNT(*) AS count FROM track_album_identities').get() as { count: number }).count
+  }))
+  assert.equal(stored.liveKey, afterFirstIdentityKey)
+  assert.equal(stored.orphanKey, 'orphan-key')
+  assert.equal(stored.cacheCount, 2)
+  assert.equal(library.getAppMeta('library_identity_algorithm_version'), '7')
+  assert.deepEqual(
+    library.getLatestLibrarySyncSummary()?.newAlbumIdentityKeys,
+    [afterFirstIdentityKey, afterSecondIdentityKey].sort((a, b) => a.localeCompare(b))
+  )
+})
+
+test('Resolve tester albums and version 6 history rebuild into complete version 7 releases', async (t) => {
+  const userDataDir = await setupEmptyLibrary(t)
+  const source = await library.createSubsonicSource({
+    name: 'Resolve Fixtures', base_url: 'https://resolve.example.test', username: 'tester',
+    secret_encrypted: 'secret', enabled: 1, last_status: 'ok'
+  })
+  const fixturePath = (fixture: ResolveAlbumFixtureTrack) => `subsonic://${source.id}/${encodeURIComponent(fixture.id)}`
+  await library.upsertSubsonicTracks(source.id, resolveAlbumFixtureTracks.map((fixture) => createRemoteTrack({
+    ...fixture,
+    path: fixturePath(fixture),
+    artist_names: fixture.artist_names ? [...fixture.artist_names] : null,
+    album_artist_names: fixture.album_artist_names ? [...fixture.album_artist_names] : null,
+    artwork_hash: fixture.base_artwork_hash
+  })), { syncSessionKey: 'resolve-sync' })
+
+  const expectedKeys = ['album:carti leaks::aa:playboi carti', 'album:scarlet 2 claude::aa:doja cat']
+  const assertCompleteReleases = () => {
+    const albums = library.getAlbums()
+    assert.deepEqual(albums.map((album) => [album.album, album.track_count, album.year]), [
+      ['Carti Leaks', 18, 2019], ['Scarlet 2 CLAUDE', 24, 2024]
+    ])
+    assert.deepEqual(library.listAlbumIdentityKeys(), expectedKeys)
+    assert.equal(library.getTrackCount(), 42)
+    for (const album of albums) {
+      const expected = resolveAlbumFixtureTracks.filter((fixture) => fixture.album === album.album)
+        .sort((a, b) => (a.disc_number ?? 0) - (b.disc_number ?? 0) || (a.track_number ?? 0) - (b.track_number ?? 0))
+      const detail = library.getTracksByAlbum(album.album, album.artist, album.identity_key)
+      assert.deepEqual(detail.map((item) => item.path), expected.map(fixturePath))
+      assert.ok(detail.every((item) => item.album_identity_key === album.identity_key))
+      const artist = library.getArtists().find((item) => item.artist === album.artist)
+      assert.equal(artist?.album_count, 1)
+    }
+    const all = library.getAllTracks()
+    const paged = library.getTrackPage({ offset: 0, limit: 50 }).tracks
+    assert.equal(all.length, 42)
+    assert.equal(paged.length, 42)
+    const keysByPath = new Map(all.map((item) => [item.path, item.album_identity_key]))
+    assert.ok(paged.every((item) => item.album_identity_key === keysByPath.get(item.path)))
+  }
+  assertCompleteReleases()
+
+  const generation = library.getListeningHistoryStatus().generation
+  const played = [resolveAlbumFixtureTracks[9], resolveAlbumFixtureTracks[41]]
+  for (const [index, fixture] of played.entries()) {
+    await library.checkpointListeningSession({
+      generation, sessionKey: `resolve-session-${index}`, segmentKey: `resolve-segment-${index}`,
+      trackPath: fixturePath(fixture), sourcePlaylistId: null, sessionStartedAt: 1_000,
+      segmentStartedAt: 1_000, observedAt: 101_000, sessionListenedSeconds: 100,
+      segmentListenedSeconds: 100, trackDurationSeconds: 180, qualificationEligible: true,
+      finalizeSegment: true, finalizeSession: true
+    })
+  }
+  const metadataSnapshot = () => withDirectLibraryDb(userDataDir, (directDb) => directDb.prepare(`
+    SELECT path, title, album, artist, album_artist, artist_names_json, album_artist_names_json,
+           track_number, track_total, disc_number, disc_total, year, artwork_hash, play_count
+    FROM tracks ORDER BY path
+  `).all())
+  const before = metadataSnapshot()
+  library.closeDatabase()
+
+  // Recreate the five persisted identities produced by v6, independently of
+  // the new resolver, then exercise the real database startup repair.
+  const legacyIdentity = (fixture: ResolveAlbumFixtureTrack): string => {
+    if (fixture.album === 'Scarlet 2 CLAUDE') {
+      return `album:scarlet 2 claude::aa:doja cat:rp:y2024:d2:t${fixture.track_total}`
+    }
+    const year = fixture.year === 2013 ? '2013' : (fixture.year ?? 0) >= 2018 ? '2018-2019' : '2015-2016'
+    return `album:carti leaks::aa:playboi carti:rp:y${year}:du:t18`
+  }
+  const oldKeys = Array.from(new Set(resolveAlbumFixtureTracks.map(legacyIdentity))).sort()
+  assert.equal(oldKeys.length, 5)
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    for (const fixture of resolveAlbumFixtureTracks) {
+      directDb.prepare('UPDATE track_album_identities SET album_identity_key = ? WHERE track_path = ?')
+        .run(legacyIdentity(fixture), fixturePath(fixture))
+      directDb.prepare('UPDATE listening_sessions SET album_identity_key = ? WHERE track_path = ?')
+        .run(legacyIdentity(fixture), fixturePath(fixture))
+    }
+    directDb.prepare("UPDATE app_meta SET value = '6' WHERE key = 'library_identity_algorithm_version'").run()
+    directDb.prepare('INSERT OR REPLACE INTO app_meta (key, value, updated_at) VALUES (?, ?, ?)').run(
+      'library_latest_sync_summary_v1',
+      JSON.stringify({ sessionKey: 'resolve-sync', completedAt: 50_000, newAlbumIdentityKeys: oldKeys }), 50_000
+    )
+    directDb.prepare(`
+      INSERT INTO listening_sessions (
+        generation, session_key, track_id, track_path, title, artist, album,
+        album_identity_key, source_type, duration_seconds, started_at, listened_seconds
+      ) VALUES ('orphan-generation', 'resolve-orphan', NULL, '/missing.flac',
+        'Missing', 'Missing Artist', 'Missing Album', 'orphan-key', 'local', 180, 1, 1)
+    `).run()
+    assert.deepEqual(directDb.prepare('SELECT COUNT(DISTINCT album_identity_key) AS count FROM track_album_identities').get(), { count: 5 })
+  })
+
+  await library.initDatabase()
+  assertCompleteReleases()
+  assert.equal(library.getAppMeta('library_identity_algorithm_version'), '7')
+  assert.deepEqual(metadataSnapshot(), before)
+  assert.deepEqual(library.getLatestLibrarySyncSummary(), {
+    sessionKey: 'resolve-sync', completedAt: 50_000, newAlbumIdentityKeys: expectedKeys
+  })
+  assert.ok(library.getAlbums().every((album) => album.is_new))
+  const stored = withDirectLibraryDb(userDataDir, (directDb) => ({
+    identities: directDb.prepare('SELECT COUNT(*) AS tracks, COUNT(DISTINCT album_identity_key) AS albums FROM track_album_identities').get(),
+    history: directDb.prepare("SELECT session_key, album_identity_key, listened_seconds FROM listening_sessions WHERE session_key LIKE 'resolve-%' ORDER BY session_key").all()
+  }))
+  assert.deepEqual(stored.identities, { tracks: 42, albums: 2 })
+  assert.deepEqual(stored.history, [
+    { session_key: 'resolve-orphan', album_identity_key: 'orphan-key', listened_seconds: 1 },
+    { session_key: 'resolve-session-0', album_identity_key: expectedKeys[0], listened_seconds: 100 },
+    { session_key: 'resolve-session-1', album_identity_key: expectedKeys[1], listened_seconds: 100 }
+  ])
 })
 
 test('library artist queries preserve primary-artist album grouping', async (t) => {
@@ -942,7 +1287,7 @@ test('library artist queries preserve primary-artist album grouping', async (t) 
 })
 
 test('library artist records distinguish primary and collaborator-only canonical artists', async (t) => {
-  const userDataDir = await setupEmptyLibrary(t)
+  await setupEmptyLibrary(t)
 
   const source = await library.createSubsonicSource({
     name: 'Test Source',
@@ -959,6 +1304,7 @@ test('library artist records distinguish primary and collaborator-only canonical
       source_track_id: 'collab-1',
       title: 'Shared Song',
       artist: 'Primary Artist & Guest Artist',
+      artist_names: ['Primary Artist', 'Guest Artist'],
       album: 'Collab Release',
       track_number: 1
     }),
@@ -978,8 +1324,6 @@ test('library artist records distinguish primary and collaborator-only canonical
       album: 'Loose Single'
     })
   ])
-  updateStoredArtistCredits(userDataDir, 'subsonic://1/collab-1', ['Primary Artist', 'Guest Artist'])
-
   const canonicalArtists = library.getArtists('canonical')
   const primaryArtist = canonicalArtists.find((artist) => artist.artist === 'Primary Artist')
   const guestArtist = canonicalArtists.find((artist) => artist.artist === 'Guest Artist')
@@ -1263,7 +1607,7 @@ test('getTracksByPaths preserves request order, duplicates, and public metadata 
 
   const splitTrack = tracks[1]
   assert.equal(splitTrack.artist, 'Artist A')
-  assert.deepEqual(splitTrack.artist_names, [])
+  assert.deepEqual(splitTrack.artist_names, ['Artist A'])
   assert.equal(splitTrack.codec, 'flac')
   assert.equal(splitTrack.channels, 2)
   assert.equal(splitTrack.source_type, 'subsonic')
@@ -1437,6 +1781,93 @@ test('companion API writes accept only locally owned normal playlists', async (t
   assert.equal(await library.moveCompanionApiPlaylistTrack(dynamic.id, trackPaths[0], 0), false)
 })
 
+test('local scans and subfolder counts ignore AppleDouble audio sidecars', async (t) => {
+  const dir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  t.after(() => {
+    library.setReplayGainScanEnabled(true)
+  })
+
+  const musicDir = join(dir, 'appledouble-scan')
+  const albumDir = join(musicDir, 'Album')
+  const trackPath = join(albumDir, 'track.wav')
+  const hiddenTrackPath = join(albumDir, '.hidden.wav')
+  await mkdir(albumDir, { recursive: true })
+  await writeTaggedWavFixture(trackPath, 'Track', 'AppleDouble Artist')
+  await writeTaggedWavFixture(hiddenTrackPath, 'Hidden Track', 'AppleDouble Artist')
+  await writeFile(join(albumDir, '._track.flac'), 'AppleDouble metadata')
+  await writeFile(join(albumDir, '._track.m4a'), 'AppleDouble metadata')
+  await writeFile(join(albumDir, '._track.mp3'), 'AppleDouble metadata')
+
+  const folder = await library.addLibraryFolder(musicDir)
+  assert.ok(folder)
+
+  const scan = await library.scanFolder(musicDir, undefined, { diagnostics: true })
+  assert.equal(scan.added, 2)
+  assert.equal(scan.updated, 0)
+  assert.equal(scan.errors, 0)
+  assert.equal(scan.diagnostics.discoveredFileCount, 2)
+  assert.equal(scan.diagnostics.metadataParsedFileCount, 2)
+  assert.deepEqual(getStoredTrackPaths(dir).sort(), [trackPath, hiddenTrackPath].sort())
+
+  const subdirectories = await library.listFolderSubdirectories(musicDir)
+  assert.equal(subdirectories.length, 1)
+  assert.equal(subdirectories[0]?.relativePath, 'Album')
+  assert.equal(subdirectories[0]?.audioFileCount, 2)
+})
+
+test('cleanup removes previously indexed AppleDouble tracks without deleting their files', async (t) => {
+  const userDataDir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  t.after(() => {
+    library.setReplayGainScanEnabled(true)
+  })
+
+  const musicDir = join(userDataDir, 'appledouble-cleanup')
+  const trackPath = join(musicDir, 'track.wav')
+  const sidecarPath = join(musicDir, '._track.mp3')
+  await mkdir(musicDir, { recursive: true })
+  await writeTaggedWavFixture(trackPath, 'Track', 'Cleanup Artist')
+  await writeFile(sidecarPath, 'AppleDouble metadata')
+
+  const scan = await library.scanFolder(musicDir)
+  assert.equal(scan.added, 1)
+  assert.equal(scan.errors, 0)
+
+  const playlist = await library.createPlaylist('Legacy AppleDouble Entry')
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    directDb.prepare(`
+      INSERT INTO tracks (path, title, artist, album, duration, format, added_at, modified_at)
+      VALUES (?, 'Legacy Sidecar', 'Unknown Artist', 'Unknown Album', 0, 'mp3', 1, 1)
+    `).run(sidecarPath)
+    directDb.prepare(`
+      INSERT INTO playlist_tracks (playlist_id, track_path, position, added_at)
+      VALUES (?, ?, 0, 1)
+    `).run(playlist.id, sidecarPath)
+  })
+
+  const diagnostics: library.LibraryCleanupDiagnostics[] = []
+  const removed = await library.cleanupMissingTracks({
+    onCleanupDiagnostics: (value) => {
+      diagnostics.push(value)
+    }
+  })
+
+  assert.equal(removed, 1)
+  assert.equal(diagnostics.length, 1)
+  assert.equal(diagnostics[0]?.appleDoubleTrackDeleteCount, 1)
+  assert.equal(diagnostics[0]?.filesystemMissingCount, 0)
+  assert.equal(diagnostics[0]?.missingTrackDeleteCount, 0)
+  assert.deepEqual(getStoredTrackPaths(userDataDir), [trackPath])
+  assert.equal((await stat(sidecarPath)).isFile(), true)
+
+  const playlistEntries = library.getPlaylistTrackEntries(playlist.id)
+  assert.equal(playlistEntries.length, 1)
+  assert.equal(playlistEntries[0]?.track_path, sidecarPath)
+  assert.equal(playlistEntries[0]?.title, 'Legacy Sidecar')
+  assert.equal(playlistEntries[0]?.missing, true)
+})
+
 test('force scan rewrites unchanged local metadata that incremental scan skips', async (t) => {
   const dir = await setupEmptyLibrary(t)
   library.setReplayGainScanEnabled(false)
@@ -1449,28 +1880,220 @@ test('force scan rewrites unchanged local metadata that incremental scan skips',
   await mkdir(musicDir)
   await writeTaggedWavFixture(trackPath, 'Initial Title', 'Initial Artist')
 
-  const initialScan = await library.scanFolder(musicDir)
+  const initialScan = await library.scanFolder(musicDir, undefined, { diagnostics: true })
   assert.equal(initialScan.added, 1)
   assert.equal(initialScan.updated, 0)
   assert.equal(initialScan.errors, 0)
+  assert.equal(initialScan.diagnostics.metadataParsedFileCount, 1)
+  assert.equal(initialScan.diagnostics.reparseReasonCounts.new_file, 1)
   assert.equal(library.getTrackByPath(trackPath)?.title, 'Initial Title')
 
   const originalStat = await stat(trackPath)
   await writeTaggedWavFixture(trackPath, 'Updated Title', 'Updated Artist')
   await utimes(trackPath, originalStat.atime, originalStat.mtime)
 
-  const incrementalScan = await library.scanFolder(musicDir, undefined, { mode: 'incremental' })
+  const incrementalScan = await library.scanFolder(musicDir, undefined, { mode: 'incremental', diagnostics: true })
   assert.equal(incrementalScan.added, 0)
   assert.equal(incrementalScan.updated, 0)
   assert.equal(incrementalScan.errors, 0)
+  assert.equal(incrementalScan.diagnostics.metadataParsedFileCount, 0)
+  assert.equal(incrementalScan.diagnostics.skippedKnownFileCount, 1)
   assert.equal(library.getTrackByPath(trackPath)?.title, 'Initial Title')
 
-  const forceScan = await library.scanFolder(musicDir, undefined, { mode: 'force' })
+  const forceScan = await library.scanFolder(musicDir, undefined, { mode: 'force', diagnostics: true })
   assert.equal(forceScan.added, 0)
   assert.equal(forceScan.updated, 1)
   assert.equal(forceScan.errors, 0)
+  assert.equal(forceScan.diagnostics.metadataParsedFileCount, 1)
+  assert.equal(forceScan.diagnostics.reparseReasonCounts.force_mode, 1)
   assert.equal(library.getTrackByPath(trackPath)?.title, 'Updated Title')
   assert.equal(library.getTrackByPath(trackPath)?.artist, 'Updated Artist')
+})
+
+test('incremental scans check missing optional metadata once without reparsing legitimate absences forever', async (t) => {
+  const userDataDir = await setupEmptyLibrary(t)
+  const musicDir = join(userDataDir, 'diagnostic-music')
+  const trackPath = join(musicDir, 'track.wav')
+  await mkdir(musicDir)
+  await writeTaggedWavFixture(trackPath, 'Diagnostic Title', 'Diagnostic Artist')
+
+  library.setReplayGainScanEnabled(true)
+  t.after(() => library.setReplayGainScanEnabled(true))
+
+  const initialScan = await library.scanFolder(musicDir, undefined, { diagnostics: true })
+  assert.equal(initialScan.added, 1)
+  const unchangedAfterInitialScan = await library.scanFolder(musicDir, undefined, { diagnostics: true })
+  assert.equal(unchangedAfterInitialScan.updated, 0)
+  assert.equal(unchangedAfterInitialScan.diagnostics.metadataParsedFileCount, 0)
+  assert.equal(unchangedAfterInitialScan.diagnostics.skippedKnownFileCount, 1)
+
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    directDb.prepare(`
+      UPDATE tracks
+      SET replaygain_track_gain_scanned = 0,
+          replaygain_album_gain_scanned = 0
+      WHERE path = ?
+    `).run(trackPath)
+  })
+  const replayGainRetry = await library.scanFolder(musicDir, undefined, { diagnostics: true })
+  assert.equal(replayGainRetry.updated, 1)
+  assert.equal(replayGainRetry.diagnostics.metadataParsedFileCount, 1)
+  assert.equal(replayGainRetry.diagnostics.reparseReasonCounts.replaygain_track_missing, 1)
+  assert.equal(replayGainRetry.diagnostics.reparseReasonCounts.replaygain_album_missing, 1)
+  const replayGainAbsenceRecorded = await library.scanFolder(musicDir, undefined, { diagnostics: true })
+  assert.equal(replayGainAbsenceRecorded.updated, 0)
+  assert.equal(replayGainAbsenceRecorded.diagnostics.metadataParsedFileCount, 0)
+
+  library.setReplayGainScanEnabled(false)
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    directDb.prepare('UPDATE tracks SET file_created_at = NULL, file_created_at_scanned = 0 WHERE path = ?').run(trackPath)
+  })
+  const creationTimeRetry = await library.scanFolder(musicDir, undefined, { diagnostics: true })
+  assert.equal(creationTimeRetry.updated, 1)
+  assert.equal(creationTimeRetry.diagnostics.reparseReasonCounts.file_created_at_missing, 1)
+
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    directDb.prepare('UPDATE tracks SET file_created_at = NULL, file_created_at_scanned = 1 WHERE path = ?').run(trackPath)
+  })
+  const unavailableCreationTimeRecorded = await library.scanFolder(musicDir, undefined, { diagnostics: true })
+  assert.equal(unavailableCreationTimeRecorded.updated, 0)
+  assert.equal(unavailableCreationTimeRecorded.diagnostics.metadataParsedFileCount, 0)
+
+  const currentStat = await stat(trackPath)
+  await utimes(trackPath, currentStat.atime, new Date(Date.now() + 5_000))
+  const changedFileScan = await library.scanFolder(musicDir, undefined, { diagnostics: true })
+  assert.equal(changedFileScan.updated, 1)
+  assert.equal(changedFileScan.diagnostics.reparseReasonCounts.file_modified, 1)
+  assert.equal(changedFileScan.diagnostics.metadataTimingByExtension['.wav']?.count, 1)
+})
+
+test('completed legacy backfills migrate null optional metadata to checked state', async (t) => {
+  const userDataDir = await setupEmptyLibrary(t)
+  const musicDir = join(userDataDir, 'legacy-checked-metadata')
+  const trackPath = join(musicDir, 'track.wav')
+  await mkdir(musicDir)
+  await writeTaggedWavFixture(trackPath, 'Legacy Title', 'Legacy Artist')
+
+  library.setReplayGainScanEnabled(true)
+  const initialScan = await library.scanFolder(musicDir)
+  assert.equal(initialScan.added, 1)
+
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    directDb.prepare(`
+      UPDATE tracks
+      SET replaygain_track_gain_db = NULL,
+          replaygain_album_gain_db = NULL,
+          replaygain_track_gain_scanned = 0,
+          replaygain_album_gain_scanned = 0,
+          file_created_at = NULL,
+          file_created_at_scanned = 0
+      WHERE path = ?
+    `).run(trackPath)
+    const upsertMeta = directDb.prepare(`
+      INSERT OR REPLACE INTO app_meta (key, value, updated_at)
+      VALUES (?, '1', 1)
+    `)
+    upsertMeta.run('replaygain_backfill_v3_done')
+    upsertMeta.run('file_created_at_backfill_v1_done')
+  })
+
+  library.closeDatabase()
+  await library.initDatabase()
+  const migratedScan = await library.scanFolder(musicDir, undefined, { diagnostics: true })
+  assert.equal(migratedScan.updated, 0)
+  assert.equal(migratedScan.diagnostics.metadataParsedFileCount, 0)
+  assert.equal(migratedScan.diagnostics.skippedKnownFileCount, 1)
+})
+
+test('mapped folder removal diagnostics checkpoint large synchronous deletes without deleting files', async (t) => {
+  const userDataDir = await setupEmptyLibrary(t)
+  const musicDir = join(userDataDir, 'removal-diagnostics')
+  const markerPath = join(musicDir, 'keep-me.txt')
+  await mkdir(musicDir)
+  await writeFile(markerPath, 'still on disk', 'utf8')
+  const folder = await library.addLibraryFolder(musicDir)
+  assert.ok(folder)
+
+  const trackCount = 12_000
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    const insert = directDb.prepare(`
+      INSERT INTO tracks (path, title, artist, album, duration, format, added_at, modified_at)
+      VALUES (?, ?, 'Removal Artist', 'Removal Album', 180, 'flac', 1, 1)
+    `)
+    directDb.prepare('BEGIN').run()
+    try {
+      for (let index = 0; index < trackCount; index += 1) {
+        insert.run(join(musicDir, `track-${index}.flac`), `Track ${index}`)
+      }
+      directDb.prepare('COMMIT').run()
+    } catch (error) {
+      directDb.prepare('ROLLBACK').run()
+      throw error
+    }
+  })
+
+  const checkpoints: library.LibraryFolderRemovalCheckpoint[] = []
+  const diagnostics = await library.removeLibraryFolder(musicDir, {
+    onCheckpoint: (checkpoint) => checkpoints.push(checkpoint)
+  })
+
+  assert.equal(diagnostics.rowsInspected, trackCount)
+  assert.equal(diagnostics.rowsMatched, trackCount)
+  assert.equal(checkpoints[0]?.phase, 'matching_finished')
+  assert.equal(checkpoints.at(-1)?.phase, 'deleting')
+  assert.equal(checkpoints.at(-1)?.deletedCount, trackCount)
+  assert.equal(checkpoints.length <= 21, true)
+  const deletionCounts = checkpoints
+    .filter((checkpoint) => checkpoint.phase === 'deleting')
+    .map((checkpoint) => checkpoint.deletedCount)
+  assert.deepEqual(deletionCounts, [...deletionCounts].sort((left, right) => left - right))
+  assert.deepEqual(diagnostics.lastCompletedCheckpoint, checkpoints.at(-1))
+  assert.equal(diagnostics.triggerDatabaseMs >= diagnostics.deletionMs, true)
+  assert.equal(library.getTrackCount(), 0)
+  assert.equal(library.getLibraryFolders().length, 0)
+  assert.equal(await readFile(markerPath, 'utf8'), 'still on disk')
+})
+
+test('mapped folder removal rolls back every batch when a later delete fails', async (t) => {
+  const userDataDir = await setupEmptyLibrary(t)
+  const musicDir = join(userDataDir, 'removal-rollback')
+  await mkdir(musicDir)
+  const folder = await library.addLibraryFolder(musicDir)
+  assert.ok(folder)
+
+  const trackCount = 1_050
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    const insert = directDb.prepare(`
+      INSERT INTO tracks (path, title, artist, album, duration, format, added_at, modified_at)
+      VALUES (?, ?, 'Rollback Artist', 'Rollback Album', 180, 'flac', 1, 1)
+    `)
+    directDb.prepare('BEGIN').run()
+    try {
+      for (let index = 0; index < trackCount; index += 1) {
+        insert.run(join(musicDir, `track-${index}.flac`), `Track ${index}`)
+      }
+      directDb.prepare('COMMIT').run()
+    } catch (error) {
+      directDb.prepare('ROLLBACK').run()
+      throw error
+    }
+    directDb.prepare(`
+      CREATE TRIGGER abort_test_folder_removal
+      BEFORE DELETE ON tracks
+      FOR EACH ROW
+      WHEN OLD.title = 'Track 1000'
+      BEGIN
+        SELECT RAISE(ABORT, 'test removal blocked');
+      END;
+    `).run()
+  })
+
+  await assert.rejects(
+    library.removeLibraryFolder(musicDir),
+    /test removal blocked/
+  )
+  assert.equal(library.getTrackCount(), trackCount)
+  assert.equal(library.getLibraryFolders().length, 1)
 })
 
 test('local scan uses same-folder cover image when embedded artwork is missing', async (t) => {
@@ -1487,15 +2110,20 @@ test('local scan uses same-folder cover image when embedded artwork is missing',
   await writeTaggedWavFixture(trackPath, 'Sidecar Title', 'Sidecar Artist')
   await writeFile(coverPath, TINY_PNG_FIXTURE)
 
-  const scan = await library.scanFolder(musicDir)
+  const scan = await library.scanFolder(musicDir, undefined, { diagnostics: true })
   assert.equal(scan.added, 1)
   assert.equal(scan.updated, 0)
   assert.equal(scan.errors, 0)
+  assert.equal(scan.diagnostics.cumulativeArtworkLookupMs > 0, true)
 
   const artworkHash = library.getTrackByPath(trackPath)?.artwork_hash
   assert.ok(artworkHash)
   assert.equal(artworkHash.endsWith('.png'), true)
   assert.deepEqual(await readFile(library.getArtworkPath(artworkHash)), TINY_PNG_FIXTURE)
+
+  const forceScan = await library.scanFolder(musicDir, undefined, { mode: 'force', diagnostics: true })
+  assert.equal(forceScan.updated, 1)
+  assert.equal(forceScan.diagnostics.cumulativeArtworkLookupMs > 0, true)
 })
 
 test('local scan finds folder artwork names case-insensitively', async (t) => {
@@ -1520,7 +2148,7 @@ test('local scan finds folder artwork names case-insensitively', async (t) => {
   assert.deepEqual(await readFile(library.getArtworkPath(artworkHash)), TINY_PNG_FIXTURE)
 })
 
-test('incremental local scan backfills sidecar artwork for unchanged tracks', async (t) => {
+test('incremental local scan backfills new sidecar artwork without probing replacements', async (t) => {
   const dir = await setupEmptyLibrary(t)
   library.setReplayGainScanEnabled(false)
   t.after(() => {
@@ -1538,16 +2166,29 @@ test('incremental local scan backfills sidecar artwork for unchanged tracks', as
   assert.equal(initialScan.errors, 0)
   assert.equal(library.getTrackByPath(trackPath)?.artwork_hash, null)
 
-  await writeFile(join(musicDir, 'cover.png'), TINY_PNG_FIXTURE)
+  const coverPath = join(musicDir, 'cover.png')
+  await writeFile(coverPath, TINY_PNG_FIXTURE)
 
-  const incrementalScan = await library.scanFolder(musicDir, undefined, { mode: 'incremental' })
+  const incrementalScan = await library.scanFolder(musicDir, undefined, { mode: 'incremental', diagnostics: true })
   assert.equal(incrementalScan.added, 0)
   assert.equal(incrementalScan.updated, 1)
   assert.equal(incrementalScan.errors, 0)
+  assert.equal(incrementalScan.diagnostics.reparseReasonCounts.folder_artwork_backfill, 1)
 
   const artworkHash = library.getTrackByPath(trackPath)?.artwork_hash
   assert.ok(artworkHash)
   assert.deepEqual(await readFile(library.getArtworkPath(artworkHash)), TINY_PNG_FIXTURE)
+
+  const coverStat = await stat(coverPath)
+  await utimes(coverPath, coverStat.atime, new Date(Date.now() + 5_000))
+  const changedArtworkScan = await library.scanFolder(musicDir, undefined, { mode: 'incremental', diagnostics: true })
+  assert.equal(changedArtworkScan.updated, 0)
+  assert.equal(changedArtworkScan.diagnostics.metadataParsedFileCount, 0)
+  assert.equal(changedArtworkScan.diagnostics.cumulativeArtworkLookupMs, 0)
+
+  const changedArtworkForceScan = await library.scanFolder(musicDir, undefined, { mode: 'force', diagnostics: true })
+  assert.equal(changedArtworkForceScan.updated, 1)
+  assert.equal(changedArtworkForceScan.diagnostics.reparseReasonCounts.force_mode, 1)
 })
 
 test('playlist import matches percent-encoded local M3U paths', async (t) => {
@@ -1908,6 +2549,78 @@ test('playlist reorder preserves missing track entries after cleanup', async (t)
   const reorderedEntries = library.getPlaylistTrackEntries(playlist.id)
   assert.deepEqual(reorderedEntries.map((entry) => entry.track_path), [availableTrackPath, missingTrackPath])
   assert.deepEqual(reorderedEntries.map((entry) => entry.missing), [false, true])
+})
+
+test('playlist drag insertion is atomic, ordered, clamped, and reports duplicate skips', async (t) => {
+  await setupEmptyLibrary(t)
+  const playlist = await library.createPlaylist('Precise insertion')
+
+  await library.addToPlaylist(playlist.id, ['/music/a.flac', '/music/d.flac'])
+  const middle = await library.insertTracksIntoPlaylist(
+    playlist.id,
+    ['/music/b.flac', '/music/b.flac', '/music/c.flac', '/music/a.flac'],
+    1
+  )
+  assert.deepEqual(middle.insertedTrackPaths, ['/music/b.flac', '/music/c.flac'])
+  assert.equal(middle.insertedEntryIds.length, 2)
+  assert.deepEqual(middle.skippedTrackPaths, ['/music/b.flac', '/music/a.flac'])
+  assert.deepEqual(
+    library.getPlaylistTrackEntries(playlist.id).map((entry) => entry.track_path),
+    ['/music/a.flac', '/music/b.flac', '/music/c.flac', '/music/d.flac']
+  )
+
+  await library.insertTracksIntoPlaylist(playlist.id, ['/music/start.flac'], -50)
+  await library.insertTracksIntoPlaylist(playlist.id, ['/music/end.flac'], 50_000)
+  assert.deepEqual(
+    library.getPlaylistTrackEntries(playlist.id).map((entry) => entry.track_path),
+    ['/music/start.flac', '/music/a.flac', '/music/b.flac', '/music/c.flac', '/music/d.flac', '/music/end.flac']
+  )
+  assert.deepEqual(await library.insertTracksIntoPlaylist(playlist.id, ['/music/a.flac'], 'end'), {
+    insertedEntryIds: [],
+    insertedTrackPaths: [],
+    skippedTrackPaths: ['/music/a.flac']
+  })
+  await assert.rejects(
+    () => library.insertTracksIntoPlaylist(999_999, ['/music/nope.flac'], 0),
+    /Playlist not found/
+  )
+})
+
+test('playlist drag move preserves batch order and adjusts positions after removal', async (t) => {
+  await setupEmptyLibrary(t)
+  const playlist = await library.createPlaylist('Direct moves')
+  await library.addToPlaylist(playlist.id, [
+    '/music/a.flac',
+    '/music/b.flac',
+    '/music/c.flac',
+    '/music/d.flac',
+    '/music/e.flac'
+  ])
+  const entries = library.getPlaylistTrackEntries(playlist.id)
+
+  assert.deepEqual(await library.movePlaylistEntries(playlist.id, [entries[1].id, entries[2].id], 5), { changed: true })
+  assert.deepEqual(
+    library.getPlaylistTrackEntries(playlist.id).map((entry) => entry.track_path),
+    ['/music/a.flac', '/music/d.flac', '/music/e.flac', '/music/b.flac', '/music/c.flac']
+  )
+
+  const movedEntries = library.getPlaylistTrackEntries(playlist.id)
+  assert.deepEqual(await library.movePlaylistEntries(playlist.id, [movedEntries[3].id, movedEntries[4].id], 5), { changed: false })
+  await assert.rejects(
+    () => library.movePlaylistEntries(playlist.id, [movedEntries[0].id, movedEntries[0].id], 2),
+    /does not match current playlist content/
+  )
+  const otherPlaylist = await library.createPlaylist('Other playlist')
+  await library.addToPlaylist(otherPlaylist.id, ['/music/other.flac'])
+  const foreignEntry = library.getPlaylistTrackEntries(otherPlaylist.id)[0]
+  await assert.rejects(
+    () => library.movePlaylistEntries(playlist.id, [foreignEntry.id], 0),
+    /does not match current playlist content/
+  )
+  await assert.rejects(
+    () => library.movePlaylistEntries(999_999, [movedEntries[0].id], 0),
+    /Playlist not found/
+  )
 })
 
 test('playlist cleanup reassociates a renamed track by captured metadata', async (t) => {
@@ -2541,6 +3254,169 @@ test('dynamic playlists evaluate metadata rules without stored membership', asyn
   assert.equal(summary.missing_track_count, 0)
 })
 
+async function setupDynamicPlaylistTextLibrary(t: test.TestContext, tracks: library.SubsonicTrackUpsertInput[]) {
+  await setupEmptyLibrary(t)
+  const source = await library.createSubsonicSource({
+    name: 'Unicode Source',
+    base_url: 'https://music.example.test',
+    username: 'tester',
+    secret_encrypted: 'secret',
+    enabled: 1,
+    last_status: 'ok'
+  })
+  await library.upsertSubsonicTracks(source.id, tracks)
+  return source.id
+}
+
+test('dynamic playlist text rules match Unicode while preserving accent distinctions', async (t) => {
+  const cases: Array<{ field: DynamicPlaylistTextField; stored: string; query: string; fragment: string; other: string }> = [
+    { field: 'title', stored: 'МОСКВА', query: 'москва', fragment: 'СКВ', other: 'МОСКОВСКИЙ' },
+    { field: 'title', stored: 'москва', query: 'МОСКВА', fragment: 'СКВ', other: 'МОСКОВСКИЙ' },
+    { field: 'artist', stored: 'ΑΘΗΝΑ', query: 'αθηνα', fragment: 'ΘΗΝ', other: 'ΟΛΥΜΠΙΑ' },
+    { field: 'album', stored: 'ΟΣ', query: 'οσ', fragment: 'Σ', other: 'Ο' },
+    { field: 'artist', stored: 'BJÖRK', query: 'Björk', fragment: 'JÖ', other: 'Bjork' },
+    { field: 'album_artist', stored: 'ガール', query: 'カ\u3099ール', fragment: 'カ\u3099', other: 'カール' },
+    { field: 'title', stored: 'Cafe\u0301', query: 'CAFÉ', fragment: 'FÉ', other: 'Cafe' },
+    { field: 'genre', stored: '서울', query: '\u1109\u1165\u110b\u116e\u11af', fragment: '\u1109\u1165', other: '부산' },
+    { field: 'album', stored: '東京', query: '東京', fragment: '京', other: '東亰' },
+    { field: 'artist', stored: 'مرحبا', query: 'مرحبا', fragment: 'رحب', other: 'سلام' },
+    { field: 'format', stored: 'FLAC', query: 'flac', fragment: 'LA', other: 'WAV' },
+    { field: 'musical_key', stored: 'C♯MINOR', query: 'c♯minor', fragment: '♯MIN', other: 'C♭MINOR' },
+    { field: 'title', stored: 'ＡＳＴＲＡ', query: 'ａｓｔｒａ', fragment: 'ＳＴ', other: 'ASTRA' }
+  ]
+
+  for (const sample of cases) {
+    await t.test(`${sample.field}: ${sample.stored} / ${sample.query}`, async (t) => {
+      const matchPath = 'subsonic://unicode/match'
+      const otherPath = 'subsonic://unicode/other'
+      await setupDynamicPlaylistTextLibrary(t, [
+        createRemoteTrack({ path: matchPath, title: 'Match', artist: 'Artist', album: 'Album', [sample.field]: sample.stored }),
+        createRemoteTrack({ path: otherPath, title: 'Other', artist: 'Artist', album: 'Album', [sample.field]: sample.other })
+      ])
+
+      const assertMatches = (operator: DynamicPlaylistTextOperator, value: string, expectedPaths: string[]) => {
+        const preview = library.previewDynamicPlaylist({
+          ...createDefaultDynamicPlaylistRules(),
+          version: 1,
+          conditions: [{ kind: 'text', field: sample.field, operator, value }]
+        })
+        assert.deepEqual(preview.tracks.map((track) => track.path).sort(), [...expectedPaths].sort(), `${operator}: ${value}`)
+        assert.equal(preview.track_count, expectedPaths.length)
+      }
+
+      for (const value of [sample.stored, sample.query]) {
+        assertMatches('is', value, [matchPath])
+        assertMatches('contains', value, [matchPath])
+        assertMatches('is_not', value, [otherPath])
+      }
+      assertMatches('contains', sample.fragment, [matchPath])
+      assertMatches('is', sample.fragment, [])
+      assertMatches('is_not', sample.fragment, [matchPath, otherPath])
+      assertMatches('is', sample.other, [otherPath])
+      assertMatches('contains', 'unrelated value', [])
+      assert.equal(library.getTrackByPath(matchPath)?.[sample.field], sample.stored)
+    })
+  }
+})
+
+test('dynamic playlist Unicode matching uses overrides and preserves null and wildcard behavior', async (t) => {
+  const matchPath = 'subsonic://unicode/match'
+  const otherPath = 'subsonic://unicode/other'
+  await setupDynamicPlaylistTextLibrary(t, [
+    createRemoteTrack({
+      path: matchPath, title: 'Base Title', artist: 'Base Artist', album: 'Base Album',
+      album_artist: 'Base Album Artist', genre: 'Base Genre', musical_key: 'C♯MINOR'
+    }),
+    createRemoteTrack({ path: otherPath, title: 'Other', artist: 'Other Artist', album: 'Other Album' })
+  ])
+  await library.restoreTrackOverrides({
+    [matchPath]: {
+      title: 'МОСКВА', artist: 'BJÖRK', album: 'Café', album_artist: 'ガ', genre: 'ΑΘΗΝΑ',
+      year: null, track_number: null, disc_number: null, artwork_hash: null, artwork_cleared: null
+    }
+  })
+
+  const previewPaths = (field: DynamicPlaylistTextField, operator: DynamicPlaylistTextOperator, value: string) => (
+    library.previewDynamicPlaylist({
+      ...createDefaultDynamicPlaylistRules(),
+      version: 1,
+      conditions: [{ kind: 'text', field, operator, value }]
+    }).tracks.map((track) => track.path).sort()
+  )
+  const overrides: Array<{ field: DynamicPlaylistTextField; query: string; base: string }> = [
+    { field: 'title', query: 'москва', base: 'Base Title' },
+    { field: 'artist', query: 'björk', base: 'Base Artist' },
+    { field: 'album', query: 'CAFE\u0301', base: 'Base Album' },
+    { field: 'album_artist', query: 'カ\u3099', base: 'Base Album Artist' },
+    { field: 'genre', query: 'αθηνα', base: 'Base Genre' }
+  ]
+  for (const { field, query, base } of overrides) {
+    assert.deepEqual(previewPaths(field, 'is', query), [matchPath], field)
+    assert.deepEqual(previewPaths(field, 'contains', query), [matchPath], field)
+    assert.deepEqual(previewPaths(field, 'is_not', query), [otherPath], field)
+    assert.deepEqual(previewPaths(field, 'is', base), [], field)
+  }
+  assert.deepEqual(previewPaths('musical_key', 'is', 'c♯minor'), [matchPath])
+  assert.deepEqual(previewPaths('musical_key', 'contains', '♯MIN'), [matchPath])
+  assert.deepEqual(previewPaths('musical_key', 'is_not', 'c♯minor'), [otherPath])
+  for (const field of ['album_artist', 'genre', 'musical_key'] as const) {
+    assert.equal(library.getTrackByPath(otherPath)?.[field], null)
+    assert.deepEqual(previewPaths(field, 'contains', '%'), [matchPath, otherPath], field)
+    assert.deepEqual(previewPaths(field, 'is', '%'), [], field)
+  }
+  assert.deepEqual(previewPaths('title', 'contains', 'МО_КВА'), [matchPath])
+  assert.deepEqual(previewPaths('title', 'contains', 'МО%ВА'), [matchPath])
+  assert.deepEqual(previewPaths('title', 'is', 'МО%ВА'), [])
+})
+
+test('dynamic playlist Unicode previews and saved results agree after filtering, limits, and reopening', async (t) => {
+  const otherPath = 'subsonic://unicode/other'
+  const firstPath = 'subsonic://unicode/first'
+  const secondPath = 'subsonic://unicode/second'
+  const unavailablePath = 'subsonic://unicode/unavailable'
+  const sourceId = await setupDynamicPlaylistTextLibrary(t, [
+    createRemoteTrack({ path: otherPath, title: 'A', artist: 'Bjork', album: 'Album' }),
+    createRemoteTrack({ path: firstPath, title: 'B', artist: 'BJÖRK', album: 'Album' }),
+    createRemoteTrack({ path: secondPath, title: 'C', artist: 'Björk', album: 'Album' }),
+    createRemoteTrack({ path: unavailablePath, title: '0', artist: 'BJÖRK', album: 'Album' })
+  ])
+  assert.equal(await library.markMissingSubsonicTracksUnavailable(sourceId, new Set([otherPath, firstPath, secondPath])), 1)
+
+  const rules: DynamicPlaylistRulesV1 = {
+    version: 1,
+    conditions: [{ kind: 'text', field: 'artist', operator: 'is', value: 'BJO\u0308RK' }],
+    sort: { field: 'title', direction: 'asc' },
+    limit: 1
+  }
+  const playlist = await library.createDynamicPlaylist('音楽', rules)
+  assert.equal(playlist.track_count, 1)
+
+  const assertResults = (expectedRules: DynamicPlaylistRulesV1, expectedPaths: string[]) => {
+    const preview = library.previewDynamicPlaylist(expectedRules)
+    assert.deepEqual(preview.tracks.map((track) => track.path), expectedPaths)
+    assert.equal(preview.track_count, expectedPaths.length)
+    assert.deepEqual(library.getPlaylistTracks(playlist.id).map((track) => track.path), expectedPaths)
+    assert.deepEqual(library.getPlaylistTrackEntries(playlist.id).map((entry) => entry.track_path), expectedPaths)
+    const summary = library.getPlaylists().find((entry) => entry.id === playlist.id)
+    assert.equal(summary?.track_count, expectedPaths.length)
+    assert.equal(summary?.name, '音楽')
+    assert.deepEqual(library.getDynamicPlaylistRules(playlist.id), normalizeDynamicPlaylistRules(expectedRules))
+    assert.equal(library.getTrackByPath(firstPath)?.artist, 'BJÖRK')
+  }
+
+  assertResults(rules, [firstPath])
+  library.closeDatabase()
+  await library.initDatabase()
+  assertResults(rules, [firstPath])
+
+  const expandedRules = { ...rules, limit: 2 }
+  await library.updateDynamicPlaylistRules(playlist.id, expandedRules)
+  assertResults(expandedRules, [firstPath, secondPath])
+  library.closeDatabase()
+  await library.initDatabase()
+  assertResults(expandedRules, [firstPath, secondPath])
+})
+
 test('dynamic playlist filters favorites, play counts, last played, sorting, and limits', async (t) => {
   await setupSeededLibrary(t)
 
@@ -2741,6 +3617,14 @@ test('dynamic playlists reject manual membership edits while normal playlists st
   )
   await assert.rejects(
     () => library.reorderPlaylistEntries(dynamicPlaylist.id, [1]),
+    /Dynamic playlists cannot reorder tracks manually/
+  )
+  await assert.rejects(
+    () => library.insertTracksIntoPlaylist(dynamicPlaylist.id, [trackPath], 0),
+    /Dynamic playlists cannot accept manual tracks/
+  )
+  await assert.rejects(
+    () => library.movePlaylistEntries(dynamicPlaylist.id, [1], 0),
     /Dynamic playlists cannot reorder tracks manually/
   )
 
@@ -3068,6 +3952,8 @@ test('mergeLocalDuplicateTracks preserves duplicate user data on the explicit Ke
     directDb.prepare("INSERT INTO track_loudness (track_path, loudness_lufs, method, analyzed_at) VALUES (?, -14, 'ebur128', 1)").run(removedPath)
     directDb.prepare('INSERT INTO recently_played (track_path, played_at) VALUES (?, 1000)').run(removedPath)
     const removedTrack = directDb.prepare('SELECT id FROM tracks WHERE path = ?').get(removedPath) as { id: number }
+    directDb.prepare('INSERT INTO home_playback_sources (source_key, source_json, track_id, last_played_at) VALUES (?, ?, ?, ?)')
+      .run(`track:${removedTrack.id}`, JSON.stringify({ type: 'track', trackPath: removedPath }), removedTrack.id, 2000)
     directDb.prepare(`
       INSERT INTO listening_sessions (
         generation, session_key, track_id, track_path, title, artist, album,
@@ -3081,6 +3967,7 @@ test('mergeLocalDuplicateTracks preserves duplicate user data on the explicit Ke
   await library.addToPlaylist(playlist.id, [removedPath, keepPath])
 
   assert.deepEqual(await library.mergeLocalDuplicateTracks(keepPath, [removedPath]), [removedPath])
+  assert.deepEqual(library.getHomeDashboard().recent_sources.map((entry) => entry.source), [{ type: 'track', trackPath: keepPath }])
   assert.deepEqual(getStoredTrackPaths(userDataDir), [keepPath])
   const merged = withDirectLibraryDb(userDataDir, (directDb) => ({
     track: directDb.prepare('SELECT id, play_count, last_played_at, added_at FROM tracks WHERE path = ?').get(keepPath) as {
@@ -4400,4 +5287,349 @@ test('an external listen can be recorded without counting as a play', async (t) 
   })
   assert.equal(dashboard.summary.listenedSeconds, 180, 'time still counts')
   assert.equal(dashboard.summary.qualifiedPlays, 0, 'but it is not a play')
+})
+
+test('companion playlist pages use signed cursors, stable order, and no library paths', async (t) => {
+  await setupSeededLibrary(t)
+  const { CompanionApiLibrary } = await import('./companionApiLibrary.ts')
+  const { CompanionApiReferenceSigner } = await import('./companionApiRefs.ts')
+  const signer = new CompanionApiReferenceSigner(Buffer.alloc(32, 7))
+  const api = new CompanionApiLibrary({ getSigner: () => signer,
+    resolveArtworkByHash: async () => null, onLibraryEvent: () => {}, onRendererLibraryMutation: () => {} })
+  // Start at a marker to keep this independent of seed fixture playlists.
+  const marker = await library.createPlaylist('Marker')
+  const normal = await library.createPlaylist('Night drive')
+  await library.addToPlaylist(normal.id, library.getAllTracks().slice(0, 2).map((track) => track.path))
+  const dynamic = await library.createDynamicPlaylist('Fresh finds', createDefaultDynamicPlaylistRules())
+  const last = await library.createPlaylist('Quiet mornings')
+  const first = api.listPlaylists(signer.create('playlist', marker.id), 2)!
+  assert.deepEqual(first.items.map((item) => item.title), ['Night drive', 'Fresh finds'])
+  assert.equal(first.items[0].trackCount, 2)
+  assert.equal(first.items[1].trackCount, null)
+  assert.equal(first.items[1].kind, 'dynamic')
+  assert.equal(first.nextCursor, signer.create('playlist', dynamic.id))
+  assert.equal(JSON.stringify(first).includes('track_path'), false)
+  assert.equal(JSON.stringify(first).includes('/music/'), false)
+  // Removing the cursor's playlist does not invalidate the next page.
+  await library.deletePlaylist(dynamic.id)
+  const second = api.listPlaylists(first.nextCursor, 2)!
+  assert.deepEqual(second.items.map((item) => item.ref), [signer.create('playlist', last.id)])
+  assert.equal(second.nextCursor, null)
+  assert.equal(api.listPlaylists('forged', 2), null)
+  assert.equal(api.listPlaylists(signer.create('track', normal.id), 2), null)
+  assert.throws(() => library.getCompanionApiPlaylistPage(0, 500), /Invalid/)
+})
+
+test('nested dynamic groups keep favorites outside artist ORs through preview, storage, sync, and reopening', async (t) => {
+  const sourceId = await setupDynamicPlaylistTextLibrary(t, [
+    createRemoteTrack({ album: 'Group test', path: 'subsonic://groups/a', title: 'A favorite', artist: 'Artist A' }),
+    createRemoteTrack({ album: 'Group test', path: 'subsonic://groups/b', title: 'B favorite', artist: 'Artist B' }),
+    createRemoteTrack({ album: 'Group test', path: 'subsonic://groups/c', title: 'C favorite', artist: 'Artist C' }),
+    createRemoteTrack({ album: 'Group test', path: 'subsonic://groups/a-no', title: 'A plain', artist: 'Artist A' }),
+    createRemoteTrack({ album: 'Group test', path: 'subsonic://groups/b-no', title: 'B plain', artist: 'Artist B' }),
+    createRemoteTrack({ album: 'Group test', path: 'subsonic://groups/missing', title: '0 missing', artist: 'Artist B' })
+  ])
+  for (const key of ['a', 'b', 'c', 'missing']) await library.addFavorite(`subsonic://groups/${key}`)
+  await library.markMissingSubsonicTracksUnavailable(sourceId, new Set(['a', 'b', 'c', 'a-no', 'b-no'].map((key) => `subsonic://groups/${key}`)))
+  const artist = (value: string): DynamicPlaylistCondition => ({ kind: 'text', field: 'artist', operator: 'is', value })
+  const rules: DynamicPlaylistRulesV2 = {
+    ...createDefaultDynamicPlaylistRules(),
+    filter: { kind: 'group', match: 'all', children: [
+      { kind: 'exact', field: 'favorite', operator: 'is', value: true },
+      { kind: 'group', match: 'any', children: [artist('Artist A'), artist('Artist B'), artist('Artist A')] }
+    ] }
+  }
+  const expected = ['subsonic://groups/a', 'subsonic://groups/b']
+  const playlist = await library.createDynamicPlaylist('Favorite artists', rules)
+  assert.deepEqual(library.previewDynamicPlaylist(rules).tracks.map((track) => track.path), expected)
+  assert.deepEqual(library.getPlaylistTracks(playlist.id).map((track) => track.path), expected)
+  assert.deepEqual(library.getDynamicPlaylistRules(playlist.id), rules)
+  const limited = { ...rules, sort: { field: 'title' as const, direction: 'desc' as const }, limit: 1 }
+  assert.deepEqual(library.previewDynamicPlaylist(limited).tracks.map((track) => track.path), [expected[1]])
+  const rootAny: DynamicPlaylistRulesV2 = { ...rules, filter: { kind: 'group', match: 'any', children: [artist('Artist A'), artist('Artist B')] } }
+  assert.equal(library.previewDynamicPlaylist(rootAny).track_count, 4)
+
+  const result = library.replaceSyncedPlaylist({
+    syncUid: 'grouped-mobile', name: 'From mobile', kind: 'dynamic',
+    dynamicRules: serializeDynamicPlaylistRules(rules), createdAt: 1000, updatedAt: 2000, entries: null
+  }, library.createTrackMetadataMatcher())
+  assert.equal(result.status, 'created')
+  const synced = library.getSyncPlaylistsState().playlists.find((entry) => entry.syncUid === 'grouped-mobile')!
+  assert.deepEqual(normalizeDynamicPlaylistRules(JSON.parse(synced.dynamicRules!)), rules)
+  const syncedId = library.getPlaylists().find((entry) => entry.name === 'From mobile')!.id
+  assert.deepEqual(library.getPlaylistTracks(syncedId).map((track) => track.path), expected)
+  library.closeDatabase()
+  await library.initDatabase()
+  assert.deepEqual(library.getDynamicPlaylistRules(playlist.id), rules)
+  assert.deepEqual(library.getPlaylistTracks(playlist.id).map((track) => track.path), expected)
+  await library.removeFavorite(expected[1])
+  assert.deepEqual(library.getPlaylistTracks(playlist.id).map((track) => track.path), [expected[0]])
+})
+
+test('nested rating and favorite branches collect their joins without excluding other OR branches', async (t) => {
+  await setupSeededLibrary(t)
+  await library.setTrackRatingForPaths(['subsonic://1/teen-1'], 5)
+  await library.addFavorite('subsonic://1/split-a')
+  const rules: DynamicPlaylistRulesV2 = {
+    ...createDefaultDynamicPlaylistRules(),
+    filter: { kind: 'group', match: 'any', children: [
+      { kind: 'group', match: 'all', children: [
+        { kind: 'exact', field: 'rated', operator: 'is', value: true },
+        { kind: 'numeric', field: 'rating', operator: 'gte', value: 4 }
+      ] },
+      { kind: 'group', match: 'all', children: [{ kind: 'exact', field: 'favorite', operator: 'is', value: true }] }
+    ] },
+    sort: { field: 'rating', direction: 'desc' }
+  }
+  assert.deepEqual(library.previewDynamicPlaylist(rules).tracks.map((track) => track.path), ['subsonic://1/teen-1', 'subsonic://1/split-a'])
+})
+
+test('invalid saved dynamic rules remain listed with zero tracks and throw when opened', async (t) => {
+  const dir = await setupSeededLibrary(t)
+  const playlist = await library.createDynamicPlaylist('Broken rules', createDefaultDynamicPlaylistRules())
+  const other = await library.createPlaylist('Still visible')
+  const directDb = new TestSqliteDatabase(join(dir, 'library.db'))
+  directDb.prepare('UPDATE playlists SET dynamic_rules_json = ? WHERE id = ?').run('{"version":2,"filter":{"kind":"group","match":"xor","children":[]}}', playlist.id)
+  directDb.close()
+  const summaries = library.getPlaylists()
+  assert.equal(summaries.find((entry) => entry.id === playlist.id)?.track_count, 0)
+  assert.ok(summaries.some((entry) => entry.id === other.id))
+  assert.throws(() => library.getPlaylistTracks(playlist.id), /Group match/)
+  assert.throws(() => library.getDynamicPlaylistRules(playlist.id), /Group match/)
+})
+
+test('dynamic sync preflight reads grouped playlists without assigning missing sync identities', async (t) => {
+  const dir = await setupSeededLibrary(t)
+  const rules: DynamicPlaylistRulesV2 = {
+    ...createDefaultDynamicPlaylistRules(),
+    filter: { kind: 'group', match: 'any', children: [{ kind: 'exact', field: 'favorite', operator: 'is', value: true }] }
+  }
+  const playlist = await library.createDynamicPlaylist('Not synced yet', rules)
+  const directDb = new TestSqliteDatabase(join(dir, 'library.db'))
+  try {
+    directDb.prepare('UPDATE playlists SET sync_uid = NULL WHERE id = ?').run(playlist.id)
+    assert.deepEqual(library.getDynamicPlaylistSyncRules(), [{ kind: 'dynamic', dynamicRules: serializeDynamicPlaylistRules(rules) }])
+    assert.deepEqual(directDb.prepare('SELECT sync_uid FROM playlists WHERE id = ?').get(playlist.id), { sync_uid: null })
+  } finally { directDb.close() }
+})
+
+// Jump back in remembers the authored playback source, independently of track recents.
+async function checkpointHomeSource(
+  trackPath: string,
+  sourceContext: import('../../types/playbackSource.ts').PlaybackSourceContext | null | undefined,
+  observedAt: number,
+  options: { sessionKey?: string; seconds?: number; duration?: number; completed?: boolean; sourcePlaylistId?: number } = {}
+) {
+  const seconds = options.seconds ?? 16
+  return library.checkpointListeningSession({
+    generation: library.getListeningHistoryStatus().generation,
+    sessionKey: options.sessionKey ?? `home:${observedAt}`,
+    segmentKey: 'segment', trackPath, sourceContext,
+    sourcePlaylistId: options.sourcePlaylistId ?? (sourceContext?.type === 'playlist' ? sourceContext.playlistId : null),
+    sessionStartedAt: observedAt - seconds * 1000,
+    segmentStartedAt: observedAt - seconds * 1000,
+    observedAt, sessionListenedSeconds: seconds, segmentListenedSeconds: seconds,
+    trackDurationSeconds: options.duration ?? 180, qualificationEligible: true,
+    finalizeSession: options.completed, completedNaturally: options.completed
+  })
+}
+
+test('Home reuses release summaries but reflects favorites, metadata, plays, availability and rollbacks', async (t) => {
+  const dir = await setupSeededLibrary(t)
+  const path = 'subsonic://1/teen-1'
+  // Virtual metadata editing is restricted to local-library tracks.
+  withDirectLibraryDb(dir, (db) => db.prepare("UPDATE tracks SET source_type = 'local' WHERE path = ?").run(path))
+  const builds: library.LibraryQueryDiagnostics[] = []
+  library.setLibraryQueryDiagnosticsReporter((entry) => {
+    if (entry.name === 'buildHomeReleaseSummaries') builds.push(entry)
+  })
+  t.after(() => library.setLibraryQueryDiagnosticsReporter(null))
+  const first = library.getHomeDashboard()
+  const teen = () => library.getHomeDashboard().newly_added_releases.find((release) => release.album === 'Teen Week')!
+  assert.equal(teen().favorite_track_count, 0)
+  library.getHomeDashboard({ rotation: 1, activeSource: { type: 'track', trackPath: path } })
+  await library.setAppMeta('home_test_unrelated', '1')
+  library.getHomeDashboard()
+  assert.equal(builds.length, 1, 'rotation, source, and unrelated settings reuse the library summary')
+  first.newly_added_releases[0].album = 'Mutated caller copy'
+  assert.ok(library.getHomeDashboard().newly_added_releases.every((release) => release.album !== 'Mutated caller copy'))
+
+  await library.addFavorite(path)
+  assert.equal(teen().favorite_track_count, 1)
+  await library.removeFavorite(path)
+  assert.equal(teen().favorite_track_count, 0)
+  await checkpointHomeSource(path, { type: 'track', trackPath: path }, 100_000)
+  assert.equal(teen().play_count, 1)
+  assert.equal(teen().last_played_at, 100_000)
+  const edited = await library.saveMetadataEdits({ mode: 'virtual', trackPaths: [path], changes: { album: 'Home edited release' } })
+  assert.equal(edited.succeeded, 1, JSON.stringify(edited.failures))
+  assert.ok(library.getHomeDashboard().newly_added_releases.some((release) => release.album === 'Home edited release'))
+  await library.setTrackAvailability(path, false, 'test')
+  assert.ok(library.getHomeDashboard().newly_added_releases.every((release) => release.album !== 'Home edited release'))
+  library.beginLibraryWriteTransaction()
+  await library.setTrackAvailability(path, true, null, { persist: false })
+  assert.ok(library.getHomeDashboard().newly_added_releases.some((release) => release.album === 'Home edited release'))
+  library.rollbackLibraryWriteTransaction()
+  assert.ok(library.getHomeDashboard().newly_added_releases.every((release) => release.album !== 'Home edited release'))
+  withDirectLibraryDb(dir, (db) => db.prepare('UPDATE tracks SET is_available = 1 WHERE path = ?').run(path))
+  assert.ok(library.getHomeDashboard().newly_added_releases.some((release) => release.album === 'Home edited release'),
+    'commits from other database connections also invalidate summaries')
+})
+
+test('Home playlist cards summarize normal, Favorites and limited dynamic collections without hydration', async (t) => {
+  const dir = await setupSeededLibrary(t)
+  const a = 'subsonic://1/split-a'
+  const b = 'subsonic://1/split-b'
+  const playlist = await library.createPlaylist('Card summary')
+  await library.addToPlaylist(playlist.id, [a, b])
+  await library.addFavorite(a)
+  await library.addFavorite(b)
+  const dynamic = await library.createDynamicPlaylist('Limited', { ...createDefaultDynamicPlaylistRules(), limit: 1 })
+  const dynamicTracks = library.getPlaylistTracks(dynamic.id)
+  const queried: string[] = []
+  library.setLibraryQueryDiagnosticsReporter((entry) => queried.push(entry.name))
+  t.after(() => library.setLibraryQueryDiagnosticsReporter(null))
+  await library.setAppMeta('home_test_invalidate_identity_snapshot', '1')
+  const card = (id: number) => library.getHomeDashboard({ activeSource: { type: 'playlist', playlistId: id } }).active_source
+  assert.equal(card(playlist.id)?.detail, '2 tracks')
+  assert.equal(card(playlist.id)?.artwork_hash, 'shared-cover')
+  assert.equal(card(-1)?.detail, '2 tracks')
+  assert.equal(card(dynamic.id)?.detail, '1 track')
+  assert.equal(card(dynamic.id)?.artwork_hash, dynamicTracks[0].artwork_hash)
+  assert.equal(card(dynamic.id)?.subtitle, 'Dynamic playlist')
+  assert.ok(!queried.includes('getDynamicPlaylistTracks'), 'cards must not hydrate dynamic collections')
+  assert.ok(!queried.includes('rebuildTrackSnapshot'), 'cards must not require track identity hydration')
+  await library.setTrackAvailability(a, false, 'test')
+  assert.equal(card(playlist.id)?.detail, '2 tracks', 'normal counts include unavailable entries while any remain playable')
+  await library.setTrackAvailability(b, false, 'test')
+  assert.equal(card(playlist.id), null)
+  assert.equal(card(-1), null)
+  await library.setTrackAvailability(a, true, null)
+  await library.renamePlaylist(playlist.id, 'Renamed card')
+  assert.equal(card(playlist.id)?.title, 'Renamed card')
+  withDirectLibraryDb(dir, (db) => {
+    db.prepare('UPDATE playlists SET custom_cover_hash = ? WHERE id = ?').run('custom-cover', playlist.id)
+    db.prepare('UPDATE playlists SET dynamic_rules_json = ? WHERE id = ?').run('{broken', dynamic.id)
+  })
+  assert.equal(card(playlist.id)?.artwork_hash, 'custom-cover')
+  assert.equal(card(dynamic.id), null)
+  await library.deletePlaylist(playlist.id)
+  assert.equal(card(playlist.id), null)
+})
+
+test('Jump back in records only the playlist for its songs and retains independently chosen sources', async (t) => {
+  await setupSeededLibrary(t)
+  const a = 'subsonic://1/split-a'
+  const b = 'subsonic://1/split-b'
+  const playlist = await library.createPlaylist('Sheeno Mirin')
+  await library.addToPlaylist(playlist.id, [a, b])
+  const source = { type: 'playlist', playlistId: playlist.id } as const
+  await checkpointHomeSource(a, source, 100_000)
+  await checkpointHomeSource(b, source, 200_000)
+  let home = library.getHomeDashboard()
+  assert.deepEqual(home.recent_sources.map((entry) => entry.title), ['Sheeno Mirin'])
+  assert.equal(library.getRecentlyPlayed(10).length, 2)
+  assert.equal(home.recent_releases.length > 0, true)
+  await checkpointHomeSource(a, { type: 'track', trackPath: a }, 300_000)
+  const track = library.getTrackByPath(a)!
+  await checkpointHomeSource(a, { type: 'album', album: track.album, albumArtist: track.artist, identityKey: track.album_identity_key }, 400_000)
+  await checkpointHomeSource(b, source, 500_000)
+  home = library.getHomeDashboard({ activeSource: source })
+  assert.deepEqual(home.recent_sources.map((entry) => entry.source.type), ['playlist', 'album', 'track'])
+  assert.equal(home.active_source?.title, 'Sheeno Mirin')
+  assert.equal(home.recent_sources[2]?.last_played_at, 300_000)
+  await checkpointHomeSource(a, null, 600_000)
+  await checkpointHomeSource(a, undefined, 700_000)
+  assert.deepEqual(library.getHomeDashboard().recent_sources, home.recent_sources, 'unattributed continuation and old clients cannot manufacture sources')
+  await library.renamePlaylist(playlist.id, 'Renamed')
+  assert.equal(library.getHomeDashboard().recent_sources[0]?.title, 'Renamed')
+  await library.deletePlaylist(playlist.id)
+  await checkpointHomeSource(a, source, 800_000)
+  assert.deepEqual(library.getHomeDashboard().recent_sources.map((entry) => entry.source.type), ['album', 'track'])
+})
+
+test('Jump back in supports artist, genre, years, Favorites, and dynamic playlists', async (t) => {
+  const dir = await setupSeededLibrary(t)
+  const path = 'subsonic://1/split-a'
+  withDirectLibraryDb(dir, (db) => db.prepare("UPDATE tracks SET genre = 'Electronic', genre_names_json = '[\"Electronic\"]' WHERE path = ?").run(path))
+  // Reopen to rebuild metadata-derived indexes after the direct fixture edit.
+  library.closeDatabase()
+  await library.initDatabase()
+  await library.addFavorite(path)
+  const dynamic = await library.createDynamicPlaylist('All tracks', createDefaultDynamicPlaylistRules())
+  const sources: import('../../types/playbackSource.ts').PlaybackSourceContext[] = [
+    { type: 'artist', artist: 'artist a' }, { type: 'genre', genre: 'electronic' },
+    { type: 'year', year: 2024 }, { type: 'playlist', playlistId: -1 }, { type: 'playlist', playlistId: dynamic.id }
+  ]
+  for (const [index, source] of sources.entries()) await checkpointHomeSource(path, source, 100_000 + index * 100_000)
+  const home = library.getHomeDashboard()
+  assert.equal(home.recent_sources.length, 5)
+  assert.deepEqual(home.recent_sources.map((entry) => entry.title), ['All tracks', 'Favorites', '2024', 'Electronic', 'Artist A'])
+  assert.equal(home.recent_sources[0]?.subtitle, 'Dynamic playlist')
+  await library.upsertSubsonicTracks(1, [createRemoteTrack({ path: 'subsonic://1/unknown-year', title: 'Undated', artist: 'Undated Artist', album: 'Undated Album' })])
+  const unknownTrack = library.getTracksByYear(null)[0]
+  assert.ok(unknownTrack)
+  await checkpointHomeSource(unknownTrack.path, { type: 'year', year: 'unknown' }, 700_000)
+  assert.equal(library.getHomeDashboard().recent_sources[0]?.title, 'Unknown Year')
+  const before = library.getHomeDashboard().recent_sources
+  await library.clearDetailedListeningHistory()
+  assert.deepEqual(library.getHomeDashboard().recent_sources, before)
+  library.closeDatabase()
+  await library.initDatabase()
+  assert.deepEqual(library.getHomeDashboard().recent_sources, before)
+})
+
+test('Jump back in qualifies once, rejects short skips, and excludes missing or unavailable sources before limiting', async (t) => {
+  const dir = await setupSeededLibrary(t)
+  const path = 'subsonic://1/split-a'
+  const source = { type: 'track', trackPath: path } as const
+  await checkpointHomeSource(path, source, 100_000, { seconds: 14, sessionKey: 'qualifying' })
+  assert.deepEqual(library.getHomeDashboard().recent_sources, [])
+  await checkpointHomeSource(path, source, 102_000, { seconds: 16, sessionKey: 'qualifying' })
+  await checkpointHomeSource(path, source, 110_000, { seconds: 24, sessionKey: 'qualifying' })
+  assert.equal(library.getHomeDashboard().recent_sources[0]?.last_played_at, 102_000)
+  await checkpointHomeSource(path, source, 200_000, { seconds: 5, duration: 5, completed: false })
+  assert.equal(library.getHomeDashboard().recent_sources[0]?.last_played_at, 102_000)
+  await checkpointHomeSource(path, source, 300_000, { seconds: 5, duration: 5, completed: true })
+  assert.equal(library.getHomeDashboard().recent_sources[0]?.last_played_at, 300_000)
+  withDirectLibraryDb(dir, (db) => {
+    for (let id = 1000; id < 1080; id++) {
+      db.prepare('INSERT INTO home_playback_sources (source_key, source_json, last_played_at) VALUES (?, ?, ?)')
+        .run(`playlist:${id}`, JSON.stringify({ type: 'playlist', playlistId: id }), 500_000 + id)
+    }
+  })
+  assert.equal(library.getHomeDashboard().recent_sources.length, 1)
+  withDirectLibraryDb(dir, (db) => db.prepare('UPDATE tracks SET is_available = 0 WHERE path = ?').run(path))
+  assert.deepEqual(library.getHomeDashboard().recent_sources, [])
+})
+
+test('Jump back in migrates only verified playlists once and survives track path repairs', async (t) => {
+  const dir = await setupSeededLibrary(t)
+  const path = 'subsonic://1/split-a'
+  const playlist = await library.createPlaylist('Verified old playlist')
+  await library.addToPlaylist(playlist.id, [path])
+  await library.markPlaylistPlayed(playlist.id)
+  await library.addRecentlyPlayed(path)
+  library.closeDatabase()
+  withDirectLibraryDb(dir, (db) => {
+    db.prepare("DELETE FROM app_meta WHERE key = 'home_sources_migrated_v1'").run()
+    db.prepare('DROP TABLE home_playback_sources').run()
+  })
+  await library.initDatabase()
+  assert.deepEqual(library.getHomeDashboard().recent_sources.map((entry) => entry.source.type), ['playlist'])
+  await checkpointHomeSource(path, { type: 'track', trackPath: path }, Date.now() + 1000)
+  const original = library.getHomeDashboard().recent_sources
+  library.closeDatabase()
+  await library.initDatabase()
+  assert.deepEqual(library.getHomeDashboard().recent_sources, original)
+  withDirectLibraryDb(dir, (db) => db.prepare("UPDATE tracks SET path = ?, title = 'Updated title', artwork_hash = 'updated-cover' WHERE path = ?").run('subsonic://1/renamed', path))
+  assert.equal(library.getHomeDashboard().recent_sources[0]?.title, 'Updated title')
+  assert.equal(library.getHomeDashboard().recent_sources[0]?.artwork_hash, 'updated-cover')
+  assert.equal(library.getHomeDashboard().recent_sources[0]?.source.type, 'track')
+  assert.deepEqual(library.getHomeDashboard().recent_sources[0]?.source, { type: 'track', trackPath: 'subsonic://1/renamed' })
+  await library.resetMappedFoldersData()
+  assert.deepEqual(library.getHomeDashboard().recent_sources, [])
+  library.closeDatabase()
+  await library.initDatabase()
+  assert.deepEqual(library.getHomeDashboard().recent_sources, [], 'reset must not reseed old playlist timestamps')
 })

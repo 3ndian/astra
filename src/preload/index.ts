@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame } from 'electron'
 import type { SectionFlagKey, SectionKind, SectionsMutationResult, SectionsPayload } from '../types/sections'
+import type { NotchAPI } from '../types/notch'
 import { join } from 'path'
 import { readFile } from 'fs/promises'
 import { getHeapSpaceStatistics } from 'v8'
@@ -51,7 +52,8 @@ import type {
   ParallaxTimelineState
 } from '../types/parallax'
 import type {
-  DynamicPlaylistRulesV1,
+  DynamicPlaylistRulesV2,
+  DynamicPlaylistRules,
   PlaylistKind
 } from '../shared/playlists/dynamicPlaylist'
 import type { TrackRatingEntry } from '../shared/ratings/trackRating'
@@ -87,6 +89,13 @@ import type {
 } from '../types/spotify'
 import type { SpotifyPlaylistEntryRequest } from '../shared/spotify/playlistEntry'
 import type {
+  HrtfProfileBytesResult,
+  HrtfProfileCandidateResult,
+  HrtfProfileCommitResult,
+  HrtfProfileRemoveResult,
+  HrtfProfileSummary,
+} from '../types/hrtfProfiles'
+import type {
   JellyfinSource,
   JellyfinSourceCreateInput,
   JellyfinSourceTestInput,
@@ -104,14 +113,17 @@ import type {
 import type {
   AudioBufferMemoryStats,
   NativeAudioCapabilities,
+  NativeAudioDspConfig,
   NativeAudioDeviceFormatProbe,
+  NativeAudioDiagnosticReport,
   NativeAudioEvent,
   NativeAudioPlaybackSnapshot,
+  NativeAudioOutputRequest,
+  NativeAudioTrackGain,
   NativeAudioTrackLoadResult,
   NativeAudioTrackMetadata,
   NativeAudioVisualizerTapDemand,
-  NativeAudioVUMeterChunk,
-  NativeAudioVectorscopeChunk
+  NativeAudioVisualizerChunk
 } from '../types/nativeAudio'
 import type {
   ProgressiveAudioLoadProgress,
@@ -124,15 +136,41 @@ import type {
   RemoteStreamInfo
 } from '../types/remoteStream'
 import type {
+  LocalAudioPcmTransportTimings,
   MemoryDiagnosticsBlinkResourceUsageSnapshot,
   MemoryDiagnosticsCaptureBundleResult,
   MemoryDiagnosticsEventPayload,
+  MemoryDiagnosticsLogEventOptions,
   MemoryDiagnosticsProcessMemoryStats,
   MemoryDiagnosticsRendererSnapshot,
   MemoryDiagnosticsRendererMemoryStats,
   MemoryDiagnosticsSnapshotRequest,
-  MemoryDiagnosticsStatus
+  MemoryDiagnosticsStatus,
+  PcmTransferBenchmarkProbeResult
 } from '../types/diagnostics'
+import {
+  PCM_TRANSFER_BENCHMARK_STREAM_IPC_CHANNEL,
+  PCM_TRANSFER_BENCHMARK_STREAM_VERSION,
+  createPcmTransferBenchmarkProbe,
+  validatePcmTransferBenchmarkStreamOpenRequest,
+  validatePcmTransferBenchmarkProbe
+} from '../shared/pcmTransferBenchmark'
+import {
+  LOCAL_PCM_STREAM_MARKER,
+  LOCAL_PCM_STREAM_VERSION,
+  STATIC_TRACK_WAVEFORM_RESULT_IPC_CHANNEL,
+  isLocalPcmDecodeLimitRefusal,
+  isStaticTrackWaveformResult,
+  validateLocalPcmStreamOpenRequest,
+  type LocalPcmDecodeLimitRefusal,
+  type LocalPcmStreamOpenRequest,
+  type LocalPcmStreamPortEnvelope,
+  type StaticTrackWaveformResult,
+} from '../shared/localPcmStream'
+import type {
+  LibraryDiagnosticsRendererTimingEvent,
+  LibraryDiagnosticsStatus
+} from '../types/libraryDiagnostics'
 import type { AppBuildInfo } from '../types/appBuildInfo'
 import type {
   ImportedListeningSource,
@@ -149,12 +187,18 @@ import type {
   ListeningStatsTransferAvailability
 } from '../types/listeningStats'
 import type { ListeningStatsImportResult } from '../shared/stats/statsTransfer'
+import type { HomeDashboard, HomeDashboardQuery } from '../types/home'
 import type {
   GlobalShortcutRegistrationRequest,
   GlobalShortcutRegistrationResult,
   InputActionId,
   RawBindingInput
 } from '../types/inputBindings'
+import type {
+  DesktopIntegrationPrefs,
+  TrayRendererCommand,
+  TrayRendererState,
+} from '../types/desktopIntegration'
 import type {
   IntegrityDuplicateTrashRequest,
   IntegrityDuplicateTrashResult,
@@ -212,6 +256,8 @@ export interface TrackLoudnessResult {
   loudnessLufs: number
   peakLinear: number | null
   method: string
+  /** Diagnostic origin; omitted by older main-process implementations. */
+  source?: 'cache' | 'analysis'
 }
 
 export interface TrackLoudnessStorePayload {
@@ -224,6 +270,21 @@ export interface AudioFileStatResult {
   size: number
   mtimeMs: number
 }
+
+export interface LocalAudioPcmDecodeResult {
+  requestId: number
+  sampleRate: number
+  channels: number
+  frames: number
+  pcmByteLength: number
+  interleavedPcm: ArrayBuffer
+  probeMs: number
+  decodeMs: number
+  backgroundPriorityApplied: boolean
+  transportTimings?: LocalAudioPcmTransportTimings
+}
+
+export type LocalAudioPcmDecodeResponse = LocalAudioPcmDecodeResult | LocalPcmDecodeLimitRefusal | null
 
 export interface ProgressiveStreamStartOptions {
   startTimeSeconds?: number | null
@@ -243,7 +304,9 @@ export interface DbTrack {
   album_artist_names: string[]
   duration: number
   track_number: number | null
+  track_total: number | null
   disc_number: number | null
+  disc_total: number | null
   year: number | null
   genre: string | null
   genres: string[]
@@ -396,6 +459,18 @@ export interface PlaylistTrackEntry {
   artist: string | null
   album: string | null
   track: DbTrack | null
+}
+
+export type PlaylistInsertPosition = number | 'end'
+
+export interface PlaylistInsertResult {
+  insertedEntryIds: number[]
+  insertedTrackPaths: string[]
+  skippedTrackPaths: string[]
+}
+
+export interface PlaylistMoveResult {
+  changed: boolean
 }
 
 export type PlaylistImportDetectedFormat = 'csv' | 'm3u' | 'm3u8' | 'xspf' | 'wpl' | 'asx'
@@ -596,9 +671,18 @@ export interface VisualizerDSP {
     getFFTSize(): number
     setSampleRate(sampleRate: number): void
     setSmoothing(smoothing: number): void
+    setSideEnabled(enabled: boolean): void
+    pushSamples(audioData: Float32Array): void
+    pushStereoSamples(leftChannel: Float32Array, rightChannel: Float32Array): void
+    getFrame(options?: { includeRaw?: boolean; includeSide?: boolean }): {
+      primary: Float32Array
+      raw?: Float32Array
+      side?: Float32Array
+    }
     process(audioData: Float32Array): Float32Array
     binToFrequency(bin: number): number
     configureBars(options: {
+      scaleMode?: 'log' | 'mel' | 'linear'
       barCount: number
       minFrequency: number
       maxFrequency: number
@@ -698,6 +782,151 @@ async function getAllLibraryTracksPaged(): Promise<DbTrack[]> {
   return tracks
 }
 
+function preloadDiagnosticNow(): number {
+  return performance.now()
+}
+
+function roundPreloadDiagnosticMs(value: number): number {
+  return Math.round(Math.max(0, value) * 100) / 100
+}
+
+async function benchmarkMainPcmTransfer(sizeBytes: number): Promise<PcmTransferBenchmarkProbeResult> {
+  const invokeStartedAtMs = preloadDiagnosticNow()
+  const result = await ipcRenderer.invoke(
+    'diagnostics:benchmarkMainPcmTransfer',
+    sizeBytes
+  ) as PcmTransferBenchmarkProbeResult
+  const preloadInvokeMs = roundPreloadDiagnosticMs(preloadDiagnosticNow() - invokeStartedAtMs)
+  if (!validatePcmTransferBenchmarkProbe(result, sizeBytes)) {
+    throw new Error('Main-process PCM transfer benchmark payload failed validation in preload.')
+  }
+  return {
+    ...result,
+    preloadInvokeMs
+  }
+}
+
+function benchmarkPreloadPcmTransfer(sizeBytes: number): PcmTransferBenchmarkProbeResult {
+  const serviceStartedAtMs = preloadDiagnosticNow()
+  const result = createPcmTransferBenchmarkProbe(sizeBytes, preloadDiagnosticNow)
+  return {
+    ...result,
+    preloadServiceMs: roundPreloadDiagnosticMs(preloadDiagnosticNow() - serviceStartedAtMs)
+  }
+}
+
+function openMainPcmStreamBenchmark(
+  requestId: number,
+  sizeBytes: number,
+  nonce: string
+): boolean {
+  const request = {
+    version: PCM_TRANSFER_BENCHMARK_STREAM_VERSION,
+    requestId,
+    sizeBytes,
+    nonce
+  }
+  if (!validatePcmTransferBenchmarkStreamOpenRequest(request)) return false
+
+  let mainPort: MessagePort | null = null
+  let rendererPort: MessagePort | null = null
+  try {
+    const channel = new MessageChannel()
+    mainPort = channel.port1
+    rendererPort = channel.port2
+
+    ipcRenderer.postMessage(
+      PCM_TRANSFER_BENCHMARK_STREAM_IPC_CHANNEL,
+      request,
+      [mainPort]
+    )
+    mainPort = null
+
+    const envelope: LocalPcmStreamPortEnvelope = {
+      marker: LOCAL_PCM_STREAM_MARKER,
+      version: LOCAL_PCM_STREAM_VERSION,
+      nonce: request.nonce,
+      requestId: request.requestId
+    }
+    window.postMessage(envelope, '*', [rendererPort])
+    rendererPort = null
+    return true
+  } catch {
+    try {
+      mainPort?.close()
+    } catch {
+      // Best-effort cleanup only.
+    }
+    try {
+      rendererPort?.close()
+    } catch {
+      // Best-effort cleanup only.
+    }
+    return false
+  }
+}
+
+function openLocalAudioPcmStream(
+  requestId: number,
+  filePath: string,
+  outputSampleRate: number,
+  expectedChannels: number | null,
+  priority: 'interactive' | 'background',
+  nonce: string
+): boolean {
+  // Emergency compatibility switch for field diagnostics. The legacy invoke
+  // path remains available and behaviorally identical when this is disabled.
+  if (process.env.ASTRA_DISABLE_PCM_STREAM === '1') return false
+  const request: LocalPcmStreamOpenRequest = {
+    requestId,
+    filePath,
+    outputSampleRate,
+    expectedChannels,
+    priority,
+    nonce
+  }
+  if (!validateLocalPcmStreamOpenRequest(request)) return false
+
+  let mainPort: MessagePort | null = null
+  let rendererPort: MessagePort | null = null
+  try {
+    const channel = new MessageChannel()
+    mainPort = channel.port1
+    rendererPort = channel.port2
+
+    ipcRenderer.postMessage('audio:decodeLocalAudioToPcmStream', {
+      ...request,
+      version: LOCAL_PCM_STREAM_VERSION
+    }, [mainPort])
+    mainPort = null
+
+    const envelope: LocalPcmStreamPortEnvelope = {
+      marker: LOCAL_PCM_STREAM_MARKER,
+      version: LOCAL_PCM_STREAM_VERSION,
+      nonce: request.nonce,
+      requestId: request.requestId
+    }
+    window.postMessage(envelope, '*', [rendererPort])
+    rendererPort = null
+    return true
+  } catch {
+    // A transferred port is no longer owned by this world. Close only the
+    // endpoints whose transfer did not complete, then preserve the invoke path
+    // as the caller's fallback.
+    try {
+      mainPort?.close()
+    } catch {
+      // Best-effort cleanup only.
+    }
+    try {
+      rendererPort?.close()
+    } catch {
+      // Best-effort cleanup only.
+    }
+    return false
+  }
+}
+
 // Expose APIs to renderer
 contextBridge.exposeInMainWorld('electronAPI', {
   // Window controls
@@ -705,6 +934,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   maximize: () => ipcRenderer.send('window:maximize'),
   close: () => ipcRenderer.send('window:close'),
   isMaximized: () => ipcRenderer.invoke('window:isMaximized'),
+  setUIScale: (scale: number) => ipcRenderer.send('window:set-ui-scale', scale),
   associatedOpenFiles: {
     markReady: () => ipcRenderer.send('associated-open-files:rendererReady'),
     onOpenFiles: (callback: (paths: string[]) => void) => {
@@ -714,6 +944,53 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
+  desktopIntegration: {
+    getPrefs: (): Promise<DesktopIntegrationPrefs> => ipcRenderer.invoke('desktop-integration:getPrefs'),
+    setTrayEnabled: (enabled: boolean): Promise<DesktopIntegrationPrefs> =>
+      ipcRenderer.invoke('desktop-integration:setTrayEnabled', enabled),
+    setCloseToTray: (enabled: boolean): Promise<DesktopIntegrationPrefs> =>
+      ipcRenderer.invoke('desktop-integration:setCloseToTray', enabled),
+  },
+
+  trayControls: {
+    markReady: () => ipcRenderer.send('tray-controls:rendererReady'),
+    markNotReady: () => ipcRenderer.send('tray-controls:rendererNotReady'),
+    publishRendererState: (state: TrayRendererState) =>
+      ipcRenderer.send('tray-controls:publishRendererState', state),
+    onCommand: (callback: (command: TrayRendererCommand) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, command: TrayRendererCommand) => callback(command)
+      ipcRenderer.on('tray-controls:command', handler)
+      return () => ipcRenderer.removeListener('tray-controls:command', handler)
+    },
+  },
+
+  notch: {
+    getState: () => ipcRenderer.invoke('notch:getState'),
+    setPrefs: prefs => ipcRenderer.invoke('notch:setPrefs', prefs),
+    getSnapshot: () => ipcRenderer.invoke('notch:getSnapshot'),
+    onState: callback => {
+      const handler = (_: Electron.IpcRendererEvent, state: Parameters<typeof callback>[0]) => callback(state)
+      ipcRenderer.on('notch:state', handler)
+      return () => ipcRenderer.removeListener('notch:state', handler)
+    },
+    onSnapshot: callback => {
+      const handler = (_: Electron.IpcRendererEvent, snapshot: Parameters<typeof callback>[0]) => callback(snapshot)
+      ipcRenderer.on('notch:snapshot', handler)
+      return () => ipcRenderer.removeListener('notch:snapshot', handler)
+    },
+    onVisualizerChunk: callback => {
+      const handler = (_: Electron.IpcRendererEvent, chunk: Parameters<typeof callback>[0]) => callback(chunk)
+      ipcRenderer.on('notch:visualizerChunk', handler)
+      return () => ipcRenderer.removeListener('notch:visualizerChunk', handler)
+    },
+    sendCommand: command => ipcRenderer.send('notch:command', command),
+    expand: () => ipcRenderer.send('notch:expand'),
+    collapse: () => ipcRenderer.send('notch:collapse'),
+    openAstra: () => ipcRenderer.send('notch:openAstra'),
+    ready: () => ipcRenderer.send('notch:ready'),
+    setSurface: bounds => ipcRenderer.send('notch:surface', bounds),
+    setReducedMotion: reduced => ipcRenderer.send('notch:reducedMotion', reduced),
+  } satisfies NotchAPI,
   miniPlayer: {
     open: () => ipcRenderer.invoke('mini-player:open'),
     close: () => ipcRenderer.invoke('mini-player:close'),
@@ -854,8 +1131,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     clearRendererCache: (): void => webFrame.clearCache(),
     publishRendererSnapshot: (requestId: string, snapshot: MemoryDiagnosticsRendererSnapshot) =>
       ipcRenderer.send('diagnostics:publishRendererSnapshot', requestId, snapshot),
-    logEvent: (payload: MemoryDiagnosticsEventPayload): Promise<boolean> =>
-      ipcRenderer.invoke('diagnostics:logEvent', payload),
+    logEvent: (
+      payload: MemoryDiagnosticsEventPayload,
+      options?: MemoryDiagnosticsLogEventOptions
+    ): Promise<boolean> => ipcRenderer.invoke('diagnostics:logEvent', payload, options),
+    benchmarkMainPcmTransfer,
+    benchmarkPreloadPcmTransfer,
+    openMainPcmStreamBenchmark,
     onStatus: (callback: (status: MemoryDiagnosticsStatus) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, status: MemoryDiagnosticsStatus) => callback(status)
       ipcRenderer.on('diagnostics:status', handler)
@@ -865,6 +1147,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
       const handler = (_event: Electron.IpcRendererEvent, request: MemoryDiagnosticsSnapshotRequest) => callback(request)
       ipcRenderer.on('diagnostics:requestRendererSnapshot', handler)
       return () => ipcRenderer.removeListener('diagnostics:requestRendererSnapshot', handler)
+    }
+  },
+  libraryDiagnostics: {
+    getStatus: (): Promise<LibraryDiagnosticsStatus> => ipcRenderer.invoke('library-diagnostics:getStatus'),
+    setEnabled: (enabled: boolean): Promise<LibraryDiagnosticsStatus> =>
+      ipcRenderer.invoke('library-diagnostics:setEnabled', enabled),
+    revealCurrentLog: (): Promise<boolean> => ipcRenderer.invoke('library-diagnostics:revealCurrentLog'),
+    revealPreviousLog: (): Promise<boolean> => ipcRenderer.invoke('library-diagnostics:revealPreviousLog'),
+    logRendererTiming: (timing: LibraryDiagnosticsRendererTimingEvent): Promise<boolean> =>
+      ipcRenderer.invoke('library-diagnostics:logRendererTiming', timing),
+    onStatus: (callback: (status: LibraryDiagnosticsStatus) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, status: LibraryDiagnosticsStatus) => callback(status)
+      ipcRenderer.on('library-diagnostics:status', handler)
+      return () => ipcRenderer.removeListener('library-diagnostics:status', handler)
     }
   },
 
@@ -919,6 +1215,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
       const handler = (_event: Electron.IpcRendererEvent, status: LocalApiStatus) => callback(status)
       ipcRenderer.on('local-api:status', handler)
       return () => ipcRenderer.removeListener('local-api:status', handler)
+    }
+  },
+
+  devices: {
+    getStatus: (): Promise<PhoneRemoteStatus> => ipcRenderer.invoke('devices:getStatus'),
+    list: (): Promise<PhoneRemotePairedDevice[]> => ipcRenderer.invoke('devices:list'),
+    setEnabled: (enabled: boolean): Promise<PhoneRemoteStatus> => ipcRenderer.invoke('devices:setEnabled', enabled),
+    rename: (id: string, name: string): Promise<PhoneRemotePairedDevice | null> => ipcRenderer.invoke('devices:rename', id, name),
+    forget: (id: string): Promise<PhoneRemotePairedDevice | null> => ipcRenderer.invoke('devices:forget', id),
+    onStatus: (callback: (status: PhoneRemoteStatus) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, status: PhoneRemoteStatus) => callback(status)
+      ipcRenderer.on('phone-remote:status', handler)
+      return () => ipcRenderer.removeListener('phone-remote:status', handler)
     }
   },
 
@@ -1058,7 +1367,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('parallax:publishHostTimeline', timeline, options),
     publishHostEmitAnchor: (anchor: Omit<Extract<ParallaxTimelineEvent, { type: 'host-emit-anchor' }>, 'emittedAtHostTimeMs'>): Promise<void> =>
       ipcRenderer.invoke('parallax:publishHostEmitAnchor', anchor),
-    stopHostStream: (): Promise<void> => ipcRenderer.invoke('parallax:stopHostStream'),
+    stopHostStream: (streamId?: string): Promise<void> => ipcRenderer.invoke('parallax:stopHostStream', streamId),
     publishSinkTelemetry: (telemetry: ParallaxSinkTelemetry): Promise<void> =>
       ipcRenderer.invoke('parallax:publishSinkTelemetry', telemetry),
     reportHostLatency: (metrics: ParallaxOutputLatencyMetrics): Promise<void> =>
@@ -1244,6 +1553,30 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const bytes = await readFile(wasmPath)
     return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
   },
+  getAdaptiveUpmixerWasmBytes: async (): Promise<ArrayBuffer> => {
+    const isDev = process.env.NODE_ENV === 'development'
+    const wasmPath = isDev
+      ? join(__dirname, '../../src/renderer/public/adaptive-upmixer.wasm')
+      : join(__dirname, '../renderer/adaptive-upmixer.wasm')
+    const bytes = await readFile(wasmPath)
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+  },
+  getSpatialHrtfPrepWasmBytes: async (): Promise<ArrayBuffer> => {
+    const isDev = process.env.NODE_ENV === 'development'
+    const wasmPath = isDev
+      ? join(__dirname, '../../src/renderer/public/spatial-hrtf-prep.wasm')
+      : join(__dirname, '../renderer/spatial-hrtf-prep.wasm')
+    const bytes = await readFile(wasmPath)
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+  },
+  hrtfProfiles: {
+    list: (): Promise<HrtfProfileSummary[]> => ipcRenderer.invoke('hrtf-profiles:list'),
+    chooseCandidate: (): Promise<HrtfProfileCandidateResult> => ipcRenderer.invoke('hrtf-profiles:chooseCandidate'),
+    commit: (fileName: string, bytes: ArrayBuffer): Promise<HrtfProfileCommitResult> =>
+      ipcRenderer.invoke('hrtf-profiles:commit', { fileName, bytes }),
+    read: (profileId: string): Promise<HrtfProfileBytesResult> => ipcRenderer.invoke('hrtf-profiles:read', profileId),
+    remove: (profileId: string): Promise<HrtfProfileRemoveResult> => ipcRenderer.invoke('hrtf-profiles:remove', profileId),
+  },
   // IAMF (Eclipsa Audio) decoder WASM for the renderer decode worker.
   getIamfWasmBytes: async (): Promise<ArrayBuffer> => {
     const isDev = process.env.NODE_ENV === 'development'
@@ -1256,10 +1589,58 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAudioMetadata: (filePath: string) => ipcRenderer.invoke('audio:getMetadata', filePath) as Promise<AudioFileMetadata | null>,
   getAudioFileStat: (filePath: string) => ipcRenderer.invoke('audio:getFileStat', filePath) as Promise<AudioFileStatResult | null>,
   decodeAudioWithFfmpeg: (filePath: string) => ipcRenderer.invoke('audio:decodeWithFfmpeg', filePath),
+  openLocalAudioPcmStream,
+  decodeLocalAudioToPcm: async (
+    requestId: number,
+    filePath: string,
+    outputSampleRate: number,
+    expectedChannels?: number | null,
+    priority?: 'interactive' | 'background'
+  ): Promise<LocalAudioPcmDecodeResponse> => {
+    const invokeStartedAtMs = preloadDiagnosticNow()
+    const result = await ipcRenderer.invoke(
+      'audio:decodeLocalAudioToPcm',
+      requestId,
+      filePath,
+      outputSampleRate,
+      expectedChannels,
+      priority
+    ) as LocalAudioPcmDecodeResponse
+    const preloadInvokeMs = roundPreloadDiagnosticMs(preloadDiagnosticNow() - invokeStartedAtMs)
+    if (isLocalPcmDecodeLimitRefusal(result)) return result
+    if (!result?.transportTimings) return result
+
+    // Only the small result envelope is copied here. The PCM ArrayBuffer is
+    // retained by reference until contextBridge performs its documented copy.
+    return {
+      ...result,
+      transportTimings: {
+        ...result.transportTimings,
+        preloadInvokeMs
+      }
+    }
+  },
+  cancelLocalAudioDecode: (requestId: number) =>
+    ipcRenderer.invoke('audio:cancelLocalAudioDecode', requestId) as Promise<void>,
+  promoteLocalAudioDecode: (requestId: number) =>
+    ipcRenderer.invoke('audio:promoteLocalAudioDecode', requestId) as Promise<void>,
+  onStaticTrackWaveformResult: (callback: (result: StaticTrackWaveformResult) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, value: unknown): void => {
+      if (!isStaticTrackWaveformResult(value)) {
+        console.warn('[audio-waveform] ignored malformed static waveform result')
+        return
+      }
+      callback(value)
+    }
+    ipcRenderer.on(STATIC_TRACK_WAVEFORM_RESULT_IPC_CHANNEL, handler)
+    return () => ipcRenderer.removeListener(STATIC_TRACK_WAVEFORM_RESULT_IPC_CHANNEL, handler)
+  },
   analyzeTrackLoudness: (filePath: string) =>
     ipcRenderer.invoke('audio:analyzeTrackLoudness', filePath) as Promise<TrackLoudnessResult | null>,
   warmupTrackLoudness: (filePath: string) =>
     ipcRenderer.invoke('audio:warmupTrackLoudness', filePath) as Promise<TrackLoudnessResult | null>,
+  supersedeTrackLoudness: (filePath: string | null) =>
+    ipcRenderer.invoke('audio:supersedeTrackLoudness', filePath) as Promise<void>,
   storeTrackLoudness: (filePath: string, payload: TrackLoudnessStorePayload) =>
     ipcRenderer.invoke('audio:storeTrackLoudness', filePath, payload) as Promise<boolean>,
   startProgressiveStream: (
@@ -1269,6 +1650,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     options?: ProgressiveStreamStartOptions
   ) =>
     ipcRenderer.invoke('audio:startProgressiveStream', filePath, outputSampleRate, expectedChannels, options) as Promise<ProgressiveStreamInfo>,
+  updateProgressiveStreamPosition: (sessionId: number, currentFrame: number) =>
+    ipcRenderer.send('audio:updateProgressiveStreamPosition', sessionId, currentFrame),
   cancelProgressiveStream: (sessionId: number) => ipcRenderer.invoke('audio:cancelProgressiveStream', sessionId) as Promise<void>,
   startRemoteStream: (filePath: string, outputSampleRate: number, expectedChannels?: number | null) =>
     ipcRenderer.invoke('audio:startRemoteStream', filePath, outputSampleRate, expectedChannels) as Promise<RemoteStreamInfo>,
@@ -1362,6 +1745,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('library:getTracksPage', request) as Promise<LibraryTrackPage>,
     getTracksByPaths: (trackPaths: string[]) =>
       ipcRenderer.invoke('library:getTracksByPaths', trackPaths) as Promise<DbTrack[]>,
+    getAvailableTrackPaths: () =>
+      ipcRenderer.invoke('library:getAvailableTrackPaths') as Promise<string[]>,
+    getHomeDashboard: (query?: HomeDashboardQuery) =>
+      ipcRenderer.invoke('library:getHomeDashboard', query) as Promise<HomeDashboard>,
     getTracksByArtist: (artist: string, mode?: LibraryArtistBrowseMode) =>
       ipcRenderer.invoke('library:getTracksByArtist', artist, mode),
     getTracksByGenre: (genre: string) =>
@@ -1402,6 +1789,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       }>,
     rescanFolder: (folderPath: string) => ipcRenderer.invoke('library:rescanFolder', folderPath) as Promise<{
       success: boolean
+      diagnosticRunId?: string
       canceled?: boolean
       added?: number
       updated?: number
@@ -1413,6 +1801,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }>,
     addFolder: (folderPath: string) => ipcRenderer.invoke('library:addFolder', folderPath) as Promise<{
       success: boolean
+      diagnosticRunId?: string
       canceled?: boolean
       added?: number
       updated?: number
@@ -1421,7 +1810,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       scanIssueLog?: ScanIssueLog
       error?: string
     }>,
-    removeFolder: (folderPath: string) => ipcRenderer.invoke('library:removeFolder', folderPath),
+    removeFolder: (folderPath: string) => ipcRenderer.invoke('library:removeFolder', folderPath) as Promise<{
+      success: boolean
+      diagnosticRunId?: string
+    }>,
     setFolderHidden: (folderPath: string, hidden: boolean) =>
       ipcRenderer.invoke('library:setFolderHidden', folderPath, hidden) as Promise<{ success: boolean; error?: string }>,
     backfillReplayGainMetadata: () => ipcRenderer.invoke('library:backfillReplayGainMetadata') as Promise<{
@@ -1444,6 +1836,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     resetMappedFolders: () => ipcRenderer.invoke('library:resetMappedFolders'),
     factoryReset: () => ipcRenderer.invoke('library:factoryReset'),
     rescan: () => ipcRenderer.invoke('library:rescan') as Promise<{
+      diagnosticRunId?: string
       added: number
       updated: number
       errors: number
@@ -1453,6 +1846,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       canceled?: boolean
     }>,
     forceRescanAll: () => ipcRenderer.invoke('library:forceRescanAll') as Promise<{
+      diagnosticRunId?: string
       added: number
       updated: number
       errors: number
@@ -1559,16 +1953,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Playlists
     getPlaylists: () => ipcRenderer.invoke('library:getPlaylists'),
     createPlaylist: (name: string) => ipcRenderer.invoke('library:createPlaylist', name),
-    createDynamicPlaylist: (name: string, rules: DynamicPlaylistRulesV1) => ipcRenderer.invoke('library:createDynamicPlaylist', name, rules),
+    createDynamicPlaylist: (name: string, rules: DynamicPlaylistRules) => ipcRenderer.invoke('library:createDynamicPlaylist', name, rules),
     getDynamicPlaylistRules: (playlistId: number) => ipcRenderer.invoke('library:getDynamicPlaylistRules', playlistId),
-    updateDynamicPlaylistRules: (playlistId: number, rules: DynamicPlaylistRulesV1) => ipcRenderer.invoke('library:updateDynamicPlaylistRules', playlistId, rules),
-    previewDynamicPlaylist: (rules: DynamicPlaylistRulesV1) => ipcRenderer.invoke('library:previewDynamicPlaylist', rules),
+    updateDynamicPlaylistRules: (playlistId: number, rules: DynamicPlaylistRules) => ipcRenderer.invoke('library:updateDynamicPlaylistRules', playlistId, rules),
+    previewDynamicPlaylist: (rules: DynamicPlaylistRules) => ipcRenderer.invoke('library:previewDynamicPlaylist', rules),
     renamePlaylist: (id: number, name: string) => ipcRenderer.invoke('library:renamePlaylist', id, name),
     deletePlaylist: (id: number) => ipcRenderer.invoke('library:deletePlaylist', id),
     getPlaylistTracks: (playlistId: number) => ipcRenderer.invoke('library:getPlaylistTracks', playlistId),
     getPlaylistTrackEntries: (playlistId: number) => ipcRenderer.invoke('library:getPlaylistTrackEntries', playlistId),
     addToPlaylist: (playlistId: number, trackPaths: string[]) => ipcRenderer.invoke('library:addToPlaylist', playlistId, trackPaths),
     addSpotifyTrackToPlaylist: (request: SpotifyPlaylistEntryRequest) => ipcRenderer.invoke('library:addSpotifyTrackToPlaylist', request),
+    insertTracksIntoPlaylist: (playlistId: number, trackPaths: string[], position: PlaylistInsertPosition) =>
+      ipcRenderer.invoke('library:insertTracksIntoPlaylist', playlistId, trackPaths, position),
+    movePlaylistEntries: (playlistId: number, entryIds: number[], position: number) =>
+      ipcRenderer.invoke('library:movePlaylistEntries', playlistId, entryIds, position),
     removeFromPlaylist: (playlistId: number, trackPath: string) => ipcRenderer.invoke('library:removeFromPlaylist', playlistId, trackPath),
     removePlaylistEntry: (playlistId: number, entryId: number) => ipcRenderer.invoke('library:removePlaylistEntry', playlistId, entryId),
     reassociatePlaylistEntry: (playlistId: number, entryId: number, targetTrackPath: string) =>
@@ -1631,22 +2029,24 @@ declare global {
       initialize: () => Promise<NativeAudioCapabilities>
       getCapabilities: () => Promise<NativeAudioCapabilities>
       setOutputDevice: (deviceId: string) => Promise<NativeAudioCapabilities>
+      configureNativeOutput: (request: NativeAudioOutputRequest) => Promise<NativeAudioCapabilities>
+      setNativeDspConfig: (config: NativeAudioDspConfig) => Promise<NativeAudioPlaybackSnapshot>
+      setNativeTrackGain: (gain: NativeAudioTrackGain) => Promise<NativeAudioPlaybackSnapshot>
       probeDeviceFormats: (deviceId?: string, channels?: number) => Promise<NativeAudioDeviceFormatProbe>
-      loadTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
-      preloadNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
+      loadTrack: (filePath: string, metadata?: NativeAudioTrackMetadata, gain?: NativeAudioTrackGain) => Promise<NativeAudioTrackLoadResult>
+      preloadNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata, gain?: NativeAudioTrackGain) => Promise<NativeAudioTrackLoadResult>
       promoteNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
+      cancelPendingDecode: () => Promise<void>
       play: () => Promise<NativeAudioPlaybackSnapshot>
       pause: () => Promise<NativeAudioPlaybackSnapshot>
       stop: () => Promise<NativeAudioPlaybackSnapshot>
       seek: (seconds: number) => Promise<NativeAudioPlaybackSnapshot>
       clearNextTrack: () => Promise<void>
       getPlaybackSnapshot: () => Promise<NativeAudioPlaybackSnapshot>
+      getNativeAudioDiagnosticReport: () => Promise<NativeAudioDiagnosticReport>
       getBufferMemoryStats: () => Promise<AudioBufferMemoryStats>
       setVisualizerTapDemand: (demand: NativeAudioVisualizerTapDemand) => Promise<void>
-      flushOscilloscopeChunks: () => Float32Array[]
-      flushSpectrumChunks: () => Float32Array[]
-      flushVectorscopeChunks: () => NativeAudioVectorscopeChunk[]
-      flushVUMeterChunks: () => NativeAudioVUMeterChunk[]
+      flushVisualizerChunks: () => NativeAudioVisualizerChunk[]
       onEvent: (callback: (event: NativeAudioEvent) => void) => () => void
     }
     electronAPI: {
@@ -1655,10 +2055,23 @@ declare global {
       maximize: () => void
       close: () => void
       isMaximized: () => Promise<boolean>
+      setUIScale: (scale: number) => void
       associatedOpenFiles: {
         markReady: () => void
         onOpenFiles: (callback: (paths: string[]) => void) => () => void
       }
+      desktopIntegration: {
+        getPrefs: () => Promise<DesktopIntegrationPrefs>
+        setTrayEnabled: (enabled: boolean) => Promise<DesktopIntegrationPrefs>
+        setCloseToTray: (enabled: boolean) => Promise<DesktopIntegrationPrefs>
+      }
+      trayControls: {
+        markReady: () => void
+        markNotReady: () => void
+        publishRendererState: (state: TrayRendererState) => void
+        onCommand: (callback: (command: TrayRendererCommand) => void) => () => void
+      }
+      notch: NotchAPI
       miniPlayer: {
         open: () => Promise<void>
         close: () => Promise<void>
@@ -1726,9 +2139,27 @@ declare global {
         getBlinkResourceUsage: () => MemoryDiagnosticsBlinkResourceUsageSnapshot
         clearRendererCache: () => void
         publishRendererSnapshot: (requestId: string, snapshot: MemoryDiagnosticsRendererSnapshot) => void
-        logEvent: (payload: MemoryDiagnosticsEventPayload) => Promise<boolean>
+        logEvent: (
+          payload: MemoryDiagnosticsEventPayload,
+          options?: MemoryDiagnosticsLogEventOptions
+        ) => Promise<boolean>
+        benchmarkMainPcmTransfer: (sizeBytes: number) => Promise<PcmTransferBenchmarkProbeResult>
+        benchmarkPreloadPcmTransfer: (sizeBytes: number) => PcmTransferBenchmarkProbeResult
+        openMainPcmStreamBenchmark: (
+          requestId: number,
+          sizeBytes: number,
+          nonce: string
+        ) => boolean
         onStatus: (callback: (status: MemoryDiagnosticsStatus) => void) => () => void
         onSnapshotRequest: (callback: (request: MemoryDiagnosticsSnapshotRequest) => void) => () => void
+      }
+      libraryDiagnostics: {
+        getStatus: () => Promise<LibraryDiagnosticsStatus>
+        setEnabled: (enabled: boolean) => Promise<LibraryDiagnosticsStatus>
+        revealCurrentLog: () => Promise<boolean>
+        revealPreviousLog: () => Promise<boolean>
+        logRendererTiming: (timing: LibraryDiagnosticsRendererTimingEvent) => Promise<boolean>
+        onStatus: (callback: (status: LibraryDiagnosticsStatus) => void) => () => void
       }
       updates: {
         checkForUpdates: () => Promise<UpdateCheckResult>
@@ -1760,6 +2191,14 @@ declare global {
         rotateToken: () => Promise<LocalApiStatus>
         resetToDefaults: () => Promise<LocalApiStatus>
         onStatus: (callback: (status: LocalApiStatus) => void) => () => void
+      }
+      devices: {
+        getStatus: () => Promise<PhoneRemoteStatus>
+        list: () => Promise<PhoneRemotePairedDevice[]>
+        setEnabled: (enabled: boolean) => Promise<PhoneRemoteStatus>
+        rename: (id: string, name: string) => Promise<PhoneRemotePairedDevice | null>
+        forget: (id: string) => Promise<PhoneRemotePairedDevice | null>
+        onStatus: (callback: (status: PhoneRemoteStatus) => void) => () => void
       }
       phoneRemote: {
         getStatus: () => Promise<PhoneRemoteStatus>
@@ -1824,7 +2263,7 @@ declare global {
         publishHostAudioChunk: (chunk: ParallaxAudioChunk) => Promise<void>
         publishHostTimeline: (timeline: ParallaxTimelineState, options?: ParallaxHostTimelinePublishOptions) => Promise<void>
         publishHostEmitAnchor: (anchor: Omit<Extract<ParallaxTimelineEvent, { type: 'host-emit-anchor' }>, 'emittedAtHostTimeMs'>) => Promise<void>
-        stopHostStream: () => Promise<void>
+        stopHostStream: (streamId?: string) => Promise<void>
         publishSinkTelemetry: (telemetry: ParallaxSinkTelemetry) => Promise<void>
         reportHostLatency: (metrics: ParallaxOutputLatencyMetrics) => Promise<void>
         revokePairedSink: (id: string) => Promise<ParallaxPairedSink | null>
@@ -1923,12 +2362,42 @@ declare global {
       openAudioFolder: () => Promise<string | null>
       loadAudioFile: (filePath: string, options?: AudioLoadOptions) => Promise<AudioFileResult | null>
       getSpatialWasmBytes: () => Promise<ArrayBuffer>
+      getAdaptiveUpmixerWasmBytes: () => Promise<ArrayBuffer>
+      getSpatialHrtfPrepWasmBytes: () => Promise<ArrayBuffer>
+      hrtfProfiles: {
+        list: () => Promise<HrtfProfileSummary[]>
+        chooseCandidate: () => Promise<HrtfProfileCandidateResult>
+        commit: (fileName: string, bytes: ArrayBuffer) => Promise<HrtfProfileCommitResult>
+        read: (profileId: string) => Promise<HrtfProfileBytesResult>
+        remove: (profileId: string) => Promise<HrtfProfileRemoveResult>
+      }
       getIamfWasmBytes: () => Promise<ArrayBuffer>
       getAudioMetadata: (filePath: string) => Promise<AudioFileMetadata | null>
       getAudioFileStat: (filePath: string) => Promise<AudioFileStatResult | null>
       decodeAudioWithFfmpeg: (filePath: string) => Promise<ArrayBuffer | null>
+      openLocalAudioPcmStream: (
+        requestId: number,
+        filePath: string,
+        outputSampleRate: number,
+        expectedChannels: number | null,
+        priority: 'interactive' | 'background',
+        nonce: string
+      ) => boolean
+      decodeLocalAudioToPcm: (
+        requestId: number,
+        filePath: string,
+        outputSampleRate: number,
+        expectedChannels?: number | null,
+        priority?: 'interactive' | 'background'
+      ) => Promise<LocalAudioPcmDecodeResponse>
+      cancelLocalAudioDecode: (requestId: number) => Promise<void>
+      promoteLocalAudioDecode: (requestId: number) => Promise<void>
+      onStaticTrackWaveformResult: (
+        callback: (result: StaticTrackWaveformResult) => void
+      ) => () => void
       analyzeTrackLoudness: (filePath: string) => Promise<TrackLoudnessResult | null>
       warmupTrackLoudness: (filePath: string) => Promise<TrackLoudnessResult | null>
+      supersedeTrackLoudness: (filePath: string | null) => Promise<void>
       storeTrackLoudness: (filePath: string, payload: TrackLoudnessStorePayload) => Promise<boolean>
       startProgressiveStream: (
         filePath: string,
@@ -1936,6 +2405,7 @@ declare global {
         expectedChannels?: number | null,
         options?: ProgressiveStreamStartOptions
       ) => Promise<ProgressiveStreamInfo>
+      updateProgressiveStreamPosition: (sessionId: number, currentFrame: number) => void
       cancelProgressiveStream: (sessionId: number) => Promise<void>
       startRemoteStream: (filePath: string, outputSampleRate: number, expectedChannels?: number | null) => Promise<RemoteStreamInfo>
       cancelRemoteStream: (sessionId: number) => Promise<void>
@@ -1984,6 +2454,8 @@ declare global {
         getTracks: () => Promise<DbTrack[]>
         getTracksPage: (request?: LibraryTrackPageRequest) => Promise<LibraryTrackPage>
         getTracksByPaths: (trackPaths: string[]) => Promise<DbTrack[]>
+        getAvailableTrackPaths: () => Promise<string[]>
+        getHomeDashboard: (query?: HomeDashboardQuery) => Promise<HomeDashboard>
         getTracksByArtist: (artist: string, mode?: LibraryArtistBrowseMode) => Promise<DbTrack[]>
         getTracksByGenre: (genre: string) => Promise<DbTrack[]>
         getTracksByYear: (year: number | null) => Promise<DbTrack[]>
@@ -2020,6 +2492,7 @@ declare global {
         }>
         rescanFolder: (folderPath: string) => Promise<{
           success: boolean
+          diagnosticRunId?: string
           canceled?: boolean
           added?: number
           updated?: number
@@ -2031,6 +2504,7 @@ declare global {
         }>
         addFolder: (folderPath: string) => Promise<{
           success: boolean
+          diagnosticRunId?: string
           canceled?: boolean
           added?: number
           updated?: number
@@ -2039,7 +2513,7 @@ declare global {
           scanIssueLog?: ScanIssueLog
           error?: string
         }>
-        removeFolder: (folderPath: string) => Promise<{ success: boolean }>
+        removeFolder: (folderPath: string) => Promise<{ success: boolean; diagnosticRunId?: string }>
         setFolderHidden: (folderPath: string, hidden: boolean) => Promise<{ success: boolean; error?: string }>
         backfillReplayGainMetadata: () => Promise<{
           scanned: number
@@ -2057,6 +2531,7 @@ declare global {
         resetMappedFolders: () => Promise<{ success: boolean; clearedFolders: number; clearedTracks: number }>
         factoryReset: () => Promise<{ success: boolean }>
         rescan: () => Promise<{
+          diagnosticRunId?: string
           added: number
           updated: number
           errors: number
@@ -2066,6 +2541,7 @@ declare global {
           canceled?: boolean
         }>
         forceRescanAll: () => Promise<{
+          diagnosticRunId?: string
           added: number
           updated: number
           errors: number
@@ -2122,16 +2598,18 @@ declare global {
         // Playlists
         getPlaylists: () => Promise<Playlist[]>
         createPlaylist: (name: string) => Promise<Playlist>
-        createDynamicPlaylist: (name: string, rules: DynamicPlaylistRulesV1) => Promise<Playlist>
-        getDynamicPlaylistRules: (playlistId: number) => Promise<DynamicPlaylistRulesV1>
-        updateDynamicPlaylistRules: (playlistId: number, rules: DynamicPlaylistRulesV1) => Promise<void>
-        previewDynamicPlaylist: (rules: DynamicPlaylistRulesV1) => Promise<DynamicPlaylistPreview>
+        createDynamicPlaylist: (name: string, rules: DynamicPlaylistRules) => Promise<Playlist>
+        getDynamicPlaylistRules: (playlistId: number) => Promise<DynamicPlaylistRulesV2>
+        updateDynamicPlaylistRules: (playlistId: number, rules: DynamicPlaylistRules) => Promise<void>
+        previewDynamicPlaylist: (rules: DynamicPlaylistRules) => Promise<DynamicPlaylistPreview>
         renamePlaylist: (id: number, name: string) => Promise<void>
         deletePlaylist: (id: number) => Promise<void>
         getPlaylistTracks: (playlistId: number) => Promise<DbTrack[]>
         getPlaylistTrackEntries: (playlistId: number) => Promise<PlaylistTrackEntry[]>
         addToPlaylist: (playlistId: number, trackPaths: string[]) => Promise<void>
         addSpotifyTrackToPlaylist: (request: SpotifyPlaylistEntryRequest) => Promise<SpotifyPlaylistEntryResult>
+        insertTracksIntoPlaylist: (playlistId: number, trackPaths: string[], position: PlaylistInsertPosition) => Promise<PlaylistInsertResult>
+        movePlaylistEntries: (playlistId: number, entryIds: number[], position: number) => Promise<PlaylistMoveResult>
         removeFromPlaylist: (playlistId: number, trackPath: string) => Promise<void>
         removePlaylistEntry: (playlistId: number, entryId: number) => Promise<void>
         reassociatePlaylistEntry: (playlistId: number, entryId: number, targetTrackPath: string) => Promise<void>

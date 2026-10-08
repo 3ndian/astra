@@ -3,27 +3,28 @@ import { List, RowComponentProps, type ListImperativeAPI } from 'react-window'
 import { useLibraryStore, type DbTrack, type LibraryFolder } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { getNormalPlaylists, usePlaylistStore } from '../../stores/playlistStore'
+import {
+  buildFolderTree,
+  collectFolderNodePaths,
+  type FolderTreeNode as LibraryFolderTreeNode
+} from '../../utils/folderTree'
 import { matchesFuzzyFields, rankFuzzyMatches } from '../../utils/fuzzySearch'
 import { highlightSearchMatch } from '../../utils/searchHighlight'
+import { getTrackIdentitySearchFields } from '../../utils/trackSearch'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import PlaylistCover from '../playlists/PlaylistCover'
 import { resolveFolderNav, type FolderNavRow } from '../../../shared/library/folderNav'
+import SearchEmptyState from '../search/SearchEmptyState'
 
 interface FolderTreeViewProps {
   tracks: DbTrack[]
   allTracks: DbTrack[]
   folders: LibraryFolder[]
   searchQuery: string
+  onClearSearch: () => void
 }
 
-interface FolderTreeNode {
-  name: string
-  fullPath: string
-  children: Map<string, FolderTreeNode>
-  tracks: DbTrack[]
-  subtreeTracks: DbTrack[]
-  totalTrackCount: number
-}
+type FolderTreeNode = LibraryFolderTreeNode<DbTrack>
 
 interface FolderRow {
   type: 'folder'
@@ -90,91 +91,6 @@ function formatDuration(seconds: number): string {
   const mins = Math.floor(seconds / 60)
   const secs = Math.floor(seconds % 60)
   return `${mins}:${secs.toString().padStart(2, '0')}`
-}
-
-function getFolderName(fullPath: string): string {
-  const parts = fullPath.split(/[/\\]/)
-  return parts[parts.length - 1] || fullPath
-}
-
-function finalizeFolderNode(node: FolderTreeNode): number {
-  node.tracks.sort((a, b) => a.path.localeCompare(b.path))
-
-  let totalTrackCount = node.tracks.length
-  const subtreeTracks: DbTrack[] = []
-  const sortedChildren = [...node.children.entries()].sort(([a], [b]) => a.localeCompare(b))
-
-  sortedChildren.forEach(([, child]) => {
-    totalTrackCount += finalizeFolderNode(child)
-    subtreeTracks.push(...child.subtreeTracks)
-  })
-
-  subtreeTracks.push(...node.tracks)
-  node.subtreeTracks = subtreeTracks
-  node.totalTrackCount = totalTrackCount
-  return totalTrackCount
-}
-
-function buildFolderTree(folders: LibraryFolder[], tracks: DbTrack[]): FolderTreeNode[] {
-  const roots: FolderTreeNode[] = folders.map((folder) => ({
-    name: getFolderName(folder.path),
-    fullPath: folder.path,
-    children: new Map(),
-    tracks: [],
-    subtreeTracks: [],
-    totalTrackCount: 0
-  }))
-
-  const sortedRoots = [...roots].sort((a, b) => b.fullPath.length - a.fullPath.length)
-
-  for (const track of tracks) {
-    const root = sortedRoots.find((candidate) => (
-      track.path.startsWith(candidate.fullPath + '/')
-      || track.path.startsWith(candidate.fullPath + '\\')
-    ))
-    if (!root) continue
-
-    const relative = track.path.slice(root.fullPath.length + 1)
-    const segments = relative.split(/[/\\]/)
-    segments.pop()
-
-    let current = root
-    let pathSoFar = root.fullPath
-
-    for (const segment of segments) {
-      pathSoFar += '/' + segment
-      if (!current.children.has(segment)) {
-        current.children.set(segment, {
-          name: segment,
-          fullPath: pathSoFar,
-          children: new Map(),
-          tracks: [],
-          subtreeTracks: [],
-          totalTrackCount: 0
-        })
-      }
-      current = current.children.get(segment)!
-    }
-
-    current.tracks.push(track)
-  }
-
-  roots.forEach(finalizeFolderNode)
-  return roots.filter((root) => root.totalTrackCount > 0)
-}
-
-function collectFolderNodePaths(tree: FolderTreeNode[]): Set<string> {
-  const paths = new Set<string>()
-
-  const visit = (node: FolderTreeNode) => {
-    paths.add(node.fullPath)
-    for (const child of node.children.values()) {
-      visit(child)
-    }
-  }
-
-  tree.forEach(visit)
-  return paths
 }
 
 function FolderTreeRowRenderer({
@@ -308,7 +224,7 @@ function FolderTreeRowRenderer({
 
 const MemoizedRow = memo(FolderTreeRowRenderer) as typeof FolderTreeRowRenderer
 
-export default function FolderTreeView({ tracks, allTracks, folders, searchQuery }: FolderTreeViewProps) {
+export default function FolderTreeView({ tracks, allTracks, folders, searchQuery, onClearSearch }: FolderTreeViewProps) {
   const [folderPlaylistPopup, setFolderPlaylistPopup] = useState<FolderPlaylistPopupState | null>(null)
   const [folderPlaylistSearch, setFolderPlaylistSearch] = useState('')
   const [folderPlaylistFeedback, setFolderPlaylistFeedback] = useState<FolderPlaylistFeedback | null>(null)
@@ -339,17 +255,17 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
   const filteredTracks = useMemo(() => {
     if (!trimmedSearchQuery) return tracks
     return tracks.filter((track) => matchesFuzzyFields(trimmedSearchQuery, [
-      { value: track.title, weight: 1.5 },
-      { value: track.artist, weight: 0.9 },
-      { value: track.artist_names.join(' '), weight: 0.9 },
+      ...getTrackIdentitySearchFields(track),
       { value: track.path, weight: 0.8 }
-    ]))
+    ], 'context'))
   }, [tracks, trimmedSearchQuery])
 
-  const tree = useMemo(() => buildFolderTree(folders, filteredTracks), [filteredTracks, folders])
+  const tree = useMemo(() => (
+    buildFolderTree(folders, filteredTracks, window.electronAPI.platform)
+  ), [filteredTracks, folders])
 
   const fullFolderNodePaths = useMemo(() => (
-    collectFolderNodePaths(buildFolderTree(folders, allTracks))
+    collectFolderNodePaths(buildFolderTree(folders, allTracks, window.electronAPI.platform))
   ), [allTracks, folders])
 
   const folderNodesByPath = useMemo(() => {
@@ -589,7 +505,7 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
     const index = folderTracks.findIndex((candidate) => candidate.path === track.path)
     const queueIndex = index >= 0 ? index : 0
     await startPlaybackContextByPaths(queueTrackPaths, queueIndex, {
-      contextLabel: 'Folder'
+      recordSelectedTrack: true, contextLabel: 'Folder'
     })
   }, [startPlaybackContextByPaths])
 
@@ -781,7 +697,7 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
   const filteredPlaylists = useMemo(() => {
     return rankFuzzyMatches(getNormalPlaylists(playlists), folderPlaylistSearch, (playlist) => [
       { value: playlist.name, weight: 1.5 }
-    ])
+    ], 'context')
   }, [folderPlaylistSearch, playlists])
 
   const folderPlaylistPopupStyle = useMemo(() => {
@@ -834,12 +750,16 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
     visibleRows
   ])
 
-  const content = tree.length === 0 ? (
+  const content = tree.length === 0 && trimmedSearchQuery ? (
+    <SearchEmptyState
+      subject="tracks"
+      query={searchQuery.trim()}
+      fields="folder name or path, title, artist, and album"
+      onClear={onClearSearch}
+    />
+  ) : tree.length === 0 ? (
     <div className="library-empty">
-      {trimmedSearchQuery
-        ? <p>No tracks found for &ldquo;{searchQuery.trim()}&rdquo;</p>
-        : <p>No folders with tracks</p>
-      }
+      <p>No folders with tracks</p>
     </div>
   ) : (
     <div className="folder-browse-tree" aria-label="Folders. Use the arrow keys to browse, Enter to play.">

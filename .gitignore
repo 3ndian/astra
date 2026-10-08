@@ -3,6 +3,7 @@ node_modules/
 
 # Build outputs
 out/
+.astra-playback-benchmark/
 dist/
 native/build/
 native/iamf-wasm/build/
@@ -27,6 +28,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 # notes
+.local-plans/
 Untitled-1.md
 PARALLAX_HANDOFF.md
 share

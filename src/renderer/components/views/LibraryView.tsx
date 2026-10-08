@@ -1,5 +1,9 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type UIEvent as ReactUIEvent } from 'react'
-import { useLibraryStore, type LibraryArtistBrowseMode, type LibraryAlbumSortMode } from '../../stores/libraryStore'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type UIEvent as ReactUIEvent } from 'react'
+import {
+  useLibraryStore,
+  type LibraryArtistBrowseMode,
+  type LibrarySelectionRequest
+} from '../../stores/libraryStore'
 import { usePlayerStore, type PlaybackSourceContext } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useSubsonicSettingsStore } from '../../stores/subsonicSettingsStore'
@@ -13,8 +17,16 @@ import { compareAlbumsByYearDescending } from '../../utils/albumYearSort'
 import { partitionArtistDiscography } from '../../utils/artistDiscography'
 import { formatCompactTotalTrackDuration } from '../../utils/collectionDuration'
 import { matchesFuzzyFields } from '../../utils/fuzzySearch'
+import { isSameOrDescendantFsPath } from '../../utils/folderTree'
+import { compareBaseLocaleText } from '../../utils/localeSort'
+import { matchesTrackIdentityQuery } from '../../utils/trackSearch'
 import { runViewTransition } from '../../utils/viewTransitions'
 import { compareTrackPlayCounts } from '../../utils/trackPlayCountSort'
+import {
+  compareAlbumsBySortState,
+  getDefaultAlbumSortDirection,
+  type AlbumSortKey
+} from '../../utils/albumSort'
 import { getLibraryTabTransitionScopeClasses } from '../../utils/libraryTabMotion'
 import { getDetailHeaderCollapseDistance, resolveDetailHeaderCollapsed } from '../../utils/detailHeaderScroll'
 import {
@@ -24,11 +36,18 @@ import {
   formatLibraryYearKey,
   type LibraryYearGroup
 } from '../../utils/libraryYears'
-import TrackList, { type TrackListSortKey } from '../library/TrackList'
+import {
+  bindLibraryScrollRestoration,
+  getRememberedLibraryScrollPosition,
+  rememberLibraryScrollPosition,
+  resolveLibraryScrollContextKey
+} from '../../utils/libraryScrollRestoration'
+import TrackList, { type TrackListSortKey, type TrackListViewportAPI } from '../library/TrackList'
 import AlbumArtwork from '../library/AlbumArtwork'
 import QueueSplitButton from '../queue/QueueSplitButton'
 import AlbumGrid, { type AlbumGridViewportAPI } from '../library/AlbumGrid'
 import ArtistList, { type ArtistListViewportAPI } from '../library/ArtistList'
+import { ArtistNameLinksContent } from '../library/ArtistNameLinks'
 import FolderTreeView from '../library/FolderTreeView'
 import GenreGrid, { type GenreGridViewportAPI } from '../library/GenreGrid'
 import YearAlbumPreview from '../library/YearAlbumPreview'
@@ -39,9 +58,21 @@ import type { LibraryTabId } from '../../../shared/library/tabOrder'
 import { useWantedStore } from '../../stores/wantedStore'
 import { useSectionsStore } from '../../stores/sectionsStore'
 import { useSpotifyStore } from '../../stores/spotifyStore'
+import RootTrackTableControls from '../library/RootTrackTableControls'
+import SearchEmptyState from '../search/SearchEmptyState'
+import {
+  normalizeTrackSortRules,
+  replaceTrackSortRulesFromHeader,
+  type RootTrackColumnId
+} from '../../utils/rootTrackTable'
+import { compareTracksBySortRules } from '../../utils/trackSort'
+import { resolveCurrentPlaybackSource } from '../../../shared/home/playbackSources'
+import { albumCardPlaybackSource, createLibraryCardPlaybackActions, getAlbumCardPlaybackState, type AlbumPlaybackTarget, type LibraryCardPlaybackSnapshot, type LibraryCardSource } from '../../utils/libraryCardPlayback'
+import CompactAlbumCard from '../library/CompactAlbumCard'
 
 type SortDirection = 'asc' | 'desc'
 type ArtistAlbumRailMode = 'albums' | 'singles' | 'featured'
+const ALBUM_ROOT_SCROLL_KEY = 'root:albums' as const
 
 function formatTrackCount(count: number): string {
   return `${count} ${count === 1 ? 'track' : 'tracks'}`
@@ -52,7 +83,7 @@ function normalizeSortText(value: string | null | undefined): string {
 }
 
 function compareTextValue(a: string | null | undefined, b: string | null | undefined): number {
-  return normalizeSortText(a).localeCompare(normalizeSortText(b), undefined, { sensitivity: 'base' })
+  return compareBaseLocaleText(normalizeSortText(a), normalizeSortText(b))
 }
 
 function compareWithDirection(value: number, direction: SortDirection): number {
@@ -137,11 +168,11 @@ function compareNullableKey(
   if (aMissing) return 1
   if (bMissing) return -1
 
-  return compareWithDirection(aValue.localeCompare(bValue, undefined, { sensitivity: 'base' }), direction)
+  return compareWithDirection(compareBaseLocaleText(aValue, bValue), direction)
 }
 
 function comparePath(a: string, b: string): number {
-  return a.localeCompare(b, undefined, { sensitivity: 'base' })
+  return compareBaseLocaleText(a, b)
 }
 
 function compareAlbumSequence(
@@ -177,15 +208,6 @@ function resolveBrowseArtistForTrack(
   if (track.album_artist_names && track.album_artist_names.length > 0) return track.album_artist_names[0]
   const artistContributors = splitCollaborators(normalizedArtist)
   return artistContributors[0] ?? (normalizedArtist || 'Unknown Artist')
-}
-
-function trackMatchesLibraryQuery(
-  track: { title: string },
-  query: string
-): boolean {
-  return matchesFuzzyFields(query, [
-    { value: track.title, weight: 1.5 }
-  ])
 }
 
 const LIBRARY_TAB_LABELS: Record<LibraryTabId, string> = {
@@ -227,12 +249,9 @@ export default function LibraryView() {
   const loadFullTracks = useLibraryStore((state) => state.loadFullTracks)
   const releaseFullTracks = useLibraryStore((state) => state.releaseFullTracks)
   const setViewMode = useLibraryStore((state) => state.setViewMode)
-  const selectAlbum = useLibraryStore((state) => state.selectAlbum)
-  const selectArtist = useLibraryStore((state) => state.selectArtist)
-  const selectGenre = useLibraryStore((state) => state.selectGenre)
-  const selectYear = useLibraryStore((state) => state.selectYear)
+  const prepareSelection = useLibraryStore((state) => state.prepareSelection)
+  const commitPreparedSelection = useLibraryStore((state) => state.commitPreparedSelection)
   const clearSelection = useLibraryStore((state) => state.clearSelection)
-  const goBackSelection = useLibraryStore((state) => state.goBackSelection)
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
   const showTracklistGenre = useLibraryStore((state) => state.showTracklistGenre)
   const showTracklistAddedDate = useLibraryStore((state) => state.showTracklistAddedDate)
@@ -241,12 +260,16 @@ export default function LibraryView() {
   const ratings = useRatingsStore((state) => state.ratings)
   const sortState = useLibraryStore((state) => state.trackListSortState)
   const setSortState = useLibraryStore((state) => state.setTrackListSortState)
+  const tracksViewSortRules = useLibraryStore((state) => state.tracksViewSortRules)
+  const setTracksViewSortRules = useLibraryStore((state) => state.setTracksViewSortRules)
+  const rootTrackTableLayout = useLibraryStore((state) => state.rootTrackTableLayout)
+  const setRootTrackTableLayout = useLibraryStore((state) => state.setRootTrackTableLayout)
   const selectedSourceFilters = useLibraryStore((state) => state.selectedSourceFilters)
   const setSelectedSourceFilters = useLibraryStore((state) => state.setSelectedSourceFilters)
   const clearSelectedSourceFilters = useLibraryStore((state) => state.clearSelectedSourceFilters)
   const toggleSourceFilter = useLibraryStore((state) => state.toggleSourceFilter)
-  const albumSortMode = useLibraryStore((state) => state.albumSortMode)
-  const setAlbumSortMode = useLibraryStore((state) => state.setAlbumSortMode)
+  const albumSortState = useLibraryStore((state) => state.albumSortState)
+  const setAlbumSortState = useLibraryStore((state) => state.setAlbumSortState)
   const includeSinglesInAlbums = useLibraryStore((state) => state.includeSinglesInAlbums)
   const setIncludeSinglesInAlbums = useLibraryStore((state) => state.setIncludeSinglesInAlbums)
   const includeCollabArtists = useLibraryStore((state) => state.includeCollabArtists)
@@ -257,6 +280,10 @@ export default function LibraryView() {
   const jellyfinSources = useJellyfinSettingsStore((state) => state.sources)
 
   const shuffle = usePlayerStore((s) => s.shuffle)
+  const currentTrack = usePlayerStore((s) => s.currentTrack)
+  const currentQueueItemId = usePlayerStore((s) => s.currentQueueItemId)
+  const queueItems = usePlayerStore((s) => s.queueItems)
+  const playbackState = usePlayerStore((s) => s.playbackState)
   const startPlaybackContextByPaths = usePlayerStore((s) => s.startPlaybackContextByPaths)
   const toggleShuffle = usePlayerStore((s) => s.toggleShuffle)
   const setActiveView = useUIStore((s) => s.setActiveView)
@@ -268,31 +295,63 @@ export default function LibraryView() {
   const pendingLibrarySearchQuery = useUIStore((s) => s.pendingLibrarySearchQuery)
   const consumePendingLibrarySearchQuery = useUIStore((s) => s.consumePendingLibrarySearchQuery)
   const [searchQuery, setSearchQuery] = useState('')
+  const [responsiveHiddenTrackColumns, setResponsiveHiddenTrackColumns] = useState<readonly RootTrackColumnId[]>([])
   const [artistAlbumRailMode, setArtistAlbumRailMode] = useState<ArtistAlbumRailMode>('albums')
   const artistBrowseMode = useLibraryStore((state) => state.artistBrowseMode)
   const setArtistImageFromFile = useLibraryStore((state) => state.setArtistImageFromFile)
   const clearArtistImage = useLibraryStore((state) => state.clearArtistImage)
   const [isCollectionPlayPending, setIsCollectionPlayPending] = useState(false)
+  const [pendingCardPlaybackKey, setPendingCardPlaybackKey] = useState<string | null>(null)
+  const [cardPlaybackError, setCardPlaybackError] = useState<string | null>(null)
+  const cardPlayback = useMemo<LibraryCardPlaybackSnapshot>(() => ({
+    currentSource: resolveCurrentPlaybackSource({ currentTrack, currentQueueItemId, queueItems }),
+    currentTrackPath: currentTrack?.path ?? null,
+    playbackState,
+    pendingKey: pendingCardPlaybackKey
+  }), [currentTrack, currentQueueItemId, queueItems, playbackState, pendingCardPlaybackKey])
+  const cardPlaybackActions = useMemo(() => createLibraryCardPlaybackActions({
+    getContext: () => {
+      const player = usePlayerStore.getState()
+      return {
+        currentSource: resolveCurrentPlaybackSource(player),
+        currentTrackPath: player.currentTrack?.path ?? null,
+        loading: player.playbackState === 'loading'
+      }
+    },
+    getTracks: (source) => {
+      switch (source.type) {
+        case 'album': return window.electronAPI.library.getTracksByAlbum(source.album, source.albumArtist, source.identityKey)
+        case 'artist': return window.electronAPI.library.getTracksByArtist(source.artist, useLibraryStore.getState().artistBrowseMode)
+        case 'genre': return window.electronAPI.library.getTracksByGenre(source.genre)
+        case 'year': return window.electronAPI.library.getTracksByYear(source.year === 'unknown' ? null : source.year)
+      }
+    },
+    toggle: () => usePlayerStore.getState().togglePlay(),
+    start: (paths, index, options) => usePlayerStore.getState().startPlaybackContextByPaths(paths, index, options),
+    onPendingChange: setPendingCardPlaybackKey,
+    onError: setCardPlaybackError
+  }), [])
   const [isUpdatingArtistImage, setIsUpdatingArtistImage] = useState(false)
   const [isArtistImageMenuOpen, setIsArtistImageMenuOpen] = useState(false)
   const artistImageMenuPresence = usePresence(isArtistImageMenuOpen)
   const [isDetailHeaderCollapsed, setIsDetailHeaderCollapsed] = useState(false)
-  const previousInDetailViewRef = useRef(false)
+  const previousSearchContextKeyRef = useRef<string | null>(null)
   const detailHeaderRef = useRef<HTMLDivElement | null>(null)
   const collectionPlayPendingRef = useRef(false)
   const albumViewportRef = useRef<AlbumGridViewportAPI | null>(null)
-  const albumGridScrollRef = useRef(0)
   const yearDetailViewportRef = useRef<HTMLDivElement | null>(null)
-  const yearDetailScrollRef = useRef(0)
+  const artistDetailViewportRef = useRef<HTMLDivElement | null>(null)
   const artistViewportRef = useRef<ArtistListViewportAPI | null>(null)
-  const artistScrollRef = useRef(0)
   const genreViewportRef = useRef<GenreGridViewportAPI | null>(null)
-  const genreGridScrollRef = useRef(0)
   const yearViewportRef = useRef<YearGridViewportAPI | null>(null)
-  const yearGridScrollRef = useRef(0)
+  const trackViewportRef = useRef<TrackListViewportAPI | null>(null)
   const artistImageControlRef = useRef<HTMLDivElement | null>(null)
   const artistAlbumRailRef = useRef<HTMLDivElement | null>(null)
-  const pendingScrollRef = useRef<'albums' | 'artists' | 'genres' | 'years' | 'year-detail' | null>(null)
+  const activeScrollBindingRef = useRef<{
+    element: HTMLElement
+    key: ReturnType<typeof resolveLibraryScrollContextKey>
+    unbind: () => void
+  } | null>(null)
 
   useHorizontalWheelScroll(artistAlbumRailRef)
 
@@ -310,12 +369,31 @@ export default function LibraryView() {
   const hasSearchQuery = trimmedSearchQuery.length > 0
   const inDetailView = Boolean(selectedAlbum || selectedArtist || selectedGenre || selectedYear !== null)
   const isAlbumRootView = viewMode === 'albums' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null
+  const isTrackRootView = viewMode === 'tracks' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null
   const isArtistRootView = viewMode === 'artists' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null
+  const isGenreRootView = viewMode === 'genres' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null
   const isYearRootView = viewMode === 'years' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null
   const isYearDetailView = viewMode === 'years' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear !== null
   const isReleaseBrowseView = isAlbumRootView || isYearRootView || isYearDetailView
   const isTracklistContext = Boolean(selectedAlbum || selectedArtist || selectedGenre || viewMode === 'tracks')
   const isCollectionActionContext = isTracklistContext || selectedYear !== null
+  const libraryScrollContextKey = resolveLibraryScrollContextKey({
+    viewMode,
+    selectedAlbum,
+    selectedArtist,
+    selectedGenre,
+    selectedYear
+  })
+
+  useEffect(() => {
+    if (!isTrackRootView) return
+    const normalizedRules = normalizeTrackSortRules(tracksViewSortRules, { ratingsEnabled })
+    const unchanged = normalizedRules.length === tracksViewSortRules.length
+      && normalizedRules.every((rule, index) => (
+        rule.key === tracksViewSortRules[index]?.key && rule.direction === tracksViewSortRules[index]?.direction
+      ))
+    if (!unchanged) setTracksViewSortRules(normalizedRules)
+  }, [isTrackRootView, ratingsEnabled, rootTrackTableLayout, setTracksViewSortRules, tracksViewSortRules])
 
   // Folders the user has hidden stay indexed but are filtered out of every library browse surface.
   const hiddenFolderPrefixes = useMemo(
@@ -338,12 +416,12 @@ export default function LibraryView() {
     () => resolveTrackPaths(activeTrackPaths),
     [activeTrackPaths, resolveTrackPaths, trackCacheVersion]
   )
-  // Drop tracks that live under a hidden folder. Mirrors the path-prefix matching used by
-  // FolderTreeView's buildFolderTree so a track counts as "under" a root only via a separator.
+  // Drop tracks that live under a hidden folder using the same platform-aware path matching
+  // as the folder tree, including filesystem roots and case-insensitive default filesystems.
   const visibleTracks = useMemo(() => {
     if (!hasHiddenFolders) return tracks
     return tracks.filter((track) => !hiddenFolderPrefixes.some((prefix) => (
-      track.path.startsWith(prefix + '/') || track.path.startsWith(prefix + '\\')
+      isSameOrDescendantFsPath(track.path, prefix, window.electronAPI.platform)
     )))
   }, [tracks, hiddenFolderPrefixes, hasHiddenFolders])
   const sortContextKey = useMemo(() => {
@@ -378,8 +456,9 @@ export default function LibraryView() {
     if (selectedGenre) {
       return { type: 'genre', genre: selectedGenre }
     }
+    if (selectedYear !== null) return { type: 'year', year: selectedYear }
     return null
-  }, [selectedAlbum, selectedArtist, selectedGenre])
+  }, [selectedAlbum, selectedArtist, selectedGenre, selectedYear])
   const sourceFilterOptions = useMemo(() => {
     return [
       ...subsonicSources.map((source) => ({
@@ -393,6 +472,7 @@ export default function LibraryView() {
     ]
   }, [jellyfinSources, subsonicSources])
   const shouldShowSourceFilters = sourceFilterOptions.length > 0
+  const hasEffectiveLibraryFilters = hasHiddenFolders || (shouldShowSourceFilters && selectedSourceFilters.size > 0)
   const selectedArtistRecord = useMemo(() => {
     if (!selectedArtist) return null
     const selectedArtistKey = normalizeKey(selectedArtist)
@@ -409,6 +489,14 @@ export default function LibraryView() {
   const selectedGenreArtworkHash = selectedGenreRecord?.artwork_hash ?? null
 
   useEffect(() => {
+    const previousKey = previousSearchContextKeyRef.current
+    previousSearchContextKeyRef.current = libraryScrollContextKey
+    if (previousKey !== null && previousKey !== libraryScrollContextKey) {
+      setSearchQuery('')
+    }
+  }, [libraryScrollContextKey])
+
+  useEffect(() => {
     if (pendingLibrarySearchQuery === null) return
 
     const pendingQuery = consumePendingLibrarySearchQuery()
@@ -422,13 +510,6 @@ export default function LibraryView() {
     setSearchQuery('')
     clearSelectedSourceFilters()
   }, [clearSelectedSourceFilters, libraryTrackRevealRequest])
-
-  useEffect(() => {
-    if (!previousInDetailViewRef.current && inDetailView) {
-      setSearchQuery('')
-    }
-    previousInDetailViewRef.current = inDetailView
-  }, [inDetailView])
 
   useEffect(() => {
     setIsArtistImageMenuOpen(false)
@@ -513,27 +594,51 @@ export default function LibraryView() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [cancelScan, isScanning])
 
+  // Resolve the active scrollport after every render because virtualized views
+  // publish their imperative element after mounting and can replace it without
+  // changing the navigation context (for example Artist list/grid mode).
   useLayoutEffect(() => {
-    const pending = pendingScrollRef.current
-    if (pending === 'albums' && albumViewportRef.current?.element) {
-      albumViewportRef.current.element.scrollTop = albumGridScrollRef.current
-      pendingScrollRef.current = null
-    } else if (pending === 'artists' && artistViewportRef.current?.element) {
-      artistViewportRef.current.element.scrollTop = artistScrollRef.current
-      pendingScrollRef.current = null
-    } else if (pending === 'genres' && genreViewportRef.current?.element) {
-      genreViewportRef.current.element.scrollTop = genreGridScrollRef.current
-      pendingScrollRef.current = null
-    } else if (pending === 'years' && yearViewportRef.current?.element) {
-      yearViewportRef.current.element.scrollTop = yearGridScrollRef.current
-      pendingScrollRef.current = null
-    } else if (pending === 'year-detail' && yearDetailViewportRef.current) {
-      yearDetailViewportRef.current.scrollTop = yearDetailScrollRef.current
-      pendingScrollRef.current = null
+    let element: HTMLElement | null = null
+    if (selectedAlbum || selectedGenre || isTrackRootView) {
+      element = trackViewportRef.current?.element ?? null
+    } else if (selectedArtist) {
+      element = artistDetailViewportRef.current
+    } else if (selectedYear !== null) {
+      element = yearDetailViewportRef.current
+    } else if (viewMode === 'albums') {
+      // AlbumGrid owns its restoration so it can re-apply the offset after
+      // react-window completes the grid's post-mount sizing passes.
+      element = null
+    } else if (viewMode === 'artists') {
+      element = artistViewportRef.current?.element ?? null
+    } else if (viewMode === 'genres') {
+      element = genreViewportRef.current?.element ?? null
+    } else if (viewMode === 'years') {
+      element = yearViewportRef.current?.element ?? null
+    }
+
+    const activeBinding = activeScrollBindingRef.current
+    if (activeBinding?.key === libraryScrollContextKey && activeBinding.element === element) return
+
+    activeBinding?.unbind()
+    activeScrollBindingRef.current = null
+
+    if (element) {
+      activeScrollBindingRef.current = {
+        element,
+        key: libraryScrollContextKey,
+        unbind: bindLibraryScrollRestoration(libraryScrollContextKey, element)
+      }
     }
   })
 
+  useLayoutEffect(() => () => {
+    activeScrollBindingRef.current?.unbind()
+    activeScrollBindingRef.current = null
+  }, [])
+
   useEffect(() => {
+    if (isTrackRootView) return
     if (!sortState) return
     const hideBpmKeySort = !showTracklistBpmKey && (sortState.key === 'bpm' || sortState.key === 'musical_key')
     const hideGenreSort = !showTracklistGenre && sortState.key === 'genre'
@@ -542,9 +647,19 @@ export default function LibraryView() {
     const hidePlayCountSort = !showTracklistPlayCount && sortState.key === 'play_count'
     if (!hideBpmKeySort && !hideGenreSort && !hideAddedSort && !hideRatingSort && !hidePlayCountSort) return
     setSortState(selectedAlbum ? null : { key: 'title', direction: 'asc' })
-  }, [ratingsEnabled, selectedAlbum, setSortState, showTracklistAddedDate, showTracklistBpmKey, showTracklistGenre, showTracklistPlayCount, sortState])
+  }, [isTrackRootView, ratingsEnabled, selectedAlbum, setSortState, showTracklistAddedDate, showTracklistBpmKey, showTracklistGenre, showTracklistPlayCount, sortState])
 
   const handleSortColumnToggle = useCallback((key: TrackListSortKey) => {
+    const state = useLibraryStore.getState()
+    const isRootTracks = state.viewMode === 'tracks'
+      && !state.selectedAlbum
+      && !state.selectedArtist
+      && !state.selectedGenre
+      && state.selectedYear === null
+    if (isRootTracks) {
+      setTracksViewSortRules(replaceTrackSortRulesFromHeader(state.tracksViewSortRules, key))
+      return
+    }
     const current = useLibraryStore.getState().trackListSortState
     if (current?.key === key) {
       setSortState({
@@ -557,15 +672,26 @@ export default function LibraryView() {
       key,
       direction: key === 'added' || key === 'play_count' ? 'desc' : 'asc'
     })
-  }, [setSortState])
+  }, [setSortState, setTracksViewSortRules])
 
   const handleResetToDefaultOrder = useCallback(() => {
     setSortState(null)
   }, [setSortState])
 
-  const handleSetAlbumSortMode = useCallback((mode: LibraryAlbumSortMode) => {
-    setAlbumSortMode(mode)
-  }, [setAlbumSortMode])
+  const effectiveAlbumSortState = useMemo(() => (
+    isYearDetailView && albumSortState.key === 'year'
+      ? { key: 'title' as const, direction: 'asc' as const }
+      : albumSortState
+  ), [albumSortState, isYearDetailView])
+
+  const handleAlbumSortKeyClick = useCallback((key: AlbumSortKey) => {
+    const current = isYearDetailView && albumSortState.key === 'year'
+      ? { key: 'title' as const, direction: 'asc' as const }
+      : albumSortState
+    setAlbumSortState(current.key === key
+      ? { key, direction: current.direction === 'asc' ? 'desc' : 'asc' }
+      : { key, direction: getDefaultAlbumSortDirection(key) })
+  }, [albumSortState, isYearDetailView, setAlbumSortState])
 
   const handleToggleIncludeSinglesInAlbums = useCallback(() => {
     setIncludeSinglesInAlbums(!includeSinglesInAlbums)
@@ -602,28 +728,51 @@ export default function LibraryView() {
     ))
   }, [inDetailView])
 
-  const handleSelectArtistFromList = useCallback(async (artistName: string) => {
-    artistScrollRef.current = artistViewportRef.current?.element?.scrollTop ?? 0
-    await runViewTransition(() => selectArtist(artistName, 'library'), 'library-context-forward')
-  }, [selectArtist])
+  const runPreparedSelectionTransition = useCallback(async (
+    request: LibrarySelectionRequest,
+    scopeClassName: string
+  ): Promise<boolean> => {
+    const prepared = await prepareSelection(request)
+    if (!prepared) return false
+
+    let committed = false
+    await runViewTransition(() => {
+      committed = commitPreparedSelection(prepared)
+    }, scopeClassName)
+    return committed
+  }, [commitPreparedSelection, prepareSelection])
+
+  const handleSelectArtist = useCallback(async (artistName: string) => {
+    await runPreparedSelectionTransition(
+      { kind: 'artist', artist: artistName, origin: 'library' },
+      'library-context-forward'
+    )
+  }, [runPreparedSelectionTransition])
 
   const handleSelectAlbumFromGrid = useCallback((album: { album: string; artist: string; identity_key: string }) => {
     if (selectedYear !== null) {
-      yearDetailScrollRef.current = yearDetailViewportRef.current?.scrollTop ?? 0
       setSearchQuery('')
     } else {
-      albumGridScrollRef.current = albumViewportRef.current?.element?.scrollTop ?? 0
+      const albumViewport = albumViewportRef.current?.element
+      if (albumViewport) {
+        rememberLibraryScrollPosition(ALBUM_ROOT_SCROLL_KEY, albumViewport.scrollTop)
+      }
     }
-    void runViewTransition(
-      () => selectAlbum(
-        album.album,
-        album.artist,
-        selectedYear !== null ? 'library-detail' : 'library',
-        album.identity_key
-      ),
+    void runPreparedSelectionTransition(
+      {
+        kind: 'album',
+        album: album.album,
+        artist: album.artist,
+        origin: selectedYear !== null ? 'library-detail' : 'library',
+        identityKey: album.identity_key
+      },
       'library-context-forward'
     )
-  }, [selectAlbum, selectedYear])
+  }, [runPreparedSelectionTransition, selectedYear])
+
+  const handleAlbumGridScrollTopChange = useCallback((scrollTop: number) => {
+    rememberLibraryScrollPosition(ALBUM_ROOT_SCROLL_KEY, scrollTop)
+  }, [])
 
   const handleAlbumGridContextMenu = useCallback((album: { album: string; artist: string; identity_key: string }, x: number, y: number) => {
     openCollectionQueueMenu({
@@ -638,21 +787,47 @@ export default function LibraryView() {
     })
   }, [openCollectionQueueMenu])
 
+  const handlePlayLibraryCard = useCallback((source: LibraryCardSource, title: string, albumIdentityKeys?: ReadonlySet<string>) => {
+    void cardPlaybackActions.play({ source, title }, {
+      sourceFilters: shouldShowSourceFilters ? selectedSourceFilters : new Set<string>(),
+      hiddenFolderPrefixes,
+      platform: window.electronAPI.platform,
+      albumIdentityKeys
+    })
+  }, [cardPlaybackActions, shouldShowSourceFilters, selectedSourceFilters, hiddenFolderPrefixes])
+
+  const handlePlayAlbumCard = useCallback((album: AlbumPlaybackTarget) => {
+    handlePlayLibraryCard(albumCardPlaybackSource(album), album.album)
+  }, [handlePlayLibraryCard])
+
+  const handlePlayArtistCard = useCallback((artist: string) => {
+    handlePlayLibraryCard({ type: 'artist', artist }, artist)
+  }, [handlePlayLibraryCard])
+
+  const handlePlayGenreCard = useCallback((genre: { genre: string }) => {
+    handlePlayLibraryCard({ type: 'genre', genre: genre.genre }, genre.genre)
+  }, [handlePlayLibraryCard])
+
+  const handleSelectArtistAlbum = useCallback((album: AlbumPlaybackTarget) => {
+    void runPreparedSelectionTransition({
+      kind: 'album', album: album.album, artist: album.artist,
+      origin: 'library-detail', identityKey: album.identity_key
+    }, 'library-context-forward')
+  }, [runPreparedSelectionTransition])
+
   const handleSelectGenreFromGrid = useCallback((genre: { genre: string }) => {
-    genreGridScrollRef.current = genreViewportRef.current?.element?.scrollTop ?? 0
-    void runViewTransition(
-      () => selectGenre(genre.genre, 'library'),
+    void runPreparedSelectionTransition(
+      { kind: 'genre', genre: genre.genre, origin: 'library' },
       'library-context-forward'
     )
-  }, [selectGenre])
+  }, [runPreparedSelectionTransition])
 
   const handleSelectYearFromGrid = useCallback((year: LibraryYearGroup) => {
-    yearGridScrollRef.current = yearViewportRef.current?.element?.scrollTop ?? 0
-    void runViewTransition(
-      () => selectYear(year.key, 'library'),
+    void runPreparedSelectionTransition(
+      { kind: 'year', year: year.key, origin: 'library' },
       'library-context-forward'
     )
-  }, [selectYear])
+  }, [runPreparedSelectionTransition])
 
   const handleSelectViewMode = useCallback((mode: Parameters<typeof setViewMode>[0]) => {
     if (viewMode === mode) return
@@ -689,6 +864,16 @@ export default function LibraryView() {
 
   const queueSeedSortedTracks = useMemo(() => {
     const sorted = [...collectionSeedTracks]
+
+    if (isTrackRootView) {
+      sorted.sort((left, right) => compareTracksBySortRules(
+        left,
+        right,
+        tracksViewSortRules,
+        (trackPath) => ratings.get(trackPath)?.rating ?? null
+      ))
+      return sorted
+    }
 
     sorted.sort((a, b) => {
       if (!sortState) {
@@ -730,7 +915,7 @@ export default function LibraryView() {
     })
 
     return sorted
-  }, [collectionSeedTracks, ratings, sortState])
+  }, [collectionSeedTracks, isTrackRootView, ratings, sortState, tracksViewSortRules])
   const isCollectionPlayDisabled = isCollectionPlayPending || queueSeedSortedTracks.length === 0
   const queueTrackPaths = useMemo(() => queueSeedSortedTracks.map((track) => track.path), [queueSeedSortedTracks])
 
@@ -770,70 +955,68 @@ export default function LibraryView() {
 
   const displayTracks = useMemo(() => {
     if (!hasSearchQuery) return queueSeedSortedTracks
-    return queueSeedSortedTracks.filter((track) => trackMatchesLibraryQuery(track, trimmedSearchQuery))
+    return queueSeedSortedTracks.filter((track) => matchesTrackIdentityQuery(track, trimmedSearchQuery, 'context'))
   }, [hasSearchQuery, trimmedSearchQuery, queueSeedSortedTracks])
 
   const sourceFilteredAlbumIdentityKeys = useMemo(() => {
+    if (!isReleaseBrowseView || !hasEffectiveLibraryFilters) return null
     const keys = new Set<string>()
     for (const track of sourceFilteredTracks) {
       keys.add(track.album_identity_key || buildAlbumIdentityKeyFromTrack(track))
     }
     return keys
-  }, [sourceFilteredTracks])
+  }, [hasEffectiveLibraryFilters, isReleaseBrowseView, sourceFilteredTracks])
 
   const sourceFilteredAlbums = useMemo(() => {
-    if ((!shouldShowSourceFilters || selectedSourceFilters.size === 0) && !hasHiddenFolders) return albumGridSourceAlbums
+    if (!isReleaseBrowseView) return []
+    if (!sourceFilteredAlbumIdentityKeys) return albumGridSourceAlbums
     return albumGridSourceAlbums.filter((album) => sourceFilteredAlbumIdentityKeys.has(album.identity_key))
-  }, [albumGridSourceAlbums, selectedSourceFilters.size, shouldShowSourceFilters, hasHiddenFolders, sourceFilteredAlbumIdentityKeys])
+  }, [albumGridSourceAlbums, isReleaseBrowseView, sourceFilteredAlbumIdentityKeys])
 
   const filteredAlbums = useMemo(() => {
+    if (!isAlbumRootView && !isYearDetailView) return []
     const shouldFilterByQuery = hasSearchQuery && (isAlbumRootView || isYearDetailView)
     const visibleAlbums = !shouldFilterByQuery
       ? sourceFilteredAlbums
       : sourceFilteredAlbums.filter((album) => matchesFuzzyFields(trimmedSearchQuery, [
-        { value: album.album, weight: 1.4 },
-        { value: album.artist, weight: 1.1 }
-      ]))
+          { value: album.album, weight: 1.4 },
+          { value: album.artist, weight: 1.1 }
+        ], 'context'))
 
     const sortedAlbums = [...visibleAlbums]
-    sortedAlbums.sort((a, b) => {
-      if (albumSortMode === 'artist') {
-        const artistCompare = compareTextValue(a.artist, b.artist)
-        if (artistCompare !== 0) return artistCompare
-        const albumCompare = compareTextValue(a.album, b.album)
-        if (albumCompare !== 0) return albumCompare
-      } else {
-        const albumCompare = compareTextValue(a.album, b.album)
-        if (albumCompare !== 0) return albumCompare
-        const artistCompare = compareTextValue(a.artist, b.artist)
-        if (artistCompare !== 0) return artistCompare
-      }
-      return a.identity_key.localeCompare(b.identity_key)
-    })
+    sortedAlbums.sort((a, b) => compareAlbumsBySortState(a, b, effectiveAlbumSortState))
 
     return sortedAlbums
-  }, [albumSortMode, hasSearchQuery, isAlbumRootView, isYearDetailView, trimmedSearchQuery, sourceFilteredAlbums])
+  }, [effectiveAlbumSortState, hasSearchQuery, isAlbumRootView, isYearDetailView, trimmedSearchQuery, sourceFilteredAlbums])
 
-  const yearGroups = useMemo(
-    () => buildLibraryYearGroups(sourceFilteredAlbums),
-    [sourceFilteredAlbums]
-  )
+  const yearGroups = useMemo(() => {
+    if (!isYearRootView && !isYearDetailView) return []
+    return buildLibraryYearGroups(sourceFilteredAlbums)
+  }, [isYearDetailView, isYearRootView, sourceFilteredAlbums])
+  const handlePlayYearCard = useCallback((year: LibraryYearGroup) => {
+    const albumIdentityKeys = new Set(sourceFilteredAlbums
+      .filter((album) => albumMatchesLibraryYear(album, year.key))
+      .map((album) => album.identity_key))
+    handlePlayLibraryCard({ type: 'year', year: year.key }, year.label, albumIdentityKeys)
+  }, [sourceFilteredAlbums, handlePlayLibraryCard])
   const filteredYears = useMemo(() => {
-    if (!hasSearchQuery || !isYearRootView) return yearGroups
+    if (!isYearRootView) return []
+    if (!hasSearchQuery) return yearGroups
     return yearGroups.filter((year) => matchesFuzzyFields(trimmedSearchQuery, [
       { value: year.label, weight: 1.5 }
-    ]))
+    ], 'context'))
   }, [hasSearchQuery, isYearRootView, trimmedSearchQuery, yearGroups])
   const selectedYearGroup = useMemo(() => {
     if (selectedYear === null) return null
     return yearGroups.find((year) => year.key === selectedYear) ?? null
   }, [selectedYear, yearGroups])
   const selectedYearAlbums = useMemo(() => {
-    if (selectedYear === null) return []
+    if (!isYearDetailView || selectedYear === null) return []
     return filteredAlbums.filter((album) => albumMatchesLibraryYear(album, selectedYear))
-  }, [filteredAlbums, selectedYear])
+  }, [filteredAlbums, isYearDetailView, selectedYear])
 
   const sourceFilteredArtistKeys = useMemo(() => {
+    if (!isArtistRootView) return null
     if ((!shouldShowSourceFilters || selectedSourceFilters.size === 0) && !hasHiddenFolders) return null
     const keys = new Set<string>()
     for (const track of sourceFilteredTracks) {
@@ -854,9 +1037,10 @@ export default function LibraryView() {
       }
     }
     return keys
-  }, [artistBrowseMode, selectedSourceFilters.size, shouldShowSourceFilters, hasHiddenFolders, sourceFilteredTracks])
+  }, [artistBrowseMode, hasHiddenFolders, isArtistRootView, selectedSourceFilters.size, shouldShowSourceFilters, sourceFilteredTracks])
 
   const sourceFilteredPrimaryArtistKeys = useMemo(() => {
+    if (!isArtistRootView) return null
     if (artistBrowseMode !== 'canonical') return null
     if ((!shouldShowSourceFilters || selectedSourceFilters.size === 0) && !hasHiddenFolders) return null
 
@@ -866,14 +1050,16 @@ export default function LibraryView() {
       if (browseArtistKey) keys.add(browseArtistKey)
     }
     return keys
-  }, [artistBrowseMode, selectedSourceFilters.size, shouldShowSourceFilters, hasHiddenFolders, sourceFilteredTracks])
+  }, [artistBrowseMode, hasHiddenFolders, isArtistRootView, selectedSourceFilters.size, shouldShowSourceFilters, sourceFilteredTracks])
 
   const visibleArtists = useMemo(() => {
+    if (!isArtistRootView) return []
     if (!sourceFilteredArtistKeys) return artists
     return artists.filter((artist) => sourceFilteredArtistKeys.has(normalizeKey(artist.artist)))
-  }, [artists, sourceFilteredArtistKeys])
+  }, [artists, isArtistRootView, sourceFilteredArtistKeys])
 
   const rootVisibleArtists = useMemo(() => {
+    if (!isArtistRootView) return []
     if (artistBrowseMode !== 'canonical' || includeCollabArtists) return visibleArtists
 
     if (sourceFilteredPrimaryArtistKeys) {
@@ -881,16 +1067,18 @@ export default function LibraryView() {
     }
 
     return visibleArtists.filter((artist) => artist.primary_track_count > 0)
-  }, [artistBrowseMode, includeCollabArtists, sourceFilteredPrimaryArtistKeys, visibleArtists])
+  }, [artistBrowseMode, includeCollabArtists, isArtistRootView, sourceFilteredPrimaryArtistKeys, visibleArtists])
 
   const filteredArtists = useMemo(() => {
+    if (!isArtistRootView) return []
     if (!hasSearchQuery) return rootVisibleArtists
     return rootVisibleArtists.filter((artist) => matchesFuzzyFields(trimmedSearchQuery, [
       { value: artist.artist, weight: 1.5 }
-    ]))
-  }, [hasSearchQuery, trimmedSearchQuery, rootVisibleArtists])
+    ], 'context'))
+  }, [hasSearchQuery, isArtistRootView, trimmedSearchQuery, rootVisibleArtists])
 
   const sourceFilteredGenreKeys = useMemo(() => {
+    if (!isGenreRootView) return null
     if ((!shouldShowSourceFilters || selectedSourceFilters.size === 0) && !hasHiddenFolders) return null
     const keys = new Set<string>()
     for (const track of sourceFilteredTracks) {
@@ -900,38 +1088,42 @@ export default function LibraryView() {
       }
     }
     return keys
-  }, [selectedSourceFilters.size, shouldShowSourceFilters, hasHiddenFolders, sourceFilteredTracks])
+  }, [hasHiddenFolders, isGenreRootView, selectedSourceFilters.size, shouldShowSourceFilters, sourceFilteredTracks])
 
   const visibleGenres = useMemo(() => {
+    if (!isGenreRootView) return []
     if (!sourceFilteredGenreKeys) return genres
     return genres.filter((genre) => sourceFilteredGenreKeys.has(normalizeKey(genre.genre)))
-  }, [genres, sourceFilteredGenreKeys])
+  }, [genres, isGenreRootView, sourceFilteredGenreKeys])
 
   const filteredGenres = useMemo(() => {
+    if (!isGenreRootView) return []
     if (!hasSearchQuery) return visibleGenres
     return visibleGenres.filter((genre) => matchesFuzzyFields(trimmedSearchQuery, [
       { value: genre.genre, weight: 1.5 }
-    ]))
-  }, [hasSearchQuery, trimmedSearchQuery, visibleGenres])
+    ], 'context'))
+  }, [hasSearchQuery, isGenreRootView, trimmedSearchQuery, visibleGenres])
 
   const albumByKey = useMemo(() => {
     const map = new Map<string, (typeof albums)[number]>()
+    if (!selectedArtist) return map
     for (const album of albums) {
       const key = buildAlbumKey(album.album, album.artist)
       if (map.has(key)) continue
       map.set(key, album)
     }
     return map
-  }, [albums])
+  }, [albums, selectedArtist])
 
   const albumByIdentityKey = useMemo(() => {
     const map = new Map<string, (typeof albums)[number]>()
+    if (!selectedArtist) return map
     for (const album of albums) {
       if (map.has(album.identity_key)) continue
       map.set(album.identity_key, album)
     }
     return map
-  }, [albums])
+  }, [albums, selectedArtist])
 
   const { primaryArtistAlbums, primaryArtistSingles, featuredArtistAlbums } = useMemo(() => {
     if (!selectedArtist) {
@@ -1063,6 +1255,10 @@ export default function LibraryView() {
       || tracks.find((track) => track.artist.trim())?.artist.trim()
       || ''
     : ''
+  const selectedAlbumArtistNames = selectedAlbumArtist
+    ? tracks.find((track) => track.album_artist?.trim() === selectedAlbumArtist)?.album_artist_names
+      ?? tracks.find((track) => track.artist.trim() === selectedAlbumArtist)?.artist_names
+    : undefined
   const detailArtworkHash = selectedAlbumArtworkHash
     ?? selectedArtistArtworkHash
     ?? selectedGenreArtworkHash
@@ -1100,21 +1296,18 @@ export default function LibraryView() {
 
   const handleDetailBack = async () => {
     if (contextualAlbumParent) {
+      const prepared = await prepareSelection({ kind: 'history', direction: 'back' })
+      if (!prepared) return
       if (contextualAlbumParent.selectedYear !== null) {
-        pendingScrollRef.current = 'year-detail'
         setSearchQuery('')
       }
-      await runViewTransition(async () => {
-        await goBackSelection()
+      await runViewTransition(() => {
+        commitPreparedSelection(prepared)
       }, 'library-context-backward')
       return
     }
 
-    if (viewMode === 'albums') pendingScrollRef.current = 'albums'
-    else if (viewMode === 'artists') pendingScrollRef.current = 'artists'
-    else if (viewMode === 'genres') pendingScrollRef.current = 'genres'
-    else if (viewMode === 'years') {
-      pendingScrollRef.current = 'years'
+    if (viewMode === 'years') {
       setSearchQuery('')
     }
     await runViewTransition(() => clearSelection(), 'library-context-backward')
@@ -1216,7 +1409,6 @@ export default function LibraryView() {
     : null
   const detailMetaItems = selectedAlbum
     ? [
-        selectedAlbumArtist || null,
         selectedAlbumYear ? String(selectedAlbumYear) : null,
         formatTrackCount(sourceFilteredTracks.length),
         selectedAlbumDurationLabel,
@@ -1306,7 +1498,12 @@ export default function LibraryView() {
       )
     }
 
-    const hasContent = sourceFilteredTracks.length > 0 || sourceFilteredAlbums.length > 0 || visibleArtists.length > 0 || visibleGenres.length > 0
+    // When filters are active, every browse collection is derived from this
+    // same filtered track set. Otherwise the aggregate metadata arrays retain
+    // the previous empty-library semantics without deriving inactive tabs.
+    const hasContent = hasEffectiveLibraryFilters
+      ? sourceFilteredTracks.length > 0
+      : sourceFilteredTracks.length > 0 || albumGridSourceAlbums.length > 0 || artists.length > 0 || genres.length > 0
     if (!hasContent && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null) {
       return (
         <div className="library-empty">
@@ -1319,28 +1516,43 @@ export default function LibraryView() {
 
     if (hasSearchQuery && displayTracks.length === 0 && (selectedAlbum || selectedGenre || viewMode === 'tracks') && !selectedArtist) {
       return (
-        <div className="library-empty">
-          <p>No tracks found for "{trimmedQueryForMessage}"</p>
-        </div>
+        <SearchEmptyState
+          subject="tracks"
+          query={trimmedQueryForMessage}
+          fields="title, artist, and album"
+          onClear={() => setSearchQuery('')}
+        />
       )
     }
 
     // Folder tree
     if (viewMode === 'folders' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null) {
-      return <FolderTreeView tracks={sourceFilteredTracks} allTracks={visibleTracks} folders={visibleFolders} searchQuery={searchQuery} />
+      return (
+        <FolderTreeView
+          tracks={sourceFilteredTracks}
+          allTracks={visibleTracks}
+          folders={visibleFolders}
+          searchQuery={searchQuery}
+          onClearSearch={() => setSearchQuery('')}
+        />
+      )
     }
 
     // Albums grid
     if (viewMode === 'albums' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null) {
       if (filteredAlbums.length === 0) {
         return hasSearchQuery
-          ? <div className="library-empty"><p>No albums found for "{trimmedQueryForMessage}"</p></div>
+          ? <SearchEmptyState subject="albums" query={trimmedQueryForMessage} fields="album title and artist" onClear={() => setSearchQuery('')} />
           : <div className="library-empty"><p>No albums found</p></div>
       }
       return (
         <AlbumGrid
           albums={filteredAlbums}
+          playback={cardPlayback}
+          onPlayAlbum={handlePlayAlbumCard}
           viewportRef={albumViewportRef}
+          restoreScrollTop={getRememberedLibraryScrollPosition(ALBUM_ROOT_SCROLL_KEY)}
+          onScrollTopChange={handleAlbumGridScrollTopChange}
           searchQuery={trimmedSearchQuery}
           onSelectAlbum={handleSelectAlbumFromGrid}
           onAlbumContextMenu={handleAlbumGridContextMenu}
@@ -1352,13 +1564,15 @@ export default function LibraryView() {
     if (viewMode === 'artists' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null) {
       if (filteredArtists.length === 0) {
         return hasSearchQuery
-          ? <div className="library-empty"><p>No artists found for "{trimmedQueryForMessage}"</p></div>
+          ? <SearchEmptyState subject="artists" query={trimmedQueryForMessage} fields="artist name" onClear={() => setSearchQuery('')} />
           : <div className="library-empty"><p>No artists found</p></div>
       }
       return (
         <ArtistList
           artists={filteredArtists}
-          onSelectArtist={handleSelectArtistFromList}
+          playback={cardPlayback}
+          onPlayArtist={handlePlayArtistCard}
+          onSelectArtist={handleSelectArtist}
           viewMode={artistRootViewMode}
           viewportRef={artistViewportRef}
           searchQuery={trimmedSearchQuery}
@@ -1369,12 +1583,14 @@ export default function LibraryView() {
     if (viewMode === 'genres' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null) {
       if (filteredGenres.length === 0) {
         return hasSearchQuery
-          ? <div className="library-empty"><p>No genres found for "{trimmedQueryForMessage}"</p></div>
+          ? <SearchEmptyState subject="genres" query={trimmedQueryForMessage} fields="genre name" onClear={() => setSearchQuery('')} />
           : <div className="library-empty"><p>No genres found</p></div>
       }
       return (
         <GenreGrid
           genres={filteredGenres}
+          playback={cardPlayback}
+          onPlayGenre={handlePlayGenreCard}
           viewportRef={genreViewportRef}
           searchQuery={trimmedSearchQuery}
           onSelectGenre={handleSelectGenreFromGrid}
@@ -1385,12 +1601,14 @@ export default function LibraryView() {
     if (isYearRootView) {
       if (filteredYears.length === 0) {
         return hasSearchQuery
-          ? <div className="library-empty"><p>No years found for "{trimmedQueryForMessage}"</p></div>
+          ? <SearchEmptyState subject="years" query={trimmedQueryForMessage} fields="release year" onClear={() => setSearchQuery('')} />
           : <div className="library-empty"><p>No years found</p></div>
       }
       return (
         <YearGrid
           years={filteredYears}
+          playback={cardPlayback}
+          onPlayYear={handlePlayYearCard}
           viewportRef={yearViewportRef}
           searchQuery={trimmedSearchQuery}
           onSelectYear={handleSelectYearFromGrid}
@@ -1412,10 +1630,13 @@ export default function LibraryView() {
           className="library-year-detail"
           ref={yearDetailViewportRef}
           data-controller-scroll
+          data-track-list-scroll-container
         >
           <YearAlbumPreview
             key={`year-albums:${selectedYear}`}
             albums={selectedYearAlbums}
+            playback={cardPlayback}
+            onPlayAlbum={handlePlayAlbumCard}
             searchQuery={trimmedSearchQuery}
             emptyMessage={albumEmptyMessage}
             onSelectAlbum={handleSelectAlbumFromGrid}
@@ -1440,13 +1661,21 @@ export default function LibraryView() {
                 showAddedDate={showTracklistAddedDate}
                 showNewTrackIndicator
                 trackNumberMode="none"
-                externalScroll
+                pageScroll
                 enableColumnSorting
                 sortState={sortState}
                 onSortColumnToggle={handleSortColumnToggle}
                 jumpToTrackRequest={libraryTrackRevealRequest}
                 onJumpToTrackRequestConsumed={clearLibraryTrackRevealRequest}
                 searchQuery={trimmedSearchQuery}
+              />
+            ) : hasSearchQuery ? (
+              <SearchEmptyState
+                subject="tracks"
+                query={trimmedQueryForMessage}
+                fields="title, artist, and album"
+                onClear={() => setSearchQuery('')}
+                className="year-detail-section-empty year-detail-track-empty"
               />
             ) : (
               <div className="year-detail-section-empty year-detail-track-empty">{trackEmptyMessage}</div>
@@ -1469,7 +1698,12 @@ export default function LibraryView() {
           : 'No primary albums found in indexed albums.'
 
       return (
-        <div className="library-artist-detail">
+        <div
+          className="library-artist-detail"
+          ref={artistDetailViewportRef}
+          data-controller-scroll
+          data-track-list-scroll-container
+        >
           <section
             className="library-artist-rail"
             data-controller-group="artist-albums"
@@ -1514,51 +1748,16 @@ export default function LibraryView() {
                 ref={artistAlbumRailRef}
               >
                 {visibleArtistAlbums.map((album, index) => (
-                  <button
+                  <CompactAlbumCard
                     key={album.identity_key}
-                    type="button"
-                    className="library-artist-rail-card"
+                    album={album}
+                    density="discography"
+                    playback={getAlbumCardPlaybackState(album, cardPlayback)}
+                    onOpen={handleSelectArtistAlbum}
+                    onPlay={handlePlayAlbumCard}
+                    onContextMenu={handleAlbumGridContextMenu}
                     style={{ animationDelay: `${Math.min(index, 8) * 18}ms` }}
-                    data-controller-focusable="true"
-                    data-controller-context="true"
-                    data-controller-key={`album:${album.identity_key}`}
-                    onClick={() => void runViewTransition(
-                      () => selectAlbum(album.album, album.artist, 'library-detail', album.identity_key),
-                      'library-context-forward'
-                    )}
-                    onContextMenu={(event) => {
-                      event.preventDefault()
-                      event.stopPropagation()
-                      openCollectionQueueMenu({
-                        target: {
-                          kind: 'album',
-                          album: album.album,
-                          artist: album.artist,
-                          identityKey: album.identity_key
-                        },
-                        x: event.clientX,
-                        y: event.clientY
-                      })
-                    }}
-                  >
-                    {album.is_new && (
-                      <span className="library-latest-sync-pill album-card-sync-pill" title="Added in latest library sync">
-                        NEW
-                      </span>
-                    )}
-                    <div className="library-artist-rail-artwork">
-                      {album.artwork_hash ? (
-                        <AlbumArtwork hash={album.artwork_hash} alt={album.album} variant="card" />
-                      ) : (
-                        <span>&#9835;</span>
-                      )}
-                    </div>
-                    <div className="library-artist-rail-title">{album.album}</div>
-                    <div className="library-artist-rail-artist">{album.artist}</div>
-                    <div className="library-artist-rail-meta">
-                      {formatTrackCount(album.track_count)}{album.year ? ` \u00b7 ${album.year}` : ''}
-                    </div>
-                  </button>
+                  />
                 ))}
               </div>
             ) : (
@@ -1571,27 +1770,36 @@ export default function LibraryView() {
             )}
           </section>
 
-          <TrackList
-            tracks={displayTracks}
-            queueSeedTracks={queueSeedSortedTracks}
-            queueContextLabel={selectedAlbum?.album ?? selectedArtist ?? 'Library'}
-            sourceContext={playbackSourceContext}
-            showArtist={false}
-            showAlbum={!selectedAlbum}
-            showAddedDate={showTracklistAddedDate}
-            showNewTrackIndicator
-            showDiscHeaders={showSelectedAlbumDiscHeaders}
-            trackNumberMode={selectedAlbum ? 'album' : 'none'}
-            externalScroll
-            enableColumnSorting
-            sortState={sortState}
-            onSortColumnToggle={handleSortColumnToggle}
-            enableDefaultOrderReset={Boolean(selectedAlbum)}
-            onDefaultOrderReset={selectedAlbum ? handleResetToDefaultOrder : undefined}
-            jumpToTrackRequest={libraryTrackRevealRequest}
-            onJumpToTrackRequestConsumed={clearLibraryTrackRevealRequest}
-            searchQuery={trimmedSearchQuery}
-          />
+          {hasSearchQuery && displayTracks.length === 0 ? (
+            <SearchEmptyState
+              subject="tracks"
+              query={trimmedQueryForMessage}
+              fields="title, artist, and album"
+              onClear={() => setSearchQuery('')}
+            />
+          ) : (
+            <TrackList
+              tracks={displayTracks}
+              queueSeedTracks={queueSeedSortedTracks}
+              queueContextLabel={selectedAlbum?.album ?? selectedArtist ?? 'Library'}
+              sourceContext={playbackSourceContext}
+              showArtist={false}
+              showAlbum={!selectedAlbum}
+              showAddedDate={showTracklistAddedDate}
+              showNewTrackIndicator
+              showDiscHeaders={showSelectedAlbumDiscHeaders}
+              trackNumberMode={selectedAlbum ? 'album' : 'none'}
+              pageScroll
+              enableColumnSorting
+              sortState={sortState}
+              onSortColumnToggle={handleSortColumnToggle}
+              enableDefaultOrderReset={Boolean(selectedAlbum)}
+              onDefaultOrderReset={selectedAlbum ? handleResetToDefaultOrder : undefined}
+              jumpToTrackRequest={libraryTrackRevealRequest}
+              onJumpToTrackRequestConsumed={clearLibraryTrackRevealRequest}
+              searchQuery={trimmedSearchQuery}
+            />
+          )}
         </div>
       )
     }
@@ -1600,6 +1808,7 @@ export default function LibraryView() {
       return (
         <TrackList
           tracks={displayTracks}
+          viewportRef={trackViewportRef}
           queueSeedTracks={queueSeedSortedTracks}
           queueContextLabel={selectedGenre}
           sourceContext={playbackSourceContext}
@@ -1622,6 +1831,7 @@ export default function LibraryView() {
     return (
       <TrackList
         tracks={displayTracks}
+        viewportRef={trackViewportRef}
         queueSeedTracks={queueSeedSortedTracks}
         queueContextLabel={selectedAlbum?.album ?? selectedArtist ?? 'Library'}
         sourceContext={playbackSourceContext}
@@ -1633,11 +1843,14 @@ export default function LibraryView() {
         trackNumberMode={selectedAlbum ? 'album' : 'none'}
         enableColumnSorting
         sortState={sortState}
+        sortRules={isTrackRootView ? tracksViewSortRules : undefined}
         onSortColumnToggle={handleSortColumnToggle}
         enableDefaultOrderReset={Boolean(selectedAlbum)}
         onDefaultOrderReset={selectedAlbum ? handleResetToDefaultOrder : undefined}
         jumpToTrackRequest={libraryTrackRevealRequest}
         onJumpToTrackRequestConsumed={clearLibraryTrackRevealRequest}
+        rootTableLayout={isTrackRootView ? rootTrackTableLayout : undefined}
+        onResponsiveHiddenColumnsChange={isTrackRootView ? setResponsiveHiddenTrackColumns : undefined}
         searchQuery={trimmedSearchQuery}
         placeholders={!selectedAlbum && !selectedArtist && placeholdersActive ? wantedPlaceholders.rows : undefined}
         placeholderThumbs={wantedPlaceholders.thumbs}
@@ -1908,7 +2121,21 @@ export default function LibraryView() {
                 </div>
                 <h2 title={title}>{title}</h2>
                 <div className="library-detail-meta-row">
-                  <span className="library-detail-meta">{detailMetaItems.join(' \u00b7 ')}</span>
+                  <span className="library-detail-meta">
+                    {selectedAlbumArtist && (
+                      <>
+                        <ArtistNameLinksContent
+                          artistText={selectedAlbumArtist}
+                          artistNames={selectedAlbumArtistNames}
+                          onArtistClick={handleSelectArtist}
+                          linkClassName="artist-name-link-inline"
+                          artistBrowseMode={artistBrowseMode}
+                        />
+                        {' \u00b7 '}
+                      </>
+                    )}
+                    {detailMetaItems.join(' \u00b7 ')}
+                  </span>
                 </div>
               </div>
             </>
@@ -1995,30 +2222,46 @@ export default function LibraryView() {
                 Singles
               </button>
               {(isAlbumRootView || isYearDetailView) && (
-                <div className="library-segmented-toggle" role="group" aria-label="Album sort mode">
+                <div
+                  className="library-segmented-toggle library-album-sort-toggle"
+                  role="group"
+                  aria-label="Album sort mode"
+                  style={{ '--segment-count': isAlbumRootView ? 3 : 2 } as CSSProperties}
+                >
                   <span
                     className="library-segmented-highlight"
                     aria-hidden="true"
-                    style={{ transform: albumSortMode === 'artist' ? 'translateX(100%)' : 'translateX(0%)' }}
+                    style={{
+                      transform: `translateX(${(
+                        effectiveAlbumSortState.key === 'artist'
+                          ? 1
+                          : effectiveAlbumSortState.key === 'year'
+                            ? 2
+                            : 0
+                      ) * 100}%)`
+                    }}
                   />
-                  <button
-                    type="button"
-                    className={`library-segmented-btn ${albumSortMode === 'title' ? 'active' : ''}`}
-                    onClick={() => handleSetAlbumSortMode('title')}
-                    aria-pressed={albumSortMode === 'title'}
-                    title="Sort albums by title"
-                  >
-                    Title
-                  </button>
-                  <button
-                    type="button"
-                    className={`library-segmented-btn ${albumSortMode === 'artist' ? 'active' : ''}`}
-                    onClick={() => handleSetAlbumSortMode('artist')}
-                    aria-pressed={albumSortMode === 'artist'}
-                    title="Sort albums by artist"
-                  >
-                    Artist
-                  </button>
+                  {(['title', 'artist', ...(isAlbumRootView ? ['year'] as const : [])] as AlbumSortKey[]).map((key) => {
+                    const active = effectiveAlbumSortState.key === key
+                    const label = key === 'title' ? 'Title' : key === 'artist' ? 'Artist' : 'Year'
+                    const directionLabel = effectiveAlbumSortState.direction === 'asc'
+                      ? (key === 'year' ? 'oldest first' : 'A to Z')
+                      : (key === 'year' ? 'newest first' : 'Z to A')
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        className={`library-segmented-btn ${active ? 'active' : ''}`}
+                        onClick={() => handleAlbumSortKeyClick(key)}
+                        aria-pressed={active}
+                        aria-label={`Sort albums by ${label}${active ? `, ${directionLabel}. Activate to reverse.` : ''}`}
+                        title={`Sort albums by ${label}${active ? ` (${directionLabel})` : ''}`}
+                      >
+                        <span>{label}</span>
+                        {active && <span className="library-sort-direction" aria-hidden="true">{effectiveAlbumSortState.direction === 'desc' ? '↑' : '↓'}</span>}
+                      </button>
+                    )
+                  })}
                 </div>
               )}
             </div>
@@ -2079,6 +2322,16 @@ export default function LibraryView() {
               </div>
             </div>
           )}
+          {isTrackRootView && (
+            <RootTrackTableControls
+              layout={rootTrackTableLayout}
+              sortRules={tracksViewSortRules}
+              ratingsEnabled={ratingsEnabled}
+              responsiveHiddenColumns={responsiveHiddenTrackColumns}
+              onLayoutChange={setRootTrackTableLayout}
+              onSortRulesChange={setTracksViewSortRules}
+            />
+          )}
           {isCollectionActionContext && (
             <button
               type="button"
@@ -2116,7 +2369,7 @@ export default function LibraryView() {
             </button>
           )}
           {isCollectionActionContext && inDetailView && (
-            <QueueSplitButton trackPaths={queueTrackPaths} disabled={queueTrackPaths.length === 0} />
+            <QueueSplitButton sourceContext={playbackSourceContext} trackPaths={queueTrackPaths} disabled={queueTrackPaths.length === 0} />
           )}
           {selectedArtist && graphEnabled && (
             <button
@@ -2143,6 +2396,13 @@ export default function LibraryView() {
       </div>
 
       {renderScanProgress()}
+
+      {cardPlaybackError && (
+        <div className="library-card-playback-error" role="alert">
+          <span>{cardPlaybackError}</span>
+          <button type="button" onClick={() => setCardPlaybackError(null)} data-controller-focusable="true">Dismiss</button>
+        </div>
+      )}
 
       <div className="library-content" onScrollCapture={handleLibraryContentScrollCapture}>
         {renderContent()}
