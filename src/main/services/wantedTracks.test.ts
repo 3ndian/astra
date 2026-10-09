@@ -85,3 +85,37 @@ test('one import does not fulfill the same entry twice and ignores non-matches',
   const done = store.fulfill([{ title: 'Song 1', artist: 'Artist 1' }, { title: 'Song 1', artist: 'Artist 1' }, { title: 'Song 1', artist: 'Nobody' }], 2000)
   assert.equal(done.length, 1)
 })
+
+test('recycle bin: remove, restore, purge, and no auto-fulfil while removed', () => {
+  const store = new WantedTracksStore(makeDb())
+  store.add(entry(1), 1000)
+  store.add(entry(2), 2000)
+  const id = store.list(query).find((row) => row.title === 'Song 1')!.id
+  store.remove(id, 3000)
+  assert.equal(store.list(query).length, 1)
+  assert.deepEqual(store.wantedSpotifyIds(), ['spotify:track:2'])
+  const bin = store.list({ ...query, bin: true })
+  assert.equal(bin.length, 1)
+  assert.equal(bin[0].removedAtMs, 3000)
+  assert.equal(store.fulfill([{ title: 'Song 1', artist: 'Artist 1' }], 4000).length, 0)
+  store.restore(id)
+  assert.equal(store.list(query).length, 2)
+  store.remove(id, 5000)
+  store.purge(store.list(query)[0].id) // not in the bin: ignored
+  assert.equal(store.list(query).length, 1)
+  store.purge(id)
+  assert.equal(store.list({ ...query, bin: true }).length, 0)
+})
+
+test('adding a removed song again restores it; empty bin clears the bin only', () => {
+  const store = new WantedTracksStore(makeDb())
+  store.add(entry(1), 1000)
+  store.add(entry(2), 2000)
+  store.remove(store.list(query)[0].id, 3000)
+  store.remove(store.list(query)[0].id, 3000)
+  assert.equal(store.add(entry(1), 4000), 'added')
+  assert.equal(store.list(query).length, 1)
+  store.emptyBin()
+  assert.equal(store.list({ ...query, bin: true }).length, 0)
+  assert.equal(store.list(query).length, 1)
+})

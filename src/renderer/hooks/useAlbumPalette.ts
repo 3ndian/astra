@@ -1,12 +1,18 @@
 import { useEffect, useRef } from 'react'
 import { extractAlbumPalette, liftForDisplay } from '../../shared/color/albumPalette'
 import { useAlbumPaletteStore } from '../stores/albumPaletteStore'
+import { useAlbumTintStore } from '../stores/albumTintStore'
 import { useLibraryStore } from '../stores/libraryStore'
 import { usePlayerStore } from '../stores/playerStore'
 
 const SAMPLE = 48
 const MAX_CACHE = 128
-const cache = new Map<string, string[]>()
+interface CoverColors {
+  palette: string[]
+  ranked: string[]
+}
+
+const cache = new Map<string, CoverColors>()
 
 function loadImage(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -17,20 +23,26 @@ function loadImage(url: string): Promise<HTMLImageElement> {
   })
 }
 
-async function paletteFromUrl(url: string): Promise<string[]> {
+async function paletteFromUrl(url: string): Promise<CoverColors> {
   const image = await loadImage(url)
   const canvas = document.createElement('canvas')
   canvas.width = SAMPLE
   canvas.height = SAMPLE
   const ctx = canvas.getContext('2d', { willReadFrequently: true })
-  if (!ctx) return []
+  if (!ctx) return { palette: [], ranked: [] }
   ctx.drawImage(image, 0, 0, SAMPLE, SAMPLE)
-  return liftForDisplay(extractAlbumPalette(ctx.getImageData(0, 0, SAMPLE, SAMPLE).data, 4))
+  const pixels = ctx.getImageData(0, 0, SAMPLE, SAMPLE).data
+  return {
+    palette: liftForDisplay(extractAlbumPalette(pixels, 4)),
+    ranked: extractAlbumPalette(pixels, 3, 'prominence')
+  }
 }
 
-/** Keeps the album palette store in sync with the playing track. Only works while enabled. */
+/** Keeps the album palette store in sync with the playing track. Only works while a feature needs it. */
 export function useAlbumPalette(): void {
-  const enabled = useAlbumPaletteStore((state) => state.pitchColorsEnabled)
+  const pitchEnabled = useAlbumPaletteStore((state) => state.pitchColorsEnabled)
+  const tintEnabled = useAlbumTintStore((state) => state.enabled)
+  const enabled = pitchEnabled || tintEnabled
   const setPalette = useAlbumPaletteStore((state) => state.setPalette)
   const track = usePlayerStore((state) => state.currentTrack)
   const getArtwork = useLibraryStore((state) => state.getArtwork)
@@ -46,7 +58,7 @@ export function useAlbumPalette(): void {
     const identity = track.artworkHash ? `hash:${track.artworkHash}` : `path:${track.path}`
     const cached = cache.get(identity)
     if (cached) {
-      setPalette(cached)
+      setPalette(cached.palette, cached.ranked)
       return
     }
     void (async () => {
@@ -56,15 +68,15 @@ export function useAlbumPalette(): void {
           if (token.current === mine) setPalette([])
           return
         }
-        const palette = await paletteFromUrl(url)
+        const colors = await paletteFromUrl(url)
         if (token.current !== mine) return
-        cache.set(identity, palette)
+        cache.set(identity, colors)
         while (cache.size > MAX_CACHE) {
           const oldest = cache.keys().next().value
           if (oldest === undefined) break
           cache.delete(oldest)
         }
-        setPalette(palette)
+        setPalette(colors.palette, colors.ranked)
       } catch {
         if (token.current === mine) setPalette([])
       }

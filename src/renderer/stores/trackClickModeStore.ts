@@ -3,7 +3,7 @@ import { create } from 'zustand'
 const STORAGE_KEY = 'astra-track-click-mode-v1'
 
 /**
- * `precise`: click a title (or the hover play button on the thumbnail) to play; double-click empty
+ * `row` is the default. `precise`: click a title (or the hover play button on the thumbnail) to play; double-click empty
  * space on a row to play; album and artist names open that album or artist.
  * `row`: the older behaviour where a click anywhere on the row plays.
  */
@@ -11,9 +11,9 @@ export type TrackClickMode = 'precise' | 'row'
 
 function read(): TrackClickMode {
   try {
-    return window.localStorage.getItem(STORAGE_KEY) === 'row' ? 'row' : 'precise'
+    return window.localStorage.getItem(STORAGE_KEY) === 'precise' ? 'precise' : 'row'
   } catch {
-    return 'precise'
+    return 'row'
   }
 }
 

@@ -1,3 +1,4 @@
+import { playSpotifyTrack } from '../../stores/spotifyStore'
 import { CSSProperties, memo, ReactElement, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from 'react'
 import { useTrackClickModeStore } from '../../stores/trackClickModeStore'
 import { List, RowComponentProps, type ListImperativeAPI } from 'react-window'
@@ -575,8 +576,8 @@ function TrackListRowRenderer({
       <div className="track-list-item track-list-placeholder-item" style={style as CSSProperties} {...ariaAttributes}>
         <div
           className="track-row track-row-placeholder"
-          aria-disabled="true"
-          title="Not in your library yet. Add the file and it will move into the list."
+          title="Not in your library yet. Click to play it in Spotify."
+          onClick={() => playSpotifyTrack(wanted.spotifyTrackId)}
         >
           <div className="track-col track-col-num" />
           <div className="track-col track-col-title">

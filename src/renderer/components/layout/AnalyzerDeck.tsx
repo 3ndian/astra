@@ -1,3 +1,4 @@
+import { useAnalyzerPlacementStore } from '../../stores/analyzerPlacementStore'
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import type { ScopeKind } from '../../../types/scopePopout'
 import { useAstraActivity } from '../../hooks/useAstraActivity'
@@ -291,7 +292,7 @@ export default function AnalyzerDeck({ onAnalyzerHeightPreviewChange }: Analyzer
       if (!session) return
 
       const nextHeightPx = normalizeAnalyzerHeightPx(
-        session.startHeightPx + (moveEvent.clientY - session.startClientY)
+        session.startHeightPx + (moveEvent.clientY - session.startClientY) * (useAnalyzerPlacementStore.getState().placement === 'bottom' ? -1 : 1)
       )
 
       heightPreviewPxRef.current = nextHeightPx

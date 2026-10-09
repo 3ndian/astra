@@ -14,9 +14,19 @@ import { loadSectionRegistry, saveSectionRegistry } from './services/sectionsSto
 import { saveSidecarLrc } from './services/lyricsSidecarWriter'
 import { createSidecarLookup } from './services/lyricsSidecarLocation'
 import { SpotifyBridge } from './services/spotifyBridge'
+import { loadSpotifyPopoutPrefs, saveSpotifyPopoutPrefs } from './services/spotifyPopoutPrefs'
+import {
+  SPOTIFY_POPOUT_LIMITS,
+  clampPopoutSize,
+  proportionalCornerResize,
+  type SpotifyPopoutLayout,
+  type SpotifyPopoutPrefs
+} from '../types/spotifyPopout'
 import { openSpotifyHistoryStore } from './services/openSpotifyHistory'
 import type { SpotifyHistoryStore } from './services/spotifyHistory'
 import { WantedTracksStore } from './services/wantedTracks'
+import { creditSpotifyListens } from './services/spotifyPlayCredit'
+import { lookupAlbumYear } from './services/albumYearLookup'
 import { createPlayTracker } from '../shared/spotify/playTracker'
 import type {
   SpotifyCommand,
@@ -4990,6 +5000,234 @@ async function createLyricsPopoutWindow(): Promise<void> {
   broadcastLyricsPopoutWindowState()
 }
 
+// ---- Spotify popout: a small window with the cover, controls and a "+" button ----
+let spotifyPopoutWindow: BrowserWindow | null = null
+let spotifyPopoutPrefs: SpotifyPopoutPrefs | null = null
+let spotifyPopoutPersistTimer: ReturnType<typeof setTimeout> | null = null
+let spotifyPopoutHoverTimer: ReturnType<typeof setInterval> | null = null
+
+function spotifyPopoutState() {
+  const prefs = spotifyPopoutPrefs
+  return { layout: prefs?.layout ?? 'square', alwaysOnTop: prefs?.alwaysOnTop ?? true }
+}
+
+function sendSpotifyPopoutState(): void {
+  if (spotifyPopoutWindow && !spotifyPopoutWindow.isDestroyed()) {
+    spotifyPopoutWindow.webContents.send('spotify-popout:state', spotifyPopoutState())
+  }
+}
+
+function persistSpotifyPopoutPrefsSoon(): void {
+  if (spotifyPopoutPersistTimer !== null) clearTimeout(spotifyPopoutPersistTimer)
+  spotifyPopoutPersistTimer = setTimeout(() => {
+    spotifyPopoutPersistTimer = null
+    void persistSpotifyPopoutPrefs()
+  }, 400)
+}
+
+async function persistSpotifyPopoutPrefs(): Promise<void> {
+  const win = spotifyPopoutWindow
+  const prefs = spotifyPopoutPrefs
+  if (!prefs) return
+  if (win && !win.isDestroyed()) {
+    const bounds = win.getBounds()
+    prefs[prefs.layout] = { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height }
+  }
+  try {
+    await saveSpotifyPopoutPrefs(prefs)
+  } catch (error) {
+    console.warn('[spotify] could not save the popout window position', error)
+  }
+}
+
+/** Size limits and the 1:1 lock for the layout, then the window's saved size for it. */
+function applySpotifyPopoutLayout(win: BrowserWindow, prefs: SpotifyPopoutPrefs, keepTopLeft: boolean): void {
+  const layout = prefs.layout
+  const saved = prefs[layout]
+  if (layout === 'square') {
+    const { min, max } = SPOTIFY_POPOUT_LIMITS.square
+    win.setAspectRatio(1)
+    win.setMinimumSize(min, min)
+    win.setMaximumSize(max, max)
+  } else {
+    const limits = SPOTIFY_POPOUT_LIMITS.wide
+    win.setAspectRatio(0)
+    win.setMinimumSize(limits.minWidth, limits.minHeight)
+    win.setMaximumSize(limits.maxWidth, limits.maxHeight)
+  }
+  const size = clampPopoutSize(layout, saved.width, saved.height)
+  const current = win.getBounds()
+  win.setBounds({
+    x: keepTopLeft ? current.x : (saved.x ?? current.x),
+    y: keepTopLeft ? current.y : (saved.y ?? current.y),
+    width: size.width,
+    height: size.height
+  })
+}
+
+function returnToMainWindow(): void {
+  if (spotifyPopoutWindow && !spotifyPopoutWindow.isDestroyed()) spotifyPopoutWindow.close()
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+  }
+}
+
+async function createSpotifyPopoutWindow(): Promise<void> {
+  if (spotifyPopoutWindow && !spotifyPopoutWindow.isDestroyed()) {
+    spotifyPopoutWindow.show()
+    spotifyPopoutWindow.focus()
+    return
+  }
+  const prefs = spotifyPopoutPrefs ?? await loadSpotifyPopoutPrefs()
+  spotifyPopoutPrefs = prefs
+  const saved = prefs[prefs.layout]
+
+  const win = new BrowserWindow({
+    width: saved.width,
+    height: saved.height,
+    x: saved.x,
+    y: saved.y,
+    frame: false,
+    transparent: false,
+    backgroundColor: '#0b0c10',
+    autoHideMenuBar: true,
+    resizable: true,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: false,
+    show: false,
+    title: 'Astra Spotify',
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      sandbox: false,
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false
+    }
+  })
+  spotifyPopoutWindow = win
+  installFixedWindowZoom(win.webContents)
+  applySpotifyPopoutLayout(win, prefs, false)
+  if (prefs.alwaysOnTop) win.setAlwaysOnTop(true, 'floating')
+
+  win.on('ready-to-show', () => win.show())
+  // Never leave the window hidden if the page is slow or fails to load.
+  const showTimer = setTimeout(() => { if (!win.isDestroyed()) win.show() }, 1500)
+  win.on('closed', () => clearTimeout(showTimer))
+  win.webContents.on('did-fail-load', (_event, code, description) => {
+    console.error('[spotify-popout] the page failed to load', code, description)
+    if (!win.isDestroyed()) win.show()
+  })
+  win.webContents.on('render-process-gone', (_event, details) => {
+    console.error('[spotify-popout] the page crashed', details.reason)
+  })
+  win.webContents.on('console-message', (_event, level, message) => {
+    if (level >= 2) console.warn('[spotify-popout page]', message)
+  })
+  // Wide layout: corners resize proportionally, sides/top/bottom freely. The shape at the start of
+  // the drag is the reference; it is refreshed when the drag finishes.
+  let resizeStart = win.getBounds()
+  win.on('resized', () => { resizeStart = win.getBounds() })
+  win.on('will-resize', (event, newBounds, details) => {
+    if (spotifyPopoutPrefs?.layout !== 'wide') return
+    const adjusted = proportionalCornerResize(resizeStart, newBounds, details?.edge ?? '')
+    if (!adjusted) return
+    event.preventDefault()
+    win.setBounds(adjusted)
+  })
+  win.on('move', persistSpotifyPopoutPrefsSoon)
+  win.on('resize', persistSpotifyPopoutPrefsSoon)
+  win.on('close', () => {
+    if (spotifyPopoutPersistTimer !== null) {
+      clearTimeout(spotifyPopoutPersistTimer)
+      spotifyPopoutPersistTimer = null
+    }
+    void persistSpotifyPopoutPrefs()
+  })
+  win.on('closed', () => {
+    if (spotifyPopoutHoverTimer !== null) clearInterval(spotifyPopoutHoverTimer)
+    spotifyPopoutHoverTimer = null
+    spotifyPopoutWindow = null
+  })
+  win.webContents.on('did-finish-load', () => sendSpotifyPopoutState())
+
+  // Parts of the window are drag handles, which do not report hover to the page, so the cursor
+  // position is checked here instead.
+  let lastHover = false
+  spotifyPopoutHoverTimer = setInterval(() => {
+    if (win.isDestroyed()) return
+    const point = screen.getCursorScreenPoint()
+    const bounds = win.getBounds()
+    const hover = point.x >= bounds.x && point.x < bounds.x + bounds.width && point.y >= bounds.y && point.y < bounds.y + bounds.height
+    if (hover !== lastHover) {
+      lastHover = hover
+      win.webContents.send('spotify-popout:hover', hover)
+    }
+  }, 120)
+
+  if (isDev && process.env['ELECTRON_RENDERER_URL']) {
+    await win.loadURL(`${process.env['ELECTRON_RENDERER_URL']}?window=spotify-popout`)
+  } else {
+    await win.loadFile(join(__dirname, '../renderer/index.html'), { query: { window: 'spotify-popout' } })
+  }
+}
+
+function setSpotifyPopoutLayout(layout: SpotifyPopoutLayout): void {
+  const win = spotifyPopoutWindow
+  const prefs = spotifyPopoutPrefs
+  if (!win || win.isDestroyed() || !prefs || prefs.layout === layout) return
+  const bounds = win.getBounds()
+  prefs[prefs.layout] = { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height }
+  prefs.layout = layout
+  applySpotifyPopoutLayout(win, prefs, true)
+  win.emit('resized')
+  sendSpotifyPopoutState()
+  persistSpotifyPopoutPrefsSoon()
+}
+
+ipcMain.handle('spotify-popout:open', async () => {
+  try {
+    await createSpotifyPopoutWindow()
+  } catch (error) {
+    console.error('[spotify-popout] could not open the window', error)
+    if (spotifyPopoutWindow && !spotifyPopoutWindow.isDestroyed()) spotifyPopoutWindow.show()
+  }
+})
+ipcMain.handle('spotify-popout:close', () => {
+  if (spotifyPopoutWindow && !spotifyPopoutWindow.isDestroyed()) spotifyPopoutWindow.close()
+})
+ipcMain.handle('spotify-popout:returnToMain', () => returnToMainWindow())
+ipcMain.handle('spotify-popout:getState', () => spotifyPopoutState())
+ipcMain.handle('spotify-popout:setLayout', (_event, layout: unknown) => {
+  if (layout === 'square' || layout === 'wide') setSpotifyPopoutLayout(layout)
+})
+ipcMain.on('spotify-popout:contextMenu', () => {
+  const win = spotifyPopoutWindow
+  const prefs = spotifyPopoutPrefs
+  if (!win || win.isDestroyed() || !prefs) return
+  Menu.buildFromTemplate([
+    { label: 'Square cover', type: 'radio', checked: prefs.layout === 'square', click: () => setSpotifyPopoutLayout('square') },
+    { label: 'Wide', type: 'radio', checked: prefs.layout === 'wide', click: () => setSpotifyPopoutLayout('wide') },
+    { type: 'separator' },
+    {
+      label: 'Always on top',
+      type: 'checkbox',
+      checked: prefs.alwaysOnTop,
+      click: (item) => {
+        prefs.alwaysOnTop = item.checked
+        if (!win.isDestroyed()) win.setAlwaysOnTop(item.checked, 'floating')
+        sendSpotifyPopoutState()
+        persistSpotifyPopoutPrefsSoon()
+      }
+    },
+    { type: 'separator' },
+    { label: 'Return to Astra', click: () => returnToMainWindow() },
+    { label: 'Close', click: () => win.close() }
+  ]).popup({ window: win })
+})
+
 // Must match the effective --titlebar-height in globals.css (the Concept V2 override layer, not
 // the 40px base value). The renderer scales the whole UI (title bar included) with --ui-scale,
 // but the native buttons don't scale, so their y is recomputed whenever the renderer reports a
@@ -5671,6 +5909,9 @@ app.whenReady().then(async () => {
     }
   }
   library.setActiveLibrarySectionKind(getActiveSection(sectionRegistry).kind)
+  // Catch up: Spotify listens made before this feature (or before the song was imported).
+  creditSpotifyListensToLibrary()
+  void fillAlbumYears()
   companionApiReferenceSigner = await loadCompanionApiReferenceSigner()
   try {
     const orphanedRemoteDeleted = await library.cleanupOrphanedRemoteTracks()
@@ -6723,11 +6964,57 @@ function getSpotifyHistory(): SpotifyHistoryStore | null {
   return spotifyHistory
 }
 
+// Spotify listens count toward the matching local track (see spotifyPlayCredit.ts). Pass a track
+// id to credit one song, or nothing to re-check the whole history.
+function creditSpotifyListensToLibrary(trackId?: string): void {
+  try {
+    const defaultDb = library.getDefaultSectionDatabase()
+    const history = getSpotifyHistory()
+    if (!defaultDb || !history) return
+    const songs = history.listenTotals(trackId ? [trackId] : undefined)
+    creditSpotifyListens(defaultDb, songs)
+  } catch (error) {
+    console.warn('[spotify] could not credit listens to the library', error)
+  }
+}
+
+// Looks up release years for played albums, one request at a time and gently (they are kept).
+let albumYearLookupRunning = false
+async function fillAlbumYears(): Promise<void> {
+  if (albumYearLookupRunning) return
+  albumYearLookupRunning = true
+  try {
+    for (let round = 0; round < 40; round += 1) {
+      const history = getSpotifyHistory()
+      const next = history?.albumsNeedingYear(1, Date.now())[0]
+      if (!history || !next) break
+      try {
+        const year = await lookupAlbumYear(next.artist, next.album, async (url) => {
+          const response = await fetch(url, { signal: AbortSignal.timeout(8000) })
+          return { ok: response.ok, json: () => response.json() as Promise<unknown> }
+        })
+        history.setAlbumYear(next.artist, next.album, year, Date.now())
+      } catch {
+        // Offline or rate limited: stop now and try again after the next play or restart.
+        break
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500))
+    }
+  } finally {
+    albumYearLookupRunning = false
+  }
+}
+
 const spotifyPlayTracker = createPlayTracker()
 const spotifyBridge = new SpotifyBridge({
   onStatus: (status) => {
     const play = spotifyPlayTracker.observe(status, Date.now())
-    if (play) getSpotifyHistory()?.record(play, status.artworkDataUrl)
+    if (play) {
+      const history = getSpotifyHistory()
+      history?.record(play, status.artworkDataUrl)
+      creditSpotifyListensToLibrary(play.trackId)
+      void fillAlbumYears()
+    }
   }
 })
 
@@ -6752,6 +7039,10 @@ function normalizeSpotifyCommand(raw: unknown): SpotifyCommand | null {
     || record.kind === 'next' || record.kind === 'previous'
   ) {
     return { kind: record.kind }
+  }
+  const uri = (raw as { uri?: unknown }).uri
+  if (record.kind === 'playuri' && typeof uri === 'string' && /^spotify:track:[A-Za-z0-9]{22}$/.test(uri)) {
+    return { kind: 'playuri', uri }
   }
   const percent = (raw as { percent?: unknown }).percent
   if (record.kind === 'volume' && typeof percent === 'number' && Number.isFinite(percent)) {
@@ -6787,6 +7078,8 @@ function decodeDataUrl(dataUrl: string): { mime: string; bytes: Buffer } | null 
 }
 
 library.setImportedTracksListener((tracks) => {
+  // New files may be songs already played on Spotify: credit those listens (idempotent).
+  creditSpotifyListensToLibrary()
   const fulfilled = getWantedStore()?.fulfill(tracks, Date.now()) ?? []
   if (fulfilled.length > 0) mainWindow?.webContents.send('wanted:fulfilled', fulfilled)
 })
@@ -6797,7 +7090,8 @@ function normalizeWantedQuery(raw: unknown): WantedQuery {
   return {
     sort: sorts.find((candidate) => candidate === record.sort) ?? 'added',
     dir: record.dir === 'asc' ? 'asc' : 'desc',
-    search: typeof record.search === 'string' ? record.search.slice(0, 200) : ''
+    search: typeof record.search === 'string' ? record.search.slice(0, 200) : '',
+    bin: record.bin === true
   }
 }
 
@@ -6859,8 +7153,17 @@ ipcMain.handle('wanted:cover', (_event, id: unknown) => (typeof id === 'number' 
 ipcMain.handle('wanted:remove', (_event, id: unknown) => {
   if (typeof id === 'number' && Number.isInteger(id)) getWantedStore()?.remove(id)
 })
+ipcMain.handle('wanted:restore', (_event, id: unknown) => {
+  if (typeof id === 'number' && Number.isInteger(id)) getWantedStore()?.restore(id)
+})
+ipcMain.handle('wanted:purge', (_event, id: unknown) => {
+  if (typeof id === 'number' && Number.isInteger(id)) getWantedStore()?.purge(id)
+})
+ipcMain.handle('wanted:emptyBin', () => {
+  getWantedStore()?.emptyBin()
+})
 
-ipcMain.handle('spotify:getStatus', () => spotifyBridge.getStatus())
+ipcMain.handle('spotify:getStatus', () => spotifyBridge.getStatus(700))
 ipcMain.handle('spotify:history:list', (_event, raw: unknown) => {
   return getSpotifyHistory()?.list(normalizeHistoryQuery(raw)) ?? { rows: [], total: 0 }
 })

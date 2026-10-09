@@ -10,6 +10,7 @@ import { parseColorToRgba, resolveColorToRgb, type RgbaColor } from '../../utils
 import { defaultVisualizerSessionSource, type VisualizerSessionSource } from './dataSource'
 import { FrameScheduler } from './frameScheduler'
 import { VisualizerFrameLoop } from './visualizerFrameLoop'
+import { getKeepHistoryAcrossTracks } from './historySetting'
 import {
   DEFAULT_SPECTROGRAM_CLARITY_MODE,
   DEFAULT_SPECTROGRAM_CONTRAST,
@@ -245,6 +246,8 @@ export class Spectrogram {
   private waterfallCtx: CanvasRenderingContext2D
 
   private waterfallOffset = 0
+  private pendingDivider = false
+  private hasDrawnColumns = false
   private stripImageData: ImageData | null = null
   private stripPixels = new Uint32Array(0)
   private stripColumnCapacity = 0
@@ -293,12 +296,18 @@ export class Spectrogram {
     if (this.unsubscribeSessionChange) {
       this.unsubscribeSessionChange()
     }
-    this.unsubscribeSessionChange = this.dataSource.subscribeToSessionChanges(() => {
+    this.unsubscribeSessionChange = this.dataSource.subscribeToSessionChanges((action) => {
+      if (action === 'track') {
+        this.pendingDivider = true
+        return
+      }
       this.resetDisplay()
-    })
+    }, { keepAcrossTracks: getKeepHistoryAcrossTracks })
   }
 
   private resetDisplay(): void {
+    this.pendingDivider = false
+    this.hasDrawnColumns = false
     this.nativeAnalyzer?.reset()
     this.lastNativeConfigKey = null
     this.waterfallCtx.clearRect(0, 0, this.waterfallCanvas.width, this.waterfallCanvas.height)
@@ -425,6 +434,19 @@ export class Spectrogram {
       if (first < count) this.waterfallCtx.putImageData(strip, -first, 0, first, 0, count - first, rowCount)
     }
     this.waterfallOffset = (offset + count) % span
+    this.hasDrawnColumns = true
+  }
+
+  /** A thin dim line where one song ends and the next begins (history kept across songs). */
+  private appendDivider(width: number, height: number): void {
+    const rowCount = this.getFrequencyPixelCount(width, height)
+    if (rowCount <= 0 || !this.waterfallHasContent()) return
+    const column = new Float32Array(rowCount).fill(0.45)
+    this.appendColumns(column, column, 1, rowCount)
+  }
+
+  private waterfallHasContent(): boolean {
+    return this.hasDrawnColumns
   }
 
   private isNativeAnalyzerReady(): boolean {
@@ -668,14 +690,18 @@ export class Spectrogram {
       }
     }
 
-    if (!this.dataSource.isPlaying()) {
+    if (!this.dataSource.isPlaying() || this.dataSource.isPaused?.()) {
       this.dataSource.getPendingSpectrogramSamples()
-      // Freeze waterfall in place instead of blanking
+      // Freeze waterfall in place instead of blanking (stopped or paused)
       this.paintWaterfall(width, height)
       return
     }
 
     const pendingSamples = this.dataSource.getPendingSpectrogramSamples()
+    if (this.pendingDivider && pendingSamples.length > 0) {
+      this.pendingDivider = false
+      this.appendDivider(width, height)
+    }
     this.tryDrawNativeColumns(pendingSamples, width, height)
     this.paintWaterfall(width, height)
   }

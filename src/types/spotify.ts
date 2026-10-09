@@ -13,6 +13,9 @@ export interface SpotifyTrackInfo {
   album: string
   artworkUrl: string | null
   durationMs: number
+  /** Position on the album (and disc), when Spotify reports them. */
+  trackNumber?: number
+  discNumber?: number
 }
 
 export interface SpotifyStatus {
@@ -34,6 +37,7 @@ export type SpotifyCommand =
   | { kind: 'previous' }
   | { kind: 'seek'; seconds: number }
   | { kind: 'volume'; percent: number }
+  | { kind: 'playuri'; uri: string }
 
 export type SpotifyHistorySort = 'title' | 'artist' | 'album' | 'played'
 
@@ -55,6 +59,11 @@ export interface SpotifyHistoryRow {
   coverKey: string | null
   durationMs: number
   playedAtMs: number
+  /** Album position, null for plays recorded before this was kept. */
+  trackNumber: number | null
+  discNumber: number | null
+  /** Album release year (looked up online), null when not known yet. */
+  year: number | null
 }
 
 export interface SpotifyHistoryPage {
@@ -68,6 +77,8 @@ export interface WantedQuery {
   sort: WantedSort
   dir: 'asc' | 'desc'
   search: string
+  /** true lists the recycle bin instead of the list. */
+  bin?: boolean
 }
 
 /** A song added from Spotify that is not in the library yet ("Not downloaded"). */
@@ -79,6 +90,8 @@ export interface WantedTrackRow {
   album: string
   durationMs: number
   addedAtMs: number
+  /** When it was moved to the recycle bin; null for songs on the list. */
+  removedAtMs?: number | null
   hasCover: boolean
 }
 

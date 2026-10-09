@@ -48,10 +48,14 @@ interface Bucket {
 
 /**
  * Returns up to `count` colours, darkest first (so low pitch maps to the deepest colour and
- * treble to the lightest). Colours are distinct in hue/lightness. A grey cover yields greys.
+ * treble to the lightest), or most prominent first with `order: 'prominence'`. Colours are distinct in hue/lightness. A grey cover yields greys.
  * Near-transparent pixels are ignored. Returns [] when there is nothing usable.
  */
-export function extractAlbumPalette(pixels: ArrayLike<number>, count = 4): string[] {
+export function extractAlbumPalette(
+  pixels: ArrayLike<number>,
+  count = 4,
+  order: 'lightness' | 'prominence' = 'lightness'
+): string[] {
   const buckets = new Map<number, Bucket>()
   for (let i = 0; i + 3 < pixels.length; i += 4) {
     if (pixels[i + 3] < 32) continue
@@ -90,7 +94,8 @@ export function extractAlbumPalette(pixels: ArrayLike<number>, count = 4): strin
     if (distinct) picked.push(candidate)
     if (picked.length >= count) break
   }
-  picked.sort((a, b) => a.hsl.l - b.hsl.l)
+  // 'prominence' keeps the pick order: main colour first, then secondary, tertiary.
+  if (order === 'lightness') picked.sort((a, b) => a.hsl.l - b.hsl.l)
   return picked.map((item) => toHex(item.rgb))
 }
 

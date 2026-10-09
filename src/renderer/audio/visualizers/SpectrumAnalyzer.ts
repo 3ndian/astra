@@ -1201,6 +1201,8 @@ export class SpectrumAnalyzer {
     this.ctx.stroke()
   }
 
+  private heldFrameKey = ''
+
   private drawFrame = (): void => {
     const { canvas, options } = this
     const width = canvas.width
@@ -1209,6 +1211,13 @@ export class SpectrumAnalyzer {
     if (width <= 0 || height <= 0) {
       return
     }
+
+    // Paused: leave the canvas exactly as it was drawn (unless it was resized, which clears it).
+    const frameKey = `${width}x${height}`
+    if (this.dataSource.isPaused?.() && this.heldFrameKey === frameKey) {
+      return
+    }
+    this.heldFrameKey = frameKey
 
     this.updateSampleRateIfNeeded()
 

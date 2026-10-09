@@ -211,3 +211,10 @@ export function startSpotifyWatcher(): () => void {
     stopPolling()
   }
 }
+
+/** Plays one saved Spotify song in the Spotify app. Astra pauses itself; Spotify's bar takes over. */
+export function playSpotifyTrack(spotifyTrackId: string): void {
+  if (!spotifyTrackId.startsWith('spotify:track:')) return
+  if (astraIsPlaying()) usePlayerStore.getState().pause()
+  void useSpotifyStore.getState().sendCommand({ kind: 'playuri', uri: spotifyTrackId })
+}

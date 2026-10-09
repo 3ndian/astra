@@ -15,9 +15,9 @@ const OSASCRIPT_TIMEOUT_MS = 4000
 const ARTWORK_CACHE_LIMIT = 24
 const ARTWORK_MAX_BYTES = 2_000_000
 
-function runAppleScript(script: string): Promise<string> {
+function runAppleScript(script: string, timeoutMs = OSASCRIPT_TIMEOUT_MS): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile('osascript', ['-e', script], { timeout: OSASCRIPT_TIMEOUT_MS }, (error, stdout, stderr) => {
+    execFile('osascript', ['-e', script], { timeout: timeoutMs }, (error, stdout, stderr) => {
       if (error) {
         const detail = String(stderr || error.message || '').trim()
         reject(new Error(detail || 'osascript failed'))
@@ -46,6 +46,7 @@ export class SpotifyBridge {
   private readonly onStatus: ((status: SpotifyStatus) => void) | undefined
   private readonly artworkCache = new Map<string, string>()
   private statusInFlight: Promise<SpotifyStatus> | null = null
+  private lastStatus: { status: SpotifyStatus; at: number } | null = null
 
   constructor(options: SpotifyBridgeOptions = {}) {
     this.onStatus = options.onStatus
@@ -55,7 +56,11 @@ export class SpotifyBridge {
     return process.platform === 'darwin'
   }
 
-  getStatus(): Promise<SpotifyStatus> {
+  /** `maxAgeMs`: reuse a status read this recently (several windows polling share one osascript call). */
+  getStatus(maxAgeMs = 0): Promise<SpotifyStatus> {
+    if (maxAgeMs > 0 && this.lastStatus && Date.now() - this.lastStatus.at <= maxAgeMs) {
+      return Promise.resolve(this.lastStatus.status)
+    }
     if (!this.isSupported()) {
       return Promise.resolve(emptySpotifyStatus('unsupported', 'Spotify control is available on macOS for now.'))
     }
@@ -73,7 +78,8 @@ export class SpotifyBridge {
     const script = scriptForCommand(command)
     if (script) {
       try {
-        await runAppleScript(script)
+        // Playing a chosen track may have to launch Spotify first, which takes a few seconds.
+        await runAppleScript(script, command.kind === 'playuri' ? 30_000 : OSASCRIPT_TIMEOUT_MS)
       } catch (error) {
         return emptySpotifyStatus('error', friendlyError(error))
       }
@@ -90,6 +96,7 @@ export class SpotifyBridge {
     }
     const url = status.track?.artworkUrl
     if (url) status.artworkDataUrl = await this.loadArtwork(url)
+    this.lastStatus = { status, at: Date.now() }
     try {
       this.onStatus?.(status)
     } catch (error) {

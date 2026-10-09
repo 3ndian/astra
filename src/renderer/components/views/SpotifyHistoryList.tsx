@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { SpotifyHistoryRow, SpotifyHistorySort } from '../../../types/spotify'
 import WantedAddButton from './WantedAddButton'
 import { useSpotifyPlaylistMenu } from './SpotifyPlaylistMenu'
+import { playSpotifyTrack } from '../../stores/spotifyStore'
 
 const PAGE_SIZE = 100
 const REFRESH_MS = 10_000
@@ -16,10 +17,24 @@ function formatWhen(playedAtMs: number, nowMs: number): string {
   return new Date(playedAtMs).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
-const COLUMNS: Array<{ sort: SpotifyHistorySort; label: string }> = [
+function formatDuration(durationMs: number): string {
+  const total = Math.max(0, Math.round(durationMs / 1000))
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
+}
+
+function formatTrackNumber(row: SpotifyHistoryRow): string {
+  if (!row.trackNumber) return ''
+  return row.discNumber && row.discNumber > 1 ? `${row.discNumber}-${row.trackNumber}` : String(row.trackNumber)
+}
+
+// Columns after the cover: a plain label (not sortable) or a sortable one.
+const COLUMNS: Array<{ sort: SpotifyHistorySort | null; label: string }> = [
+  { sort: null, label: '#' },
   { sort: 'title', label: 'Title' },
   { sort: 'artist', label: 'Artist' },
   { sort: 'album', label: 'Album' },
+  { sort: null, label: 'Year' },
+  { sort: null, label: 'Time' },
   { sort: 'played', label: 'Played' }
 ]
 
@@ -86,11 +101,15 @@ export default function SpotifyHistoryList() {
 
       <div className="spotify-history-row spotify-history-head" role="row">
         <span />
-        {COLUMNS.map((column) => (
-          <button key={column.sort} type="button" className="spotify-history-sort" onClick={() => toggleSort(column.sort)}>
-            {column.label}{sort === column.sort ? (dir === 'asc' ? ' ▲' : ' ▼') : ''}
-          </button>
-        ))}
+        {COLUMNS.map((column) => {
+          const columnSort = column.sort
+          if (!columnSort) return <span key={column.label} className="spotify-history-sort spotify-history-sort-static">{column.label}</span>
+          return (
+            <button key={column.label} type="button" className="spotify-history-sort" onClick={() => toggleSort(columnSort)}>
+              {column.label}{sort === columnSort ? (dir === 'asc' ? ' ▲' : ' ▼') : ''}
+            </button>
+          )
+        })}
       </div>
 
       {rows.length === 0 && (
@@ -104,8 +123,13 @@ export default function SpotifyHistoryList() {
         return (
           <div
             key={row.id}
-            className="spotify-history-row"
+            className="spotify-history-row spotify-history-row-playable"
             role="row"
+            title="Click to play in Spotify"
+            onClick={(event) => {
+              if ((event.target as HTMLElement).closest('button')) return
+              playSpotifyTrack(row.trackId)
+            }}
             onContextMenu={(event) => openMenu(event, {
               spotifyTrackId: row.trackId,
               title: row.title,
@@ -116,9 +140,12 @@ export default function SpotifyHistoryList() {
             })}
           >
             <div className="spotify-history-thumb">{cover ? <img src={cover} alt="" loading="lazy" /> : <span>&#9835;</span>}</div>
+            <span className="spotify-history-muted spotify-history-num">{formatTrackNumber(row)}</span>
             <span className="spotify-history-title" title={row.title}>{row.title}</span>
             <span className="spotify-history-muted" title={row.artist}>{row.artist}</span>
             <span className="spotify-history-muted" title={row.album}>{row.album}</span>
+            <span className="spotify-history-muted spotify-history-num">{row.year ?? ''}</span>
+            <span className="spotify-history-muted spotify-history-num">{formatDuration(row.durationMs)}</span>
             <span className="spotify-history-muted">{formatWhen(row.playedAtMs, now)}</span>
             <WantedAddButton
               compact

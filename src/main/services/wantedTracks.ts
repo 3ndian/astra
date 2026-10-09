@@ -68,20 +68,23 @@ export class WantedTracksStore {
         fulfilled_at INTEGER
       )
     `)
+    // Removed songs wait in the recycle bin (removed_at set) until restored or deleted for good.
+    const columns = db.all<{ name: string }>('PRAGMA table_info(wanted_tracks)').map((column) => column.name)
+    if (!columns.includes('removed_at')) db.run('ALTER TABLE wanted_tracks ADD COLUMN removed_at INTEGER')
   }
 
   add(entry: WantedNewEntry, nowMs: number): 'added' | 'exists' {
-    const existing = this.db.get<{ id: number | bigint; fulfilled_at: number | bigint | null }>(
-      'SELECT id, fulfilled_at FROM wanted_tracks WHERE spotify_track_id = ?',
+    const existing = this.db.get<{ id: number | bigint; fulfilled_at: number | bigint | null; removed_at: number | bigint | null }>(
+      'SELECT id, fulfilled_at, removed_at FROM wanted_tracks WHERE spotify_track_id = ?',
       [entry.spotifyTrackId]
     )
-    if (existing && existing.fulfilled_at === null) return 'exists'
+    if (existing && existing.fulfilled_at === null && (existing.removed_at ?? null) === null) return 'exists'
 
     if (existing) {
       // It was fulfilled earlier (and its images dropped); wanting it again brings it back.
       this.db.run(
         `UPDATE wanted_tracks SET title = ?, artist = ?, album = ?, duration_ms = ?, cover = ?, cover_mime = ?,
-           thumb = ?, thumb_mime = ?, added_at = ?, fulfilled_at = NULL WHERE id = ?`,
+           thumb = ?, thumb_mime = ?, added_at = ?, fulfilled_at = NULL, removed_at = NULL WHERE id = ?`,
         [entry.title, entry.artist, entry.album, Math.round(entry.durationMs), entry.cover?.bytes ?? null, entry.cover?.mime ?? null,
           entry.thumb?.bytes ?? null, entry.thumb?.mime ?? null, nowMs, existing.id]
       )
@@ -106,6 +109,7 @@ export class WantedTracksStore {
       ? "AND (title LIKE ? ESCAPE '\\' OR artist LIKE ? ESCAPE '\\' OR album LIKE ? ESCAPE '\\')"
       : ''
     const params = search ? [like, like, like] : []
+    const state = query.bin ? 'removed_at IS NOT NULL' : 'removed_at IS NULL'
     const rows = this.db.all<{
       id: number | bigint
       spotify_track_id: string
@@ -114,12 +118,13 @@ export class WantedTracksStore {
       album: string
       duration_ms: number | bigint
       added_at: number | bigint
+      removed_at: number | bigint | null
       has_cover: number | bigint
     }>(
-      `SELECT id, spotify_track_id, title, artist, album, duration_ms, added_at,
+      `SELECT id, spotify_track_id, title, artist, album, duration_ms, added_at, removed_at,
               (CASE WHEN thumb IS NOT NULL THEN 1 ELSE 0 END) AS has_cover
-       FROM wanted_tracks WHERE fulfilled_at IS NULL ${where}
-       ORDER BY ${column} ${direction}, id DESC`,
+       FROM wanted_tracks WHERE fulfilled_at IS NULL AND ${state} ${where}
+       ORDER BY ${query.bin ? 'removed_at DESC' : `${column} ${direction}`}, id DESC`,
       params
     )
     return rows.map((row) => ({
@@ -130,6 +135,7 @@ export class WantedTracksStore {
       album: row.album,
       durationMs: Number(row.duration_ms),
       addedAtMs: Number(row.added_at),
+      removedAtMs: row.removed_at === null || row.removed_at === undefined ? null : Number(row.removed_at),
       hasCover: Number(row.has_cover) === 1
     }))
   }
@@ -137,7 +143,7 @@ export class WantedTracksStore {
   /** Spotify track ids that are currently wanted (to show "Added" instead of "+"). */
   wantedSpotifyIds(): string[] {
     return this.db
-      .all<{ spotify_track_id: string }>('SELECT spotify_track_id FROM wanted_tracks WHERE fulfilled_at IS NULL')
+      .all<{ spotify_track_id: string }>('SELECT spotify_track_id FROM wanted_tracks WHERE fulfilled_at IS NULL AND removed_at IS NULL')
       .map((row) => row.spotify_track_id)
   }
 
@@ -162,8 +168,22 @@ export class WantedTracksStore {
     return row?.cover && row.cover_mime ? toDataUrl(row.cover_mime, row.cover) : null
   }
 
-  remove(id: number): void {
-    this.db.run('DELETE FROM wanted_tracks WHERE id = ?', [id])
+  /** Moves a song to the recycle bin (it can be restored). */
+  remove(id: number, nowMs: number = Date.now()): void {
+    this.db.run('UPDATE wanted_tracks SET removed_at = ? WHERE id = ? AND fulfilled_at IS NULL', [nowMs, id])
+  }
+
+  restore(id: number): void {
+    this.db.run('UPDATE wanted_tracks SET removed_at = NULL WHERE id = ?', [id])
+  }
+
+  /** Deletes a song for good, but only when it is in the recycle bin. */
+  purge(id: number): void {
+    this.db.run('DELETE FROM wanted_tracks WHERE id = ? AND removed_at IS NOT NULL', [id])
+  }
+
+  emptyBin(): void {
+    this.db.run('DELETE FROM wanted_tracks WHERE removed_at IS NOT NULL AND fulfilled_at IS NULL')
   }
 
   /**
@@ -173,7 +193,7 @@ export class WantedTracksStore {
   fulfill(imported: TrackIdentity[], nowMs: number): FulfilledEntry[] {
     if (imported.length === 0) return []
     const wanted = this.db.all<{ id: number | bigint; title: string; artist: string; album: string }>(
-      'SELECT id, title, artist, album FROM wanted_tracks WHERE fulfilled_at IS NULL'
+      'SELECT id, title, artist, album FROM wanted_tracks WHERE fulfilled_at IS NULL AND removed_at IS NULL'
     )
     if (wanted.length === 0) return []
 

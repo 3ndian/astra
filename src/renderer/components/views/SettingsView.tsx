@@ -13,6 +13,9 @@ import SettingsTransferWizard from '../settings/SettingsTransferWizard'
 import ImportedListeningDataCard from '../settings/ImportedListeningDataCard'
 import CustomThemeEditor from '../settings/CustomThemeEditor'
 import BackgroundVisualSettings from '../settings/BackgroundVisualSettings'
+import AlbumTintSettings from '../settings/AlbumTintSettings'
+import VisualizerHistorySettings from '../settings/VisualizerHistorySettings'
+import AnalyzerPlacementSettings from '../settings/AnalyzerPlacementSettings'
 import TrackClickSettings from '../settings/TrackClickSettings'
 import { deriveCustomTokens, previewHexes } from '../../../shared/theme/customTheme'
 import SettingsSegmentedControl, { type SettingsSegmentedOption } from '../settings/SettingsSegmentedControl'
@@ -1833,6 +1836,8 @@ export default function SettingsView() {
             <div className="settings-cards">
               <CustomThemeEditor />
               <BackgroundVisualSettings />
+              <AlbumTintSettings />
+              <VisualizerHistorySettings />
               <TrackClickSettings />
               <div className="settings-card">
                 <div className="settings-card-label">Accent</div>
@@ -2256,6 +2261,7 @@ export default function SettingsView() {
               <h3>Analyzer</h3>
             </div>
             <div className="settings-cards">
+              <AnalyzerPlacementSettings />
               <div className="settings-card">
                 <div className="settings-card-label">Visualizer</div>
                 <div className="settings-grid">

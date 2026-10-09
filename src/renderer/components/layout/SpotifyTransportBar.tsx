@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import TransportResizeHandle from './TransportResizeHandle'
 import { useSpotifyStore } from '../../stores/spotifyStore'
+import { useWantedStore } from '../../stores/wantedStore'
 import { useUIStore } from '../../stores/uiStore'
 
 function formatClock(totalSeconds: number): string {
@@ -16,6 +17,11 @@ export default function SpotifyTransportBar() {
   const sendCommand = useSpotifyStore((state) => state.sendCommand)
   const isSidebarExpanded = useUIStore((state) => state.isSidebarExpanded)
 
+  const wantedIds = useWantedStore((state) => state.ids)
+  const adding = useWantedStore((state) => state.adding)
+  const addWanted = useWantedStore((state) => state.add)
+  const refreshWanted = useWantedStore((state) => state.refresh)
+
   const [position, setPosition] = useState(status.positionSeconds)
   const [scrubbing, setScrubbing] = useState(false)
   const [volume, setVolume] = useState<number>(status.volume ?? 100)
@@ -25,6 +31,14 @@ export default function SpotifyTransportBar() {
   const track = status.track
   const durationSeconds = track ? track.durationMs / 1000 : 0
   const isPlaying = status.state === 'playing'
+
+  const currentTrackId = status.track?.id
+  useEffect(() => {
+    void refreshWanted()
+    const onFocus = () => void refreshWanted()
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [currentTrackId, refreshWanted])
 
   useEffect(() => {
     if (!scrubbing) setPosition(status.positionSeconds)
@@ -71,6 +85,21 @@ export default function SpotifyTransportBar() {
           <div className="spotify-bar-title" title={track.title}>{track.title}</div>
           <div className="spotify-bar-artist" title={`${track.artist} · ${track.album}`}>{track.artist} · {track.album}</div>
         </div>
+        <button
+          type="button"
+          className="spotify-bar-popout"
+          onClick={() => {
+            try {
+              void window.electronAPI.spotifyPopout.open().catch((error: unknown) => console.error('Spotify popout failed to open', error))
+            } catch (error) {
+              console.error('Spotify popout is not available (restart the app so the new preload loads)', error)
+            }
+          }}
+          aria-label="Open the Spotify popout window"
+          title="Open the Spotify popout window"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M14 4h6v6h-2V7.4l-6.3 6.3-1.4-1.4L16.6 6H14zM5 6h6v2H7v9h9v-4h2v6H5z" /></svg>
+        </button>
       </div>
 
       <div className="spotify-bar-center">
@@ -87,6 +116,25 @@ export default function SpotifyTransportBar() {
           </button>
           <button type="button" onClick={() => void sendCommand({ kind: 'next' })} aria-label="Next track">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16 5h2v14h-2zM4 5l11 7L4 19z" /></svg>
+          </button>
+          <button
+            type="button"
+            className={`spotify-bar-add${wantedIds.has(track.id) ? ' spotify-bar-add-done' : ''}`}
+            disabled={wantedIds.has(track.id) || adding.has(track.id)}
+            onClick={() => void addWanted({
+              spotifyTrackId: track.id,
+              title: track.title,
+              artist: track.artist,
+              album: track.album,
+              durationMs: track.durationMs,
+              artworkUrl: track.artworkUrl
+            })}
+            aria-label={wantedIds.has(track.id) ? 'On your Not downloaded list' : 'Add to Not downloaded'}
+            title={wantedIds.has(track.id) ? 'On your Not downloaded list' : 'Add to Not downloaded'}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d={wantedIds.has(track.id) ? 'M9.5 16.2 5.3 12l-1.4 1.4 5.6 5.6L20.1 8.4 18.7 7z' : 'M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z'} />
+            </svg>
           </button>
         </div>
         <div className="spotify-bar-progress">

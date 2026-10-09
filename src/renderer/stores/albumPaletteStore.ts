@@ -15,13 +15,16 @@ interface AlbumPaletteState {
   pitchColorsEnabled: boolean
   /** Palette of the current cover, darkest first. Empty when unknown. */
   palette: string[]
+  /** Same cover, main colour first (secondary, tertiary after), not brightened. */
+  ranked: string[]
   setPitchColorsEnabled: (enabled: boolean) => void
-  setPalette: (palette: string[]) => void
+  setPalette: (palette: string[], ranked?: string[]) => void
 }
 
 export const useAlbumPaletteStore = create<AlbumPaletteState>((set) => ({
   pitchColorsEnabled: readEnabled(),
   palette: [],
+  ranked: [],
   setPitchColorsEnabled: (enabled) => {
     try {
       window.localStorage.setItem(STORAGE_KEY, enabled ? '1' : '0')
@@ -30,5 +33,5 @@ export const useAlbumPaletteStore = create<AlbumPaletteState>((set) => ({
     }
     set({ pitchColorsEnabled: enabled })
   },
-  setPalette: (palette) => set({ palette })
+  setPalette: (palette, ranked = []) => set({ palette, ranked })
 }))

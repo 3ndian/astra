@@ -18,6 +18,8 @@ const RootComponent = windowMode === 'mini'
     ? React.lazy(() => import('./components/notch/NotchApp'))
   : windowMode === 'lyrics-popout'
     ? React.lazy(() => import('./components/popout/LyricsPopoutApp'))
+  : windowMode === 'spotify-popout'
+    ? React.lazy(() => import('./components/popout/SpotifyPopoutApp'))
   : windowMode === 'scope-popout'
     ? React.lazy(() => import('./components/popout/ScopePopoutApp'))
     : React.lazy(() => import('./App'))

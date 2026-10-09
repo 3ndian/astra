@@ -12,6 +12,7 @@ import {
   clampWaveformScrollSpeed,
   type WaveformMode,
 } from '../../../types/waveform'
+import { getKeepHistoryAcrossTracks } from './historySetting'
 import { MultibandSplitter, createMultibandChunk, type MultibandChunk } from './multibandSplitter'
 
 export interface WaveformStereoChunk {
@@ -151,9 +152,11 @@ export class Waveform {
     if (this.unsubscribeSessionChange) {
       this.unsubscribeSessionChange()
     }
-    this.unsubscribeSessionChange = this.dataSource.subscribeToSessionChanges(() => {
+    this.unsubscribeSessionChange = this.dataSource.subscribeToSessionChanges((action) => {
+      // 'track': history is kept across songs, so there is nothing to clear.
+      if (action === 'track') return
       this.resetDisplay()
-    })
+    }, { keepAcrossTracks: getKeepHistoryAcrossTracks })
   }
 
   private resetDisplay(): void {
@@ -724,7 +727,7 @@ export class Waveform {
       this.recomputeSamplesPerColumn()
     }
 
-    if (!this.dataSource.isPlaying()) {
+    if (!this.dataSource.isPlaying() || this.dataSource.isPaused?.()) {
       this.drainPendingSamples()
       this.renderStaticLayer(width, height)
       this.drawHistory(this.ctx)

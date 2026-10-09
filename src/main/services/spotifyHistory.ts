@@ -42,6 +42,12 @@ const SORT_COLUMNS: Record<SpotifyHistorySort, string> = {
   played: 'played_at'
 }
 
+const YEAR_RETRY_MS = 14 * 24 * 60 * 60 * 1000
+
+export function albumKey(artist: string, album: string): string {
+  return `${artist.trim().toLowerCase()}\u001f${album.trim().toLowerCase()}`
+}
+
 function escapeLike(value: string): string {
   return value.replace(/[\\%_]/g, (match) => `\\${match}`)
 }
@@ -67,6 +73,11 @@ export class SpotifyHistoryStore {
         played_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_plays_played_at ON plays(played_at);
+      CREATE TABLE IF NOT EXISTS album_years (
+        album_key TEXT PRIMARY KEY,
+        year INTEGER,
+        checked_at INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS covers (
         cover_key TEXT PRIMARY KEY,
         mime TEXT NOT NULL,
@@ -74,6 +85,10 @@ export class SpotifyHistoryStore {
         last_used_at INTEGER NOT NULL
       );
     `)
+    // Older databases predate these columns.
+    const columns = (this.db.prepare('PRAGMA table_info(plays)').all() as Array<{ name: string }>).map((c) => c.name)
+    if (!columns.includes('track_number')) this.db.exec('ALTER TABLE plays ADD COLUMN track_number INTEGER')
+    if (!columns.includes('disc_number')) this.db.exec('ALTER TABLE plays ADD COLUMN disc_number INTEGER')
   }
 
   record(play: SpotifyPlayRecord, artworkDataUrl: string | null): void {
@@ -96,13 +111,46 @@ export class SpotifyHistoryStore {
 
     this.db
       .prepare(
-        'INSERT INTO plays (track_id, title, artist, album, cover_key, duration_ms, played_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO plays (track_id, title, artist, album, cover_key, duration_ms, played_at, track_number, disc_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
       )
-      .run(play.trackId, play.title, play.artist, play.album, coverKey, Math.round(play.durationMs), Math.round(play.playedAtMs))
+      .run(
+        play.trackId, play.title, play.artist, play.album, coverKey, Math.round(play.durationMs), Math.round(play.playedAtMs),
+        play.trackNumber ?? null, play.discNumber ?? null
+      )
 
     this.db
       .prepare('DELETE FROM covers WHERE cover_key NOT IN (SELECT cover_key FROM covers ORDER BY last_used_at DESC LIMIT ?)')
       .run(this.maxCovers)
+  }
+
+  /** Listens per Spotify song (all of them, or just the given track ids). */
+  listenTotals(trackIds?: readonly string[]): Array<{
+    trackId: string
+    title: string
+    artist: string
+    plays: number
+    lastPlayedAtMs: number
+  }> {
+    const where = trackIds && trackIds.length > 0 ? `WHERE track_id IN (${trackIds.map(() => '?').join(', ')})` : ''
+    const rows = this.db
+      .prepare(
+        `SELECT track_id, MAX(title) AS title, MAX(artist) AS artist, COUNT(*) AS n, MAX(played_at) AS last
+         FROM plays ${where} GROUP BY track_id`
+      )
+      .all(...(trackIds && trackIds.length > 0 ? trackIds : [])) as Array<{
+        track_id: string
+        title: string
+        artist: string
+        n: number | bigint
+        last: number | bigint
+      }>
+    return rows.map((row) => ({
+      trackId: row.track_id,
+      title: row.title,
+      artist: row.artist,
+      plays: Number(row.n),
+      lastPlayedAtMs: Number(row.last)
+    }))
   }
 
   list(query: SpotifyHistoryQuery): SpotifyHistoryPage {
@@ -119,7 +167,7 @@ export class SpotifyHistoryStore {
     const totalRow = this.db.prepare(`SELECT COUNT(*) AS n FROM plays ${where}`).get(...whereParams) as { n: number | bigint }
     const rows = this.db
       .prepare(
-        `SELECT id, track_id, title, artist, album, cover_key, duration_ms, played_at
+        `SELECT id, track_id, title, artist, album, cover_key, duration_ms, played_at, track_number, disc_number
          FROM plays ${where} ORDER BY ${column} ${direction}, id DESC LIMIT ? OFFSET ?`
       )
       .all(...whereParams, limit, offset) as Array<{
@@ -131,8 +179,12 @@ export class SpotifyHistoryStore {
         cover_key: string | null
         duration_ms: number | bigint
         played_at: number | bigint
+        track_number: number | bigint | null
+        disc_number: number | bigint | null
       }>
 
+    const yearOf = this.db.prepare('SELECT year FROM album_years WHERE album_key = ?')
+    const years = new Map<string, number | null>()
     const mapped: SpotifyHistoryRow[] = rows.map((row) => ({
       id: Number(row.id),
       trackId: row.track_id,
@@ -141,9 +193,41 @@ export class SpotifyHistoryStore {
       album: row.album,
       coverKey: row.cover_key,
       durationMs: Number(row.duration_ms),
-      playedAtMs: Number(row.played_at)
+      playedAtMs: Number(row.played_at),
+      trackNumber: row.track_number === null || row.track_number === undefined ? null : Number(row.track_number),
+      discNumber: row.disc_number === null || row.disc_number === undefined ? null : Number(row.disc_number),
+      year: (() => {
+        const key = albumKey(row.artist, row.album)
+        if (!years.has(key)) {
+          const found = yearOf.get(key) as { year: number | bigint | null } | undefined
+          years.set(key, found && found.year !== null ? Number(found.year) : null)
+        }
+        return years.get(key) ?? null
+      })()
     }))
     return { rows: mapped, total: Number(totalRow.n) }
+  }
+
+  /** Albums played but never looked up (or looked up long ago without success). */
+  albumsNeedingYear(limit: number, nowMs: number): Array<{ artist: string; album: string }> {
+    const retryBefore = nowMs - YEAR_RETRY_MS
+    const rows = this.db
+      .prepare('SELECT artist, album FROM plays WHERE album <> \'\' GROUP BY artist, album ORDER BY MAX(played_at) DESC')
+      .all() as Array<{ artist: string; album: string }>
+    const check = this.db.prepare('SELECT year, checked_at FROM album_years WHERE album_key = ?')
+    const needed: Array<{ artist: string; album: string }> = []
+    for (const row of rows) {
+      const found = check.get(albumKey(row.artist, row.album)) as { year: number | null; checked_at: number } | undefined
+      if (!found || (found.year === null && found.checked_at < retryBefore)) needed.push(row)
+      if (needed.length >= limit) break
+    }
+    return needed
+  }
+
+  setAlbumYear(artist: string, album: string, year: number | null, nowMs: number): void {
+    this.db
+      .prepare('INSERT OR REPLACE INTO album_years (album_key, year, checked_at) VALUES (?, ?, ?)')
+      .run(albumKey(artist, album), year, Math.round(nowMs))
   }
 
   getCovers(keys: string[]): Record<string, string> {

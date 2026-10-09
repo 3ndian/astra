@@ -1,5 +1,6 @@
 /// <reference types="vite/client" />
 import type { NotchAPI } from '../types/notch'
+import type { SpotifyPopoutLayout, SpotifyPopoutState } from '../types/spotifyPopout'
 
 import type { SectionFlagKey, SectionKind, SectionsMutationResult, SectionsPayload } from '../types/sections'
 import { VisualizerDSP } from './audio/native/visualizer-dsp'
@@ -570,6 +571,16 @@ declare global {
                 getHistory: (query: SpotifyHistoryQuery) => Promise<SpotifyHistoryPage>
                 getHistoryCovers: (keys: string[]) => Promise<Record<string, string>>
             }
+        spotifyPopout: {
+          open: () => Promise<void>
+          close: () => Promise<void>
+          returnToMain: () => Promise<void>
+          getState: () => Promise<SpotifyPopoutState>
+          setLayout: (layout: SpotifyPopoutLayout) => Promise<void>
+          showContextMenu: () => void
+          onState: (callback: (state: SpotifyPopoutState) => void) => () => void
+          onHover: (callback: (hovering: boolean) => void) => () => void
+        }
         wanted: {
           add: (request: WantedAddRequest) => Promise<WantedAddResult>
           list: (query: WantedQuery) => Promise<WantedTrackRow[]>
@@ -577,6 +588,9 @@ declare global {
           thumbs: (ids: number[]) => Promise<Record<number, string>>
           cover: (id: number) => Promise<string | null>
           remove: (id: number) => Promise<void>
+          restore: (id: number) => Promise<void>
+          purge: (id: number) => Promise<void>
+          emptyBin: () => Promise<void>
           onFulfilled: (callback: (items: Array<{ title: string; artist: string }>) => void) => () => void
         }
             lyrics: {

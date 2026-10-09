@@ -11,6 +11,8 @@ export interface SpotifyPlayRecord {
   artworkUrl: string | null
   durationMs: number
   playedAtMs: number
+  trackNumber?: number | null
+  discNumber?: number | null
 }
 
 export interface PlayTracker {
@@ -73,7 +75,9 @@ export function createPlayTracker(): PlayTracker {
           album: track.album,
           artworkUrl: track.artworkUrl,
           durationMs: track.durationMs,
-          playedAtMs: nowMs
+          playedAtMs: nowMs,
+          trackNumber: track.trackNumber ?? null,
+          discNumber: track.discNumber ?? null
         }
       }
       return null

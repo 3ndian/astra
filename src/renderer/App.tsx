@@ -69,6 +69,8 @@ import { useScopePopoutBridge } from './hooks/useScopePopoutBridge'
 import { useMemoryDiagnosticsBridge } from './hooks/useMemoryDiagnosticsBridge'
 import { useCoverArtAccent } from './hooks/useCoverArtAccent'
 import { useAlbumPalette } from './hooks/useAlbumPalette'
+import { useAlbumTint } from './hooks/useAlbumTint'
+import { useAnalyzerPlacementStore } from './stores/analyzerPlacementStore'
 import { useRuntimeAppIconSync } from './hooks/useRuntimeAppIconSync'
 import { useTrayControlsBridge } from './hooks/useTrayControlsBridge'
 import { usePointerFocusCleanup } from './hooks/usePointerFocusCleanup'
@@ -156,6 +158,7 @@ function MemoryDiagnosticsBridgeRuntime(): null {
 function CoverArtAccentRuntime(): null {
   useCoverArtAccent()
   useAlbumPalette()
+  useAlbumTint()
   return null
 }
 
@@ -248,6 +251,12 @@ function App() {
   const queuePresence = usePresence(showQueue)
   const infoSidebarPresence = usePresence(showInfoSidebar)
   const fullscreenPresence = usePresence(isFullscreen, 180)
+  const analyzerPlacement = useAnalyzerPlacementStore((state) => state.placement)
+  useEffect(() => {
+    const root = document.documentElement
+    root.classList.toggle('analyzer-bottom', analyzerPlacement === 'bottom')
+    return () => root.classList.remove('analyzer-bottom')
+  }, [analyzerPlacement])
   const spotifyBarActive = useSpotifyStore(
     (state) => state.activeSource === 'spotify' && state.status.track !== null && (state.status.state === 'playing' || state.status.state === 'paused')
   )
@@ -652,7 +661,7 @@ function App() {
       <RuntimeBridges />
       <ActiveViewEligibilityGuard />
       <div
-        className={`app ${isAnalyzerEditMode ? 'is-analyzer-editing' : ''} ${albumBackdropOn ? 'album-backdrop-on' : ''}`.trim()}
+        className={`app ${isAnalyzerEditMode ? 'is-analyzer-editing' : ''} ${albumBackdropOn ? 'album-backdrop-on' : ''} ${analyzerPlacement === 'bottom' ? 'analyzer-placed-bottom' : ''}`.trim()}
       >
         <TitleBar />
         {isAnalyzerRackVisible && (

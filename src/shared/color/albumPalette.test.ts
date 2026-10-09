@@ -42,3 +42,10 @@ test('liftForDisplay lightens only dark colours', () => {
   assert.notEqual(dark, '#101010')
   assert.equal(light, '#f0f0f0')
 })
+
+test('prominence order puts the most common colour first', () => {
+  const ranked = extractAlbumPalette(solid([[200, 30, 30, 80], [30, 30, 200, 30], [240, 220, 60, 10]]), 3, 'prominence')
+  assert.equal(ranked.length, 3)
+  assert.equal(ranked[0], '#c81e1e')
+  assert.equal(ranked[1], '#1e1ec8')
+})

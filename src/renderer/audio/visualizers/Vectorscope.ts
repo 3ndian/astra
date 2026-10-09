@@ -287,6 +287,14 @@ export class Vectorscope {
       return
     }
 
+    if (this.dataSource.isPaused?.()) {
+      // Paused: hold the trail exactly as it was, with no fading and no new points.
+      this.renderStaticLayer()
+      if (this.gpuRenderer) this.gpuRenderer.present(ctx)
+      else ctx.drawImage(offscreenCanvas, 0, 0)
+      return
+    }
+
     if (this.gpuRenderer && !this.gpuRenderer.beginFrame(width, height, options.persistence, options.lineWidth * (window.devicePixelRatio || 1))) {
       this.useCanvasRenderer()
     }

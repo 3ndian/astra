@@ -17,6 +17,7 @@ import type {
   LyricsPopoutSnapshot,
   LyricsPopoutWindowState
 } from '../types/lyricsPopout'
+import type { SpotifyPopoutLayout, SpotifyPopoutState } from '../types/spotifyPopout'
 import type {
   ScopeKind,
   ScopePopoutChunk,
@@ -1457,6 +1458,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getHistoryCovers: (keys: string[]): Promise<Record<string, string>> => ipcRenderer.invoke('spotify:history:covers', keys)
   },
 
+  spotifyPopout: {
+    open: (): Promise<void> => ipcRenderer.invoke('spotify-popout:open'),
+    close: (): Promise<void> => ipcRenderer.invoke('spotify-popout:close'),
+    returnToMain: (): Promise<void> => ipcRenderer.invoke('spotify-popout:returnToMain'),
+    getState: (): Promise<SpotifyPopoutState> => ipcRenderer.invoke('spotify-popout:getState'),
+    setLayout: (layout: SpotifyPopoutLayout): Promise<void> => ipcRenderer.invoke('spotify-popout:setLayout', layout),
+    showContextMenu: (): void => ipcRenderer.send('spotify-popout:contextMenu'),
+    onState: (callback: (state: SpotifyPopoutState) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, state: SpotifyPopoutState) => callback(state)
+      ipcRenderer.on('spotify-popout:state', handler)
+      return () => ipcRenderer.removeListener('spotify-popout:state', handler)
+    },
+    onHover: (callback: (hovering: boolean) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, hovering: boolean) => callback(hovering)
+      ipcRenderer.on('spotify-popout:hover', handler)
+      return () => ipcRenderer.removeListener('spotify-popout:hover', handler)
+    }
+  },
   wanted: {
     add: (request: WantedAddRequest): Promise<WantedAddResult> => ipcRenderer.invoke('wanted:add', request),
     list: (query: WantedQuery): Promise<WantedTrackRow[]> => ipcRenderer.invoke('wanted:list', query),
@@ -1464,6 +1483,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     thumbs: (ids: number[]): Promise<Record<number, string>> => ipcRenderer.invoke('wanted:thumbs', ids),
     cover: (id: number): Promise<string | null> => ipcRenderer.invoke('wanted:cover', id),
     remove: (id: number): Promise<void> => ipcRenderer.invoke('wanted:remove', id),
+    restore: (id: number): Promise<void> => ipcRenderer.invoke('wanted:restore', id),
+    purge: (id: number): Promise<void> => ipcRenderer.invoke('wanted:purge', id),
+    emptyBin: (): Promise<void> => ipcRenderer.invoke('wanted:emptyBin'),
     onFulfilled: (callback: (items: Array<{ title: string; artist: string }>) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, items: Array<{ title: string; artist: string }>) => callback(items)
       ipcRenderer.on('wanted:fulfilled', handler)
@@ -2308,6 +2330,16 @@ declare global {
         getHistory: (query: SpotifyHistoryQuery) => Promise<SpotifyHistoryPage>
         getHistoryCovers: (keys: string[]) => Promise<Record<string, string>>
       }
+      spotifyPopout: {
+        open: () => Promise<void>
+        close: () => Promise<void>
+        returnToMain: () => Promise<void>
+        getState: () => Promise<SpotifyPopoutState>
+        setLayout: (layout: SpotifyPopoutLayout) => Promise<void>
+        showContextMenu: () => void
+        onState: (callback: (state: SpotifyPopoutState) => void) => () => void
+        onHover: (callback: (hovering: boolean) => void) => () => void
+      }
       wanted: {
         add: (request: WantedAddRequest) => Promise<WantedAddResult>
         list: (query: WantedQuery) => Promise<WantedTrackRow[]>
@@ -2315,6 +2347,9 @@ declare global {
         thumbs: (ids: number[]) => Promise<Record<number, string>>
         cover: (id: number) => Promise<string | null>
         remove: (id: number) => Promise<void>
+        restore: (id: number) => Promise<void>
+        purge: (id: number) => Promise<void>
+        emptyBin: () => Promise<void>
         onFulfilled: (callback: (items: Array<{ title: string; artist: string }>) => void) => () => void
       }
       lyrics: {
