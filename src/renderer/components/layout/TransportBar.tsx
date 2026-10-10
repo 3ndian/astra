@@ -29,6 +29,7 @@ import { useLyricsPopoutStore } from '../../stores/lyricsPopoutStore'
 import { useParallaxStore } from '../../stores/parallaxStore'
 import { resolveTransportInfoLine } from '../../utils/transportInfoLine'
 import type { MiniPlayerWindowState } from '../../../types/miniPlayer'
+import { useMilkdropBackgroundStore } from '../../stores/milkdropBackgroundStore'
 
 function formatTime(seconds: number): string {
   if (!isFinite(seconds) || isNaN(seconds)) return '0:00'
@@ -162,6 +163,8 @@ export default function TransportBar() {
 
   const [showEQPopover, setShowEQPopover] = useState(false)
   const eqPopoverPresence = usePresence(showEQPopover)
+  const milkdropBgOn = useMilkdropBackgroundStore((s) => s.enabled)
+  const setMilkdropBgOn = useMilkdropBackgroundStore((s) => s.setEnabled)
   const [miniWindowState, setMiniWindowState] = useState<MiniPlayerWindowState>({
     isOpen: false,
     alwaysOnTop: true,
@@ -664,6 +667,19 @@ export default function TransportBar() {
               <path d="M4 7h16" />
               <path d="M4 12h12" />
               <path d="M4 17h9" />
+            </svg>
+          </button>
+          <button
+            className={`transport-lyrics-btn transport-bgviz-btn ${milkdropBgOn ? 'active' : ''}`}
+            onClick={() => setMilkdropBgOn(!milkdropBgOn)}
+            title={milkdropBgOn ? 'Turn off background visual (saves GPU and heat)' : 'Turn on background visual'}
+            aria-label={milkdropBgOn ? 'Turn off background visual' : 'Turn on background visual'}
+            aria-pressed={milkdropBgOn}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 12c2.5-6 5-6 7.5 0s5 6 7.5 0" />
+              <path d="M3 18c2.5-4 5-4 7.5 0s5 4 7.5 0" opacity="0.55" />
+              {!milkdropBgOn && <line x1="4" y1="4" x2="20" y2="20" />}
             </svg>
           </button>
         </div>

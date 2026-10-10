@@ -1,4 +1,5 @@
 import { useRef, useEffect } from 'react'
+import { useDevicePixelRatio } from '../../hooks/useDevicePixelRatio'
 import {
   getEQAnalyzerFrameSnapshot,
   subscribeToEQAnalyzerFrames,
@@ -58,6 +59,7 @@ function resolveAccentRgbChannels(): string {
 
 export default function EQSpectrumOverlay({ width, height }: EQSpectrumOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const dpr = useDevicePixelRatio()
 
   useEffect(() => {
     if (width <= 0 || height <= 0) return
@@ -68,9 +70,9 @@ export default function EQSpectrumOverlay({ width, height }: EQSpectrumOverlayPr
     if (!ctx) return
 
     // Set canvas resolution to match CSS size
-    canvas.width = width * window.devicePixelRatio
-    canvas.height = height * window.devicePixelRatio
-    ctx.scale(window.devicePixelRatio, window.devicePixelRatio)
+    canvas.width = width * dpr
+    canvas.height = height * dpr
+    ctx.scale(dpr, dpr)
 
     const draw = () => {
       ctx.clearRect(0, 0, width, height)
@@ -138,7 +140,7 @@ export default function EQSpectrumOverlay({ width, height }: EQSpectrumOverlayPr
     return () => {
       unsubscribe()
     }
-  }, [width, height])
+  }, [width, height, dpr])
 
   if (width <= 0 || height <= 0) return null
 

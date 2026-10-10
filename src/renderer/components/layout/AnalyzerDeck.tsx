@@ -1,4 +1,5 @@
 import { useAnalyzerPlacementStore } from '../../stores/analyzerPlacementStore'
+import { useSpectrogramExpandStore } from '../../stores/spectrogramExpandStore'
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import type { ScopeKind } from '../../../types/scopePopout'
 import { useAstraActivity } from '../../hooks/useAstraActivity'
@@ -8,6 +9,9 @@ import { useVisualizerSettingsStore } from '../../stores/visualizerSettingsStore
 import AstraActivityIndicator from '../activity/AstraActivityIndicator'
 import VisualizerPanel from '../visualizers/VisualizerPanel'
 import AnalyzerEditOverlay from './AnalyzerEditOverlay'
+import VisualizerTintLayer, { VISUALIZER_MAP_FILTER_ID, useVisualizerMapActive } from './VisualizerTintLayer'
+import { useVisualizerTintStore } from '../../stores/visualizerTintStore'
+import { useAlbumPaletteStore } from '../../stores/albumPaletteStore'
 import { buildAnalyzerGridTemplateColumns } from './analyzerLayout'
 
 interface AnalyzerDeckProps {
@@ -63,6 +67,9 @@ export default function AnalyzerDeck({ onAnalyzerHeightPreviewChange }: Analyzer
   const vectorscopeMode = useVisualizerSettingsStore((state) => state.vectorscopeMode)
   const setScopeDeckLayout = useVisualizerSettingsStore((state) => state.setScopeDeckLayout)
 
+  const tintMode = useVisualizerTintStore((state) => state.mode)
+  const hasTintPalette = useAlbumPaletteStore((state) => state.palette.length > 0)
+  const mapActive = useVisualizerMapActive()
   const [dragState, setDragState] = useState<ScopeEditDragState | null>(null)
   const [rackDropIndex, setRackDropIndex] = useState<number | null>(null)
   const [isHiddenDropActive, setIsHiddenDropActive] = useState(false)
@@ -74,9 +81,11 @@ export default function AnalyzerDeck({ onAnalyzerHeightPreviewChange }: Analyzer
   const heightResizeCleanupRef = useRef<(() => void) | null>(null)
   const heightPreviewPxRef = useRef<number | null>(null)
 
+  // While the spectrogram is open in the tall panel it leaves the row, and the other scopes take its room.
+  const spectrogramPanelOpen = useSpectrogramExpandStore((state) => state.open)
   const visibleScopes = useMemo(() => {
-    return scopeOrder.filter((scope) => !hiddenScopes.includes(scope))
-  }, [hiddenScopes, scopeOrder])
+    return scopeOrder.filter((scope) => !hiddenScopes.includes(scope) && !(scope === 'spectrogram' && spectrogramPanelOpen && !isAnalyzerEditMode))
+  }, [hiddenScopes, isAnalyzerEditMode, scopeOrder, spectrogramPanelOpen])
 
   const hiddenOrderedScopes = useMemo(() => {
     return scopeOrder.filter((scope) => hiddenScopes.includes(scope))
@@ -342,7 +351,10 @@ export default function AnalyzerDeck({ onAnalyzerHeightPreviewChange }: Analyzer
         </div>
       </button>
 
-      <div className="analyzer-visualizers">
+      <div
+        className={`analyzer-visualizers${tintMode !== 'off' && hasTintPalette ? ' has-viz-tint' : ''}`}
+        style={mapActive ? { filter: `url(#${VISUALIZER_MAP_FILTER_ID})` } : undefined}
+      >
         <VisualizerPanel
           visibleScopes={visibleScopes}
           gridTemplateColumns={gridTemplateColumns}
@@ -360,6 +372,7 @@ export default function AnalyzerDeck({ onAnalyzerHeightPreviewChange }: Analyzer
           onScopeActivate={handleScopeActivate}
           onResizePreviewChange={setResizePreviewWeights}
         />
+        <VisualizerTintLayer />
       </div>
 
       {isAnalyzerEditMode && (

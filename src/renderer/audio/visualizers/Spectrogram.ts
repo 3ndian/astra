@@ -302,7 +302,7 @@ export class Spectrogram {
         return
       }
       this.resetDisplay()
-    }, { keepAcrossTracks: getKeepHistoryAcrossTracks })
+    }, { keepAcrossTracks: getKeepHistoryAcrossTracks, onWake: () => this.invalidate() })
   }
 
   private resetDisplay(): void {

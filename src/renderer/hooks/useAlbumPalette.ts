@@ -2,6 +2,8 @@ import { useEffect, useRef } from 'react'
 import { extractAlbumPalette, liftForDisplay } from '../../shared/color/albumPalette'
 import { useAlbumPaletteStore } from '../stores/albumPaletteStore'
 import { useAlbumTintStore } from '../stores/albumTintStore'
+import { useMilkdropBackgroundStore } from '../stores/milkdropBackgroundStore'
+import { useVisualizerTintStore } from '../stores/visualizerTintStore'
 import { useLibraryStore } from '../stores/libraryStore'
 import { usePlayerStore } from '../stores/playerStore'
 
@@ -42,7 +44,9 @@ async function paletteFromUrl(url: string): Promise<CoverColors> {
 export function useAlbumPalette(): void {
   const pitchEnabled = useAlbumPaletteStore((state) => state.pitchColorsEnabled)
   const tintEnabled = useAlbumTintStore((state) => state.enabled)
-  const enabled = pitchEnabled || tintEnabled
+  const vizTintEnabled = useVisualizerTintStore((state) => state.mode !== 'off')
+  const milkdropTintEnabled = useMilkdropBackgroundStore((state) => state.enabled && state.tintMode !== 'off')
+  const enabled = pitchEnabled || tintEnabled || vizTintEnabled || milkdropTintEnabled
   const setPalette = useAlbumPaletteStore((state) => state.setPalette)
   const track = usePlayerStore((state) => state.currentTrack)
   const getArtwork = useLibraryStore((state) => state.getArtwork)

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ButterchurnVisualizer } from 'butterchurn'
 import { audioEngine } from '../../audio/AudioEngine'
+import { subscribeDevicePixelRatio } from '../../utils/devicePixelRatioWatch'
+import { AlbumColourLayer, MILKDROP_MAP_FILTER_ID, useAlbumMapActive } from './VisualizerTintLayer'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useMilkdropStore } from '../../stores/milkdropStore'
 import { useMilkdropBackgroundStore } from '../../stores/milkdropBackgroundStore'
@@ -35,6 +37,11 @@ export default function MilkdropBackdrop({
   const resizeRef = useRef<(() => void) | null>(null)
   const quality = useMilkdropBackgroundStore((s) => s.quality)
   const fps = useMilkdropBackgroundStore((s) => s.fps)
+  const visualOpacity = useMilkdropBackgroundStore((s) => s.visualOpacity)
+  const blur = useMilkdropBackgroundStore((s) => s.blur)
+  const tintMode = useMilkdropBackgroundStore((s) => s.tintMode)
+  const tintStrength = useMilkdropBackgroundStore((s) => s.tintStrength)
+  const mapActive = useAlbumMapActive(tintMode)
   const qualityRef = useRef(quality)
   const fpsRef = useRef(fps)
   qualityRef.current = quality
@@ -61,6 +68,7 @@ export default function MilkdropBackdrop({
     let rafId = 0
     let timer = 0
     let observer: ResizeObserver | null = null
+    let unsubscribeDpr: (() => void) | null = null
 
     const start = async () => {
       try {
@@ -105,6 +113,8 @@ export default function MilkdropBackdrop({
         resizeRef.current = applySize
         observer = new ResizeObserver(applySize)
         observer.observe(canvas)
+        // Moving to another monitor changes the pixel density without changing the CSS size.
+        unsubscribeDpr = subscribeDevicePixelRatio(applySize)
 
         const syncAudio = () => {
           const node = audioEngine.getEQAnalyserNode()
@@ -122,6 +132,8 @@ export default function MilkdropBackdrop({
         const frame = (now: number) => {
           rafId = window.requestAnimationFrame(frame)
           const playing = usePlayerStore.getState().playbackState === 'playing'
+          // Minimised or hidden windows draw nothing, so the GPU can idle.
+          if (document.hidden) return
           if (!playing && forceRef.current <= 0) return
           if (now - last < 1000 / fpsRef.current - 2) return
           last = now
@@ -145,6 +157,7 @@ export default function MilkdropBackdrop({
       window.cancelAnimationFrame(rafId)
       window.clearInterval(timer)
       observer?.disconnect()
+      unsubscribeDpr?.()
       const viz = vizRef.current
       if (viz && connectedRef.current) {
         try { viz.disconnectAudio?.(connectedRef.current) } catch { /* ignore */ }
@@ -195,7 +208,21 @@ export default function MilkdropBackdrop({
   if (!run) return null
   return (
     <div className="album-backdrop milkdrop-backdrop" aria-hidden="true">
-      <canvas ref={canvasRef} className="milkdrop-backdrop-canvas" />
+      <canvas
+        ref={canvasRef}
+        className="milkdrop-backdrop-canvas"
+        style={{
+          opacity: visualOpacity / 100,
+          // Slight scale hides the soft, transparent edge a blur leaves.
+          ...(blur > 0 || mapActive
+            ? {
+                filter: [mapActive ? `url(#${MILKDROP_MAP_FILTER_ID})` : '', blur > 0 ? `blur(${blur}px)` : ''].filter(Boolean).join(' '),
+                ...(blur > 0 ? { transform: 'scale(1.06)' } : null)
+              }
+            : null)
+        }}
+      />
+      <AlbumColourLayer mode={tintMode} strength={tintStrength} filterId={MILKDROP_MAP_FILTER_ID} angle={135} />
     </div>
   )
 }

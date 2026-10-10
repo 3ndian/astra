@@ -15,6 +15,7 @@ import CustomThemeEditor from '../settings/CustomThemeEditor'
 import BackgroundVisualSettings from '../settings/BackgroundVisualSettings'
 import AlbumTintSettings from '../settings/AlbumTintSettings'
 import VisualizerHistorySettings from '../settings/VisualizerHistorySettings'
+import VisualizerTintSettings from '../settings/VisualizerTintSettings'
 import AnalyzerPlacementSettings from '../settings/AnalyzerPlacementSettings'
 import TrackClickSettings from '../settings/TrackClickSettings'
 import { deriveCustomTokens, previewHexes } from '../../../shared/theme/customTheme'
@@ -774,6 +775,20 @@ export default function SettingsView() {
     [developerSectionVisible, parallaxExperimentEnabled]
   )
 
+  const closeSettings = useCallback(() => {
+    const ui = useUIStore.getState()
+    if (!ui.navigateViewBack()) ui.setActiveView('library')
+  }, [])
+  // Escape closes the window, unless a dialog is open or Escape was already used (clearing the search box).
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return
+      if (document.querySelector('.modal-overlay, [role="dialog"]')) return
+      closeSettings()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [closeSettings])
   const [settingsQuery, setSettingsQuery] = useState('')
   const settingsContentRef = useRef<HTMLDivElement | null>(null)
   const searchNeedle = settingsQuery.trim().toLowerCase()
@@ -1778,11 +1793,11 @@ export default function SettingsView() {
           <button
             type="button"
             className="settings-back-btn"
-            onClick={() => useUIStore.getState().setActiveView('library')}
-            aria-label="Back to library"
+            onClick={closeSettings}
+            aria-label="Close settings"
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6" /></svg>
-            <span>Back to library</span>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
+            <span>Close</span>
           </button>
           </div>
           <div>
@@ -1823,7 +1838,7 @@ export default function SettingsView() {
                 type="search"
                 value={settingsQuery}
                 onChange={(event) => setSettingsQuery(event.target.value)}
-                onKeyDown={(event) => { if (event.key === 'Escape') setSettingsQuery('') }}
+                onKeyDown={(event) => { if (event.key === 'Escape' && settingsQuery) { event.preventDefault(); setSettingsQuery('') } }}
                 placeholder="Search settings"
                 aria-label="Search settings"
               />
@@ -2327,6 +2342,7 @@ export default function SettingsView() {
             <div className="settings-cards">
               <AnalyzerPlacementSettings />
               <BackgroundVisualSettings />
+              <VisualizerTintSettings />
               <VisualizerHistorySettings />
               <div className="settings-card">
                 <div className="settings-card-label">Visualizer</div>

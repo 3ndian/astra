@@ -6,6 +6,7 @@ import { useSpectrogramExpandStore } from '../../stores/spectrogramExpandStore'
 import { useThemeStore } from '../../stores/themeStore'
 import { useVisualizerSettingsStore } from '../../stores/visualizerSettingsStore'
 import { DockedSpectrogramTile } from '../visualizers/VisualizerPanel'
+import RightPanelResizer from './RightPanelResizer'
 
 /**
  * The spectrogram stretched into a tall panel down the right edge, from the title bar to the player bar.
@@ -51,6 +52,8 @@ export default function ExpandedSpectrogramPanel() {
       aria-label="Spectrogram"
       aria-hidden={presence.phase === 'exiting'}
     >
+      <RightPanelResizer storageKey="astra.spectrogramWidth" cssVar="--spectrogram-width" defaultWidth={340} label="spectrogram" />
+      <div className="spectrogram-expanded-inner">
       <div className="spectrogram-expanded-head">
         <span>Spectrogram</span>
         <button type="button" onClick={() => setOpen(false)} aria-label="Close spectrogram panel" title="Close">
@@ -72,6 +75,7 @@ export default function ExpandedSpectrogramPanel() {
           orientation="vertical"
           isRunning={open && isRunning}
         />
+      </div>
       </div>
     </aside>
   )

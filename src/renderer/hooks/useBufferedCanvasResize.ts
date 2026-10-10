@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, type MutableRefObject, type RefObject } from 'react'
 import { measureCanvasResizeState, type CanvasResizeState } from '../utils/canvasSizing'
+import { subscribeDevicePixelRatio } from '../utils/devicePixelRatioWatch'
 
 export type { CanvasResizeState }
 
@@ -188,9 +189,12 @@ export function useBufferedCanvasResize<TContainer extends HTMLElement>(
       resizeObserver.observe(container)
     }
     window.addEventListener('resize', scheduleResize)
+    // Moving to another monitor changes the pixel density without changing the CSS size.
+    const unsubscribeDpr = subscribeDevicePixelRatio(scheduleResize)
 
     return () => {
       resizeObserver?.disconnect()
+      unsubscribeDpr()
       window.removeEventListener('resize', scheduleResize)
       if (resizeFrameRef.current !== null) {
         window.cancelAnimationFrame(resizeFrameRef.current)

@@ -17,7 +17,7 @@ export interface VisualizerSessionSource {
    */
   subscribeToSessionChanges: (
     listener: (action?: Exclude<SessionChangeAction, 'hold'>) => void,
-    options?: { keepAcrossTracks?: () => boolean }
+    options?: { keepAcrossTracks?: () => boolean; onWake?: () => void }
   ) => () => void
 }
 
@@ -34,12 +34,19 @@ export const defaultVisualizerSessionSource: VisualizerSessionSource = {
       if (action === 'hold') return
       listener(action)
     }
-    const offTrackChange = audioEngine.onTrackChange(() => deliver(resolveSessionChange({ event: 'track' }, keep())))
+    // Views that keep their history get no reset on 'hold', but their frame loop may have gone to
+    // sleep while playback was stopped or loading (a seek can do that). Wake it on every change.
+    const wake = (): void => options?.onWake?.()
+    const offTrackChange = audioEngine.onTrackChange(() => {
+      deliver(resolveSessionChange({ event: 'track' }, keep()))
+      wake()
+    })
     const offStateChange = audioEngine.on('stateChange', () => {
       const next: string = audioEngine.playbackState
       const action = resolveSessionChange({ event: 'state', previous: previousState, next }, keep())
       previousState = next
       deliver(action)
+      wake()
     })
     return () => {
       offTrackChange?.()

@@ -12,6 +12,7 @@ import { useThemeStore } from '../../stores/themeStore'
 import { useVisualizerSettingsStore, type VectorscopeMode } from '../../stores/visualizerSettingsStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useBufferedCanvasResize } from '../../hooks/useBufferedCanvasResize'
+import { isSpectrogramBandDragClick, useSpectrogramBandSelect } from './useSpectrogramBandSelect'
 import type { ScopeKind } from '../../../types/scopePopout'
 import type { SpectrogramClarityMode, SpectrogramScaleMode, SpectrogramOrientation } from '../../../types/spectrogram'
 import type { SpectrumDisplayMode } from '../../../types/spectrum'
@@ -524,6 +525,7 @@ export function DockedSpectrogramTile({
   const { applyResizeNow } = useBufferedCanvasResize(containerRef, canvasRef, {
     onResize: () => visualizerRef.current?.resize(),
   })
+  const bandSelect = useSpectrogramBandSelect({ containerRef, orientation, scaleMode, rangeMode })
 
   useEffect(() => {
     applyResizeNow()
@@ -583,8 +585,9 @@ export function DockedSpectrogramTile({
   }, [isRunning])
 
   return (
-    <div ref={containerRef} className="visualizer-surface">
+    <div ref={containerRef} className="visualizer-surface has-band-select" {...bandSelect.surfaceProps}>
       <canvas ref={canvasRef} className="visualizer-canvas" />
+      {bandSelect.layer}
     </div>
   )
 }
@@ -1335,7 +1338,7 @@ export default function VisualizerPanel({
         onClick={isEditMode && onScopeActivate
           ? () => onScopeActivate(scope)
           : canExpand
-            ? toggleSpectrogramExpanded
+            ? () => { if (!isSpectrogramBandDragClick()) toggleSpectrogramExpanded() }
             : undefined}
         title={canExpand ? (isExpanded ? 'Click to close the tall spectrogram' : 'Click to expand the spectrogram') : undefined}
       >

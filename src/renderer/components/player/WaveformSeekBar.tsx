@@ -1,4 +1,5 @@
 import { useRef, useEffect, useCallback, useState, useMemo } from 'react'
+import { useDevicePixelRatio } from '../../hooks/useDevicePixelRatio'
 import { downsampleWaveform } from '../../audio/waveformExtractor'
 import { useMediaQuery } from '../../hooks/useMediaQuery'
 import { useThemeStore } from '../../stores/themeStore'
@@ -106,6 +107,7 @@ export default function WaveformSeekBar({
   const authoritativeProgressRef = useRef(clamp(progress, 0, 100))
   const displayedProgressRef = useRef(clamp(progress, 0, 100))
   const prefersReducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
+  const dpr = useDevicePixelRatio()
   const waveformTheme = useThemeStore((s) => s.resolvedTokens)
 
   // Keep animation completion callbacks on the newest result even when a
@@ -139,12 +141,11 @@ export default function WaveformSeekBar({
     const canvas = canvasRef.current
     if (!canvas || canvasSize.width === 0) return
 
-    const dpr = window.devicePixelRatio || 1
     canvas.width = canvasSize.width * dpr
     canvas.height = canvasSize.height * dpr
     canvas.style.width = `${canvasSize.width}px`
     canvas.style.height = `${canvasSize.height}px`
-  }, [canvasSize])
+  }, [canvasSize, dpr])
 
   // Adaptive bar count: downsample source data to fit the current width
   const displayData = useMemo(() => {
@@ -338,7 +339,6 @@ export default function WaveformSeekBar({
     const canvas = canvasRef.current
     if (!canvas) return
 
-    const dpr = window.devicePixelRatio || 1
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
@@ -499,7 +499,7 @@ export default function WaveformSeekBar({
       ctx.lineTo(hoverX, height)
       ctx.stroke()
     }
-  }, [displayData, displayedProgress, playheadPulse, hoverPreview, canvasSize, waveformTheme, analyzedRatio, bufferedRatio, duration, seekableDuration, handoffDisplayData, waveformTransition])
+  }, [displayData, displayedProgress, playheadPulse, hoverPreview, canvasSize, dpr, waveformTheme, analyzedRatio, bufferedRatio, duration, seekableDuration, handoffDisplayData, waveformTransition])
 
   // Redraw on any dependency change
   useEffect(() => {

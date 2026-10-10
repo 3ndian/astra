@@ -5289,6 +5289,9 @@ function createWindow(): void {
     frame: false,
     titleBarStyle: 'hidden',
     trafficLightPosition: macTrafficLightPosition(),
+    // Without this, clicking the main window while another Astra window (the mini player) has focus only
+    // focuses it, and the click has to be repeated.
+    acceptFirstMouse: true,
     transparent: false,
     backgroundColor: '#0a0a0f',
     vibrancy: process.platform === 'darwin' ? 'under-window' : undefined,

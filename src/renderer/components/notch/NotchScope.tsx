@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { useDevicePixelRatio } from '../../hooks/useDevicePixelRatio'
 import { isNativeAvailable, oscilloscope, OSCILLOSCOPE_BUFFER_SIZE, spectrum } from '../../audio/native'
 import { getNormalizedOscilloscopeDisplaySamples, OSCILLOSCOPE_VISUAL_GAIN } from '../../audio/native/oscilloscopeDisplaySamples'
 import { fillNotchSpectrum, notchOscilloscopeGain, notchOscilloscopeY, NOTCH_SPECTRUM_FFT_SIZE, NOTCH_SCOPE_WARMUP_SAMPLES, smoothNotchSpectrum } from './notchVisualizer'
@@ -7,13 +8,14 @@ export default function NotchScope({ mode, active, color, frozen, width, height 
   mode: 'oscilloscope' | 'spectrum'; active: boolean; color: string; frozen: boolean; width: number; height: number
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const devicePixelRatio = useDevicePixelRatio()
   useEffect(() => {
     // Preserve the outgoing frame while metadata crossfades over it. Cleanup
     // stops both the subscription and any in-flight smoothing animation.
     if (frozen || width < 2) return
     const canvas = canvasRef.current!
     const ctx = canvas.getContext('2d')!
-    const dpr = window.devicePixelRatio || 1
+    const dpr = devicePixelRatio
     canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr)
     ctx.scale(dpr, dpr)
     let frame = 0, lastFrame = 0, samplesReceived = 0
@@ -120,6 +122,6 @@ export default function NotchScope({ mode, active, color, frozen, width, height 
       if (!frame) frame = requestAnimationFrame(draw)
     })
     return () => { unsubscribe(); cancelAnimationFrame(frame); reset() }
-  }, [mode, active, color, frozen, width, height])
+  }, [mode, active, color, frozen, width, height, devicePixelRatio])
   return <canvas ref={canvasRef} className="notch-scope" style={{ height }} aria-hidden="true" />
 }

@@ -4,6 +4,7 @@ import Sidebar from './components/layout/Sidebar'
 import AnalyzerDeck from './components/layout/AnalyzerDeck'
 import ViewRouter from './components/layout/ViewRouter'
 import ExpandedSpectrogramPanel from './components/layout/ExpandedSpectrogramPanel'
+import RightPanelResizer from './components/layout/RightPanelResizer'
 import TransportBar from './components/layout/TransportBar'
 import SpotifyTransportBar from './components/layout/SpotifyTransportBar'
 import SpotifyHandoffPrompt from './components/layout/SpotifyHandoffPrompt'
@@ -41,6 +42,7 @@ import MetadataEditorPanel from './components/metadata/MetadataEditorPanel'
 import LyricsEditorPanel from './components/lyrics/LyricsEditorPanel'
 import SignalShareModal from './components/signal/SignalShareModal'
 import { useUIStore, type AppView } from './stores/uiStore'
+import { useSpectrogramExpandStore } from './stores/spectrogramExpandStore'
 import { planRestore, rememberSectionView, sanitizeMemory, type SectionViewMemory } from '../shared/sections/sectionViewMemory'
 import { useLibraryStore, type ViewMode } from './stores/libraryStore'
 import { setBeforeSectionSwitchHook, useSectionsStore } from './stores/sectionsStore'
@@ -236,6 +238,7 @@ function App() {
 
   const showQueue = useUIStore((s) => s.showQueue)
   const showInfoSidebar = useUIStore((s) => s.showInfoSidebar)
+  const spectrogramPanelOpen = useSpectrogramExpandStore((s) => s.open)
   const isAnalyzerEditMode = useUIStore((s) => s.isAnalyzerEditMode)
   const [smokyBackdropOn, setSmokyBackdropOn] = useState(false)
   const [milkdropBackdropOn, setMilkdropBackdropOn] = useState(false)
@@ -669,7 +672,7 @@ function App() {
       <RuntimeBridges />
       <ActiveViewEligibilityGuard />
       <div
-        className={`app ${sidebarNowPlayingLayout ? 'sidebar-np-layout' : ''} ${isAnalyzerEditMode ? 'is-analyzer-editing' : ''} ${albumBackdropOn ? 'album-backdrop-on' : ''} ${analyzerPlacement === 'bottom' ? 'analyzer-placed-bottom' : ''}`.trim()}
+        className={`app ${sidebarNowPlayingLayout ? 'sidebar-np-layout' : ''} ${isAnalyzerEditMode ? 'is-analyzer-editing' : ''} ${albumBackdropOn ? 'album-backdrop-on' : ''} ${analyzerPlacement === 'bottom' ? 'analyzer-placed-bottom' : ''} ${spectrogramPanelOpen ? 'spectrogram-panel-open' : ''}`.trim()}
       >
         <TitleBar />
         {isAnalyzerRackVisible && (
@@ -732,6 +735,7 @@ function App() {
                 data-presence={queuePresence.phase}
                 aria-hidden={queuePresence.phase === 'exiting'}
               >
+                <RightPanelResizer storageKey="astra.queueWidth" cssVar="--queue-width" defaultWidth={288} label="queue" />
                 <QueuePanelBoundary>
                   <QueuePanel />
                 </QueuePanelBoundary>
@@ -743,6 +747,7 @@ function App() {
                 data-presence={infoSidebarPresence.phase}
                 aria-hidden={infoSidebarPresence.phase === 'exiting'}
               >
+                <RightPanelResizer storageKey="astra.infoSidebarWidth" cssVar="--info-sidebar-width" defaultWidth={320} label="track info" />
                 <InfoSidebar />
               </div>
             )}

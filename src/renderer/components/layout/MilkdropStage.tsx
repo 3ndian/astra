@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ButterchurnVisualizer } from 'butterchurn'
 import { audioEngine } from '../../audio/AudioEngine'
+import { subscribeDevicePixelRatio } from '../../utils/devicePixelRatioWatch'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useMilkdropStore } from '../../stores/milkdropStore'
 import { applyFilter, filterToValue, inFolder, isFavorite, valueToFilter } from '../../../shared/milkdrop/collections'
@@ -68,6 +69,7 @@ export default function MilkdropStage({
   const deleteFolder = useMilkdropStore((s) => s.deleteFolder)
   const toggleInFolder = useMilkdropStore((s) => s.toggleInFolder)
   const [organizeOpen, setOrganizeOpen] = useState(false)
+  const [moreOpen, setMoreOpen] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
@@ -98,6 +100,7 @@ export default function MilkdropStage({
     let cancelled = false
     let rafId = 0
     let observer: ResizeObserver | null = null
+    let unsubscribeDpr: (() => void) | null = null
     let reconnectTimer = 0
 
     const start = async () => {
@@ -152,6 +155,8 @@ export default function MilkdropStage({
         resizeRef.current = applySize
         observer = new ResizeObserver(applySize)
         observer.observe(canvas)
+        // Moving to another monitor changes the pixel density without changing the CSS size.
+        unsubscribeDpr = subscribeDevicePixelRatio(applySize)
 
         // The analyser can be rebuilt (new output path, device change), so keep it connected.
         const syncAudio = () => {
@@ -201,6 +206,7 @@ export default function MilkdropStage({
       window.cancelAnimationFrame(rafId)
       window.clearInterval(reconnectTimer)
       observer?.disconnect()
+      unsubscribeDpr?.()
       const viz = vizRef.current
       if (viz && connectedNodeRef.current) {
         try { viz.disconnectAudio?.(connectedNodeRef.current) } catch { /* ignore */ }
@@ -289,6 +295,13 @@ export default function MilkdropStage({
   const poolMine = pool.filter((e) => e.user)
   const folderCount = (id: string) => applyFilter(entries, { kind: 'folder', id }, collections).length
 
+  useEffect(() => {
+    if (!controlsVisible) {
+      setMoreOpen(false)
+      setOrganizeOpen(false)
+    }
+  }, [controlsVisible])
+
   return (
     <div className="milkdrop-stage" aria-hidden={status !== 'ready'}>
       <canvas ref={canvasRef} className="milkdrop-canvas" onDoubleClick={() => go('random')} />
@@ -336,6 +349,17 @@ export default function MilkdropStage({
             {currentIsFavorite ? '★' : '☆'}
           </button>
           <button type="button" onClick={() => go('random')} title="Random preset (or double-click the visual)" aria-label="Random preset">Shuffle</button>
+          <button
+            type="button"
+            className={moreOpen ? 'is-on' : ''}
+            onClick={() => setMoreOpen((open) => !open)}
+            aria-expanded={moreOpen}
+            title="More options"
+          >
+            Options
+          </button>
+          {moreOpen && (
+          <div className="milkdrop-tray">
           <label className="milkdrop-field">
             Show
             <select value={filterToValue(filter)} onChange={(e) => setFilter(valueToFilter(e.target.value))}>
@@ -437,6 +461,8 @@ export default function MilkdropStage({
           <button type="button" onClick={() => void importPresets()} title="Import Butterchurn .json presets">Import…</button>
           {currentEntry?.user && (
             <button type="button" onClick={() => void removeCurrent()} title="Remove this imported preset">Remove</button>
+          )}
+          </div>
           )}
         </div>
       )}

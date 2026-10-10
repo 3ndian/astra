@@ -1427,6 +1427,11 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
   cursor: not-allowed;
 }
 
+/* Third row of the mini/lyrics stack: background visual on/off. */
+.transport-bgviz-btn {
+  border-top: 1px solid var(--glass-border);
+}
+
 /* EQ button with mini curve */
 .transport-eq-btn {
   width: 80px;
@@ -31900,21 +31905,37 @@ body.track-col-reordering .track-list-header .track-col:not(.track-col-reorderin
   position: fixed;
   top: var(--titlebar-height);
   right: 0;
-  bottom: var(--now-playing-height, 88px);
-  width: clamp(280px, 26vw, 420px);
+  bottom: 0;
+  width: var(--spectrogram-width, 340px);
   z-index: 70;
+  overflow: hidden;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--glass-border);
+  transform: translate3d(0, 0, 0);
+  opacity: 1;
+  transition:
+    transform var(--motion-structural-enter) var(--motion-structural-ease),
+    opacity var(--motion-structural-enter) ease;
+}
+.spectrogram-expanded-inner {
+  width: 100%;
+  height: 100%;
   display: flex;
   flex-direction: column;
-  background: var(--bg-base-primary, var(--bg-secondary));
-  border-left: 1px solid rgba(var(--tint), 0.1);
-  border-top-left-radius: 16px;
-  box-shadow: -12px 0 40px rgba(0, 0, 0, 0.28);
-  overflow: hidden;
-  transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.18s ease;
 }
-.app.analyzer-placed-bottom .spectrogram-expanded { bottom: calc(var(--now-playing-height, 88px) + var(--analyzer-height, 0px)); }
 .spectrogram-expanded[data-presence='entering'],
-.spectrogram-expanded[data-presence='exiting'] { transform: translateX(24px); opacity: 0; pointer-events: none; }
+.spectrogram-expanded[data-presence='exiting'] {
+  opacity: 0;
+  transform: translate3d(var(--motion-structural-distance, 24px), 0, 0);
+  pointer-events: none;
+}
+/* The whole app steps aside for the panel: rack, queue, info and player bar all get narrower. */
+:root { --spectrogram-width: 340px; }
+.app { transition: padding-right var(--motion-structural-enter, 0.22s) var(--motion-structural-ease, ease); }
+.app.spectrogram-panel-open { padding-right: var(--spectrogram-width); }
+.app.spectrogram-panel-open > .titlebar { margin-right: calc(-1 * var(--spectrogram-width)); }
+.right-panel-resizing .app { transition: none !important; }
+.right-panel-resizing .spectrogram-expanded { transition: none !important; }
 .spectrogram-expanded-head {
   flex: none;
   display: flex;
@@ -31942,3 +31963,153 @@ body.track-col-reordering .track-list-header .track-col:not(.track-col-reorderin
 .spectrogram-expanded-body { flex: 1; min-height: 0; position: relative; }
 .spectrogram-expanded-body .visualizer-surface { position: absolute; inset: 0; }
 @media (prefers-reduced-motion: reduce) { .spectrogram-expanded { transition: none; } }
+
+/* Album colours over the visualizer row */
+.analyzer-visualizers.has-viz-tint { position: relative; }
+.viz-tint-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  pointer-events: none;
+  mix-blend-mode: color;
+  transition: opacity 0.4s ease, background 0.8s ease;
+}
+.viz-tint-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
+
+/* Milkdrop controls: one slim row, everything else in an Options tray, so it stays clear of the player card */
+.milkdrop-controls {
+  flex-wrap: nowrap;
+  max-width: calc(100% - 24px);
+  top: 12px;
+}
+.milkdrop-select { width: min(320px, 34vw); min-width: 110px; }
+.milkdrop-tray {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: min(560px, calc(100vw - 24px));
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+.milkdrop-popover { max-width: calc(100vw - 32px); }
+@media (max-width: 640px) {
+  .milkdrop-controls { gap: 6px; padding: 6px 8px; }
+  .milkdrop-controls button { padding: 0 8px; }
+}
+
+/* Drag edge on the left side of the queue and track info panels */
+.queue-sidebar, .info-sidebar-presence { position: relative; }
+.right-panel-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 8px;
+  z-index: 6;
+  cursor: col-resize;
+  touch-action: none;
+}
+.right-panel-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+.right-panel-resize-handle:hover::after,
+.right-panel-resize-handle:focus-visible::after,
+.right-panel-resizing .right-panel-resize-handle::after { background: rgba(var(--accent-rgb), 0.7); }
+.right-panel-resize-handle:focus-visible { outline: none; }
+/* No slide animation while dragging, so the panel follows the pointer exactly. */
+.right-panel-resizing .queue-sidebar,
+.right-panel-resizing .info-sidebar-presence { transition: none !important; }
+.right-panel-resizing { cursor: col-resize; user-select: none; }
+
+/* Left pane: when the cover is large the nav and playlists scroll together, so everything stays reachable. */
+.app.sidebar-np-layout .sidebar.sidebar-expanded {
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(var(--tint), 0.2) transparent;
+}
+.app.sidebar-np-layout .sidebar.sidebar-expanded .sidebar-playlist-region {
+  flex: 1 0 auto;
+  overflow: visible;
+}
+.app.sidebar-np-layout .sidebar.sidebar-expanded .sidebar-playlist-scroll {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+/* Frequency band picked by dragging on the spectrogram (solo / cut) */
+.visualizer-surface.has-band-select { user-select: none; -webkit-user-select: none; touch-action: none; }
+html.band-selecting, html.band-selecting * { cursor: grabbing !important; user-select: none !important; }
+.band-layer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 5; }
+.band-overlay { position: absolute; box-sizing: border-box; }
+.band-overlay.band-solo {
+  background: rgba(255, 255, 255, 0.16);
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.34);
+}
+.band-overlay.band-cut {
+  background:
+    repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.0) 0 6px, rgba(255, 255, 255, 0.14) 6px 8px),
+    rgba(255, 90, 90, 0.16);
+}
+.band-layer.is-unsupported .band-overlay { opacity: 0.45; box-shadow: none; }
+.band-edge { position: absolute; pointer-events: auto; background: rgba(255, 255, 255, 0.85); }
+.band-layer.is-vertical .band-edge { top: 0; bottom: 0; width: 1px; cursor: col-resize; }
+.band-layer.is-vertical .band-edge-low { left: 0; }
+.band-layer.is-vertical .band-edge-high { right: 0; }
+.band-layer.is-horizontal .band-edge { left: 0; right: 0; height: 1px; cursor: row-resize; }
+.band-layer.is-horizontal .band-edge-low { bottom: 0; }
+.band-layer.is-horizontal .band-edge-high { top: 0; }
+/* A wider invisible grab zone around each 1px edge */
+.band-edge::before { content: ''; position: absolute; }
+.band-layer.is-vertical .band-edge::before { top: 0; bottom: 0; left: -5px; right: -5px; }
+.band-layer.is-horizontal .band-edge::before { left: 0; right: 0; top: -5px; bottom: -5px; }
+.band-chip {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  max-width: calc(100% - 16px);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 6px 4px 10px;
+  border-radius: 999px;
+  background: rgba(10, 10, 14, 0.78);
+  backdrop-filter: blur(8px);
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 11px;
+  line-height: 1;
+  pointer-events: auto;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+.band-chip-range { font-variant-numeric: tabular-nums; white-space: nowrap; margin-right: 2px; }
+.band-chip button {
+  border: 0;
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.1);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.band-chip button:hover { background: rgba(255, 255, 255, 0.2); }
+.band-chip button.is-active { background: #fff; color: #111; }
+.band-chip button.band-chip-close { padding: 3px 8px; font-size: 14px; }
+.band-chip button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }

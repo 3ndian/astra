@@ -1,4 +1,6 @@
 import { createMonoSampleQueue, createStereoSampleQueue, createMultichannelSampleQueue, createMiniSampleQueue } from './visualizerSampleQueue'
+import { clampFilterRange, planCutBranches, planFrequencyFilter, planSolo, NATIVE_CUT_PLAN, type FilterStage, type FrequencyFilterRange } from '../../shared/frequencyFilter/plan'
+import { BandFilter } from '../../shared/frequencyFilter/biquad'
 import type { PlaybackState, EQBand, Track } from '../types/audio'
 import type { RemoteStreamChunk, RemoteStreamEvent, RemoteStreamInfo } from '../../types/remoteStream'
 import type {
@@ -542,6 +544,21 @@ export class AudioEngine {
   // EQ nodes
   private preampNode: GainNode | null = null
   private eqFilters: BiquadFilterNode[] = []
+  // Frequency range filter: solo or cut a band picked by dragging on the spectrogram (not remembered between launches).
+  private frequencyFilter: FrequencyFilterRange | null = null
+  private rangeFilterGraph: {
+    dry: GainNode
+    soloWet: GainNode
+    cutWet: GainNode
+    /** Each bank is one or two lines of filters; every line is fed from the same input. */
+    solo: BiquadFilterNode[][]
+    cut: BiquadFilterNode[][]
+    fed: { solo: boolean; cut: boolean }
+    timers: { solo: number | null; cut: number | null }
+  } | null = null
+  // Vectorscope can draw only what the band lets through (left and right channel).
+  private visualsFollowVectorscope = false
+  private readonly scopeBandFilters = [new BandFilter(), new BandFilter()]
   private eqAnalyserNode: AnalyserNode | null = null
   private eqAnalysisDelayNode: DelayNode | null = null
   private eqDisplayAnalyserNode: AnalyserNode | null = null
@@ -876,12 +893,20 @@ export class AudioEngine {
   }
 
   private buildNativeDspConfig(): NativeAudioDspConfig {
+    // The frequency range filter rides along as extra EQ bands (the engine allows 20).
+    const rangeStages = this.frequencyFilter
+      ? planFrequencyFilter(this.frequencyFilter, this.nativeRequestedSampleRate ?? 48000, NATIVE_CUT_PLAN)
+          .map(({ type, frequency, gain, Q }) => ({ type, frequency, gain, Q }))
+      : []
+    const userBands = this.requestedEQEnabled
+      ? this.requestedEQBands.slice(0, Math.max(0, 20 - rangeStages.length)).map(({ type, frequency, gain, Q }) => ({ type, frequency, gain, Q }))
+      : []
     return {
       volume: this._volume,
       muted: this._isMuted,
-      eqEnabled: this.requestedEQEnabled,
-      preampDb: this.requestedEQPreampDb,
-      eqBands: this.requestedEQBands.map(({ type, frequency, gain, Q }) => ({ type, frequency, gain, Q })),
+      eqEnabled: this.requestedEQEnabled || rangeStages.length > 0,
+      preampDb: this.requestedEQEnabled ? this.requestedEQPreampDb : 0,
+      eqBands: [...userBands, ...rangeStages],
       limiterEnabled: this.nativeLimiterEnabled
     }
   }
@@ -1241,7 +1266,7 @@ export class AudioEngine {
         mono: miniSpectrumDemand && mono ? mono : AudioEngine.EMPTY_SAMPLES,
       }, maxFrames)
     }
-    if (vectorscopeDemand) this.pendingVectorscopeSamples.push({ left: normalizedLeft, right: normalizedRight }, maxFrames)
+    if (vectorscopeDemand) this.pendingVectorscopeSamples.push(this.bandFilteredScopeChannels(normalizedLeft, normalizedRight), maxFrames)
     if (lufsMeterDemand) this.pendingLUFSMeterSamples.push({ left: normalizedLeft, right: normalizedRight }, maxFrames)
     if (waveformDemand) this.pendingWaveformSamples.push(normalizedLeft, maxFrames)
     if (waveformStereoDemand) this.pendingWaveformStereoSamples.push({ left: normalizedLeft, right: normalizedRight }, maxFrames)
@@ -2748,7 +2773,7 @@ export class AudioEngine {
     if (!this.context || !this.normalizationGainNode || !this.preampNode || !this.gainNode) return
 
     try { this.normalizationGainNode.disconnect() } catch { /* ignore */ }
-    this.normalizationGainNode.connect(this.preampNode)
+    this.rewireRangeFilterGraph()
 
     this._disconnectEQChain()
     try { this.eqAnalyserNode?.disconnect() } catch { /* ignore */ }
@@ -8969,6 +8994,161 @@ export class AudioEngine {
     }
   }
 
+  /** False while bit-perfect output is active: that path sends the file untouched, so it cannot be filtered. */
+  canFilterFrequencies(): boolean {
+    return this.playbackOutputMode !== 'bitperfect'
+  }
+
+  getFrequencyFilter(): FrequencyFilterRange | null {
+    return this.frequencyFilter ? { ...this.frequencyFilter } : null
+  }
+
+  /** Solo or cut a band of frequencies. Pass null to hear the whole song again. Returns false if this output cannot do it. */
+  setFrequencyFilter(range: FrequencyFilterRange | null): boolean {
+    this.frequencyFilter = range ? { ...range } : null
+    if (this.playbackOutputMode === 'bitperfect') return false
+    if (this.isProcessedExclusiveMode()) {
+      this.pushNativeDspConfig()
+      return true
+    }
+    this.applyRangeFilterGraph()
+    return true
+  }
+
+  private ensureRangeFilterGraph(): NonNullable<AudioEngine['rangeFilterGraph']> | null {
+    const context = this.context
+    if (!context || !this.preampNode) return null
+    if (this.rangeFilterGraph) return this.rangeFilterGraph
+    const dry = context.createGain()
+    const soloWet = context.createGain()
+    const cutWet = context.createGain()
+    soloWet.gain.value = 0
+    cutWet.gain.value = 0
+    const makeLine = (types: readonly FilterStage['type'][], output: AudioNode): BiquadFilterNode[] => {
+      const nodes = types.map((type) => {
+        const node = context.createBiquadFilter()
+        node.type = type
+        return node
+      })
+      for (let i = 0; i < nodes.length - 1; i += 1) nodes[i].connect(nodes[i + 1])
+      nodes[nodes.length - 1].connect(output)
+      return nodes
+    }
+    const solo = [makeLine(['highpass', 'highpass', 'lowpass', 'lowpass'], soloWet)]
+    const cut = [makeLine(['lowpass', 'lowpass'], cutWet), makeLine(['highpass', 'highpass'], cutWet)]
+    dry.connect(this.preampNode)
+    soloWet.connect(this.preampNode)
+    cutWet.connect(this.preampNode)
+    this.rangeFilterGraph = { dry, soloWet, cutWet, solo, cut, fed: { solo: false, cut: false }, timers: { solo: null, cut: null } }
+    return this.rangeFilterGraph
+  }
+
+  /** The graph was rebuilt from scratch: the signal goes through the dry path again, and the filter banks are fed anew. */
+  private rewireRangeFilterGraph(): void {
+    const graph = this.ensureRangeFilterGraph()
+    if (!graph || !this.normalizationGainNode) return
+    for (const bank of ['solo', 'cut'] as const) {
+      const timer = graph.timers[bank]
+      if (timer !== null) window.clearTimeout(timer)
+      graph.timers[bank] = null
+      graph.fed[bank] = false
+    }
+    this.normalizationGainNode.connect(graph.dry)
+    this.applyRangeFilterGraph()
+  }
+
+  private feedRangeFilterBank(graph: NonNullable<AudioEngine['rangeFilterGraph']>, bank: 'solo' | 'cut', on: boolean): void {
+    const input = this.normalizationGainNode
+    if (!input) return
+    const heads = graph[bank].map((line) => line[0])
+    if (on) {
+      const timer = graph.timers[bank]
+      if (timer !== null) {
+        window.clearTimeout(timer)
+        graph.timers[bank] = null
+      }
+      if (!graph.fed[bank]) {
+        for (const head of heads) {
+          try { input.connect(head) } catch { /* ignore */ }
+        }
+        graph.fed[bank] = true
+      }
+    } else if (graph.fed[bank] && graph.timers[bank] === null) {
+      // Let the fade finish before the bank stops getting audio, so nothing clicks.
+      graph.timers[bank] = window.setTimeout(() => {
+        graph.timers[bank] = null
+        for (const head of heads) {
+          try { this.normalizationGainNode?.disconnect(head) } catch { /* ignore */ }
+        }
+        graph.fed[bank] = false
+      }, 150)
+    }
+  }
+
+  private applyRangeFilterGraph(): void {
+    if (this.isNativeExclusiveMode() || !this.context) return
+    const graph = this.ensureRangeFilterGraph()
+    if (!graph || !this.normalizationGainNode) return
+    const context = this.context
+    const now = context.currentTime
+    const range = this.frequencyFilter ? clampFilterRange(this.frequencyFilter, context.sampleRate) : null
+    const soloOn = range?.mode === 'solo'
+    const cutOn = range?.mode === 'cut'
+
+    if (range) {
+      const bank = soloOn ? 'solo' : 'cut'
+      const freshlyFed = !graph.fed[bank]
+      const lines: FilterStage[][] = soloOn
+        ? [planSolo(range, context.sampleRate)]
+        : (() => {
+            const branches = planCutBranches(range, context.sampleRate)
+            return [branches.below, branches.above]
+          })()
+      lines.forEach((stages, lineIndex) => {
+        stages.forEach((stage, index) => {
+          const node = graph[bank][lineIndex]?.[index]
+          if (!node) return
+          // Web Audio reads the Q of a high-pass or low-pass in decibels; the plan holds the usual linear Q.
+          const q = stage.type === 'peaking' ? stage.Q : 20 * Math.log10(stage.Q)
+          if (freshlyFed) {
+            // The bank was idle: jump straight to the right settings before the fade-in starts.
+            node.frequency.cancelScheduledValues(now)
+            node.Q.cancelScheduledValues(now)
+            node.frequency.setValueAtTime(stage.frequency, now)
+            node.Q.setValueAtTime(q, now)
+          } else {
+            node.frequency.setTargetAtTime(stage.frequency, now, 0.01)
+            node.Q.setTargetAtTime(q, now, 0.01)
+          }
+        })
+      })
+    }
+
+    this.feedRangeFilterBank(graph, 'solo', soloOn)
+    this.feedRangeFilterBank(graph, 'cut', cutOn)
+    graph.dry.gain.setTargetAtTime(range ? 0 : 1, now, 0.015)
+    graph.soloWet.gain.setTargetAtTime(soloOn ? 1 : 0, now, 0.015)
+    graph.cutWet.gain.setTargetAtTime(cutOn ? 1 : 0, now, 0.015)
+  }
+
+  /** Make the vectorscope draw only what the chosen band lets through. */
+  setVisualsFollowFrequencyFilter(options: { vectorscope: boolean }): void {
+    this.visualsFollowVectorscope = options.vectorscope
+  }
+
+  /** Left and right as the vectorscope should see them: filtered by the band when it follows, untouched otherwise. */
+  private bandFilteredScopeChannels(left: Float32Array, right: Float32Array): { left: Float32Array; right: Float32Array } {
+    const range = this.frequencyFilter
+    if (!this.visualsFollowVectorscope || !range || this.playbackOutputMode === 'bitperfect') return { left, right }
+    const sampleRate = this.getSampleRate() || 48000
+    const clamped = clampFilterRange(range, sampleRate)
+    const [leftFilter, rightFilter] = this.scopeBandFilters
+    leftFilter.configure(clamped, sampleRate)
+    rightFilter.configure(clamped, sampleRate)
+    const filteredLeft = leftFilter.process(left)
+    return { left: filteredLeft, right: left === right ? filteredLeft : rightFilter.process(right) }
+  }
+
   /**
    * Update a single band's parameters without rebuilding the chain.
    * Efficient for real-time slider dragging.
@@ -9182,6 +9362,13 @@ export class AudioEngine {
       this.context = null
     }
 
+    if (this.rangeFilterGraph) {
+      for (const bank of ['solo', 'cut'] as const) {
+        const timer = this.rangeFilterGraph.timers[bank]
+        if (timer !== null) window.clearTimeout(timer)
+      }
+      this.rangeFilterGraph = null
+    }
     this.gainNode = null
     this.normalizationGainNode = null
     this.analysisNormalizationGainNode = null

@@ -156,7 +156,7 @@ export class Waveform {
       // 'track': history is kept across songs, so there is nothing to clear.
       if (action === 'track') return
       this.resetDisplay()
-    }, { keepAcrossTracks: getKeepHistoryAcrossTracks })
+    }, { keepAcrossTracks: getKeepHistoryAcrossTracks, onWake: () => this.invalidate() })
   }
 
   private resetDisplay(): void {
