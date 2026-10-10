@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import FolderSettings from '../settings/FolderSettings'
 import AudioOutputSelect from '../settings/AudioOutputSelect'
 import ChannelRoutingPanel from '../settings/ChannelRoutingPanel'
@@ -55,6 +55,7 @@ import { useParallaxStore } from '../../stores/parallaxStore'
 import { useLastFmSettingsStore } from '../../stores/lastFmSettingsStore'
 import { useLyricsStore } from '../../stores/lyricsStore'
 import { useLyricsDisplaySettingsStore } from '../../stores/lyricsDisplaySettingsStore'
+import { useLyricsBulkStore } from '../../stores/lyricsBulkStore'
 import { useUpdateStore } from '../../stores/updateStore'
 import { useDiagnosticsStore } from '../../stores/diagnosticsStore'
 import { useLibraryDiagnosticsStore } from '../../stores/libraryDiagnosticsStore'
@@ -69,7 +70,8 @@ import {
   SLEEP_TIMER_PRESET_MINUTES,
   useSleepTimerStore
 } from '../../stores/sleepTimerStore'
-import { SETTINGS_SECTIONS, type SettingsSectionId } from '../../constants/settingsSections'
+import { SETTINGS_NAV_GROUPS, SETTINGS_SECTIONS, type SettingsSectionId } from '../../constants/settingsSections'
+import { useSettingsPageEnhancements } from '../settings/useSettingsPageEnhancements'
 import {
   DEFAULT_THEME_ACCENT,
   THEME_PRESET_LIST,
@@ -573,6 +575,29 @@ export default function SettingsView() {
   ))
   const [lyricsLrclibBaseUrlInput, setLyricsLrclibBaseUrlInput] = useState(LRCLIB_OFFICIAL_BASE_URL)
   const [lyricsSidecarFolder, setLyricsSidecarFolder] = useState<string | null>(null)
+  const lyricsBulkPace = useLyricsBulkStore((state) => state.pace)
+  const setLyricsBulkPace = useLyricsBulkStore((state) => state.setPace)
+  const lyricsBulkSaveSidecars = useLyricsBulkStore((state) => state.saveSidecars)
+  const setLyricsBulkSaveSidecars = useLyricsBulkStore((state) => state.setSaveSidecars)
+  const startLyricsBulk = useLyricsBulkStore((state) => state.start)
+  const lyricsBulkStatus = useLyricsBulkStore((state) => state.state?.status)
+  const lyricsBulkActive = lyricsBulkStatus === 'running' || lyricsBulkStatus === 'waiting' || lyricsBulkStatus === 'paused'
+  const [lyricsTransferNote, setLyricsTransferNote] = useState<string | null>(null)
+  const exportLyricsFile = useCallback(async () => {
+    const result = await window.electronAPI.lyricsBulk.exportLyrics()
+    if (result.status === 'ok') setLyricsTransferNote(`Exported lyrics for ${result.count ?? 0} songs.`)
+    else if (result.status === 'error') setLyricsTransferNote(result.message ?? 'Export failed.')
+  }, [])
+  const importLyricsFile = useCallback(async () => {
+    const result = await window.electronAPI.lyricsBulk.importLyrics()
+    if (result.status === 'ok') {
+      setLyricsTransferNote(
+        `Added lyrics to ${result.count ?? 0} songs. ${result.skipped ?? 0} already had lyrics, ${result.unmatched ?? 0} are not in this library.`
+      )
+    } else if (result.status === 'error') {
+      setLyricsTransferNote(result.message ?? 'Import failed.')
+    }
+  }, [])
   const [showBitPerfectWarning, setShowBitPerfectWarning] = useState(false)
   const [dontShowBitPerfectWarningAgain, setDontShowBitPerfectWarningAgain] = useState(false)
   const [bitPerfectWarningDismissed, setBitPerfectWarningDismissed] = useState(() => {
@@ -748,6 +773,22 @@ export default function SettingsView() {
     }),
     [developerSectionVisible, parallaxExperimentEnabled]
   )
+
+  const [settingsQuery, setSettingsQuery] = useState('')
+  const settingsContentRef = useRef<HTMLDivElement | null>(null)
+  const searchNeedle = settingsQuery.trim().toLowerCase()
+  // While searching, every section whose name or keywords match is shown, and the page hides settings that do not match.
+  const searchMatchedIds = useMemo(() => {
+    if (!searchNeedle) return null
+    return new Set<string>(
+      visibleSettingsSections
+        .filter((section) => section.label.toLowerCase().includes(searchNeedle) || section.keywords.some((keyword) => keyword.toLowerCase().includes(searchNeedle)))
+        .map((section) => section.id)
+    )
+  }, [searchNeedle, visibleSettingsSections])
+  const showSection = (id: SettingsSectionId): boolean =>
+    searchMatchedIds ? searchMatchedIds.has(id) : activeSectionId === id
+  useSettingsPageEnhancements(settingsContentRef, activeSectionId, settingsQuery)
 
   // Master on/off for the experimental Parallax feature. Enabling reveals + jumps to the dedicated
   // section; disabling fully stops host/sink networking before the section disappears (it is an
@@ -1776,22 +1817,48 @@ export default function SettingsView() {
 
         <div className="settings-layout">
           <nav className="settings-sidebar" aria-label="Settings sections">
-            {visibleSettingsSections.map((section) => (
-              <button
-                key={section.id}
-                type="button"
-                className={`settings-sidebar-item ${activeSectionId === section.id ? 'active' : ''}`}
-                aria-current={activeSectionId === section.id ? 'true' : undefined}
-                onClick={() => setActiveSectionId(section.id)}
-              >
-                {section.label}
-              </button>
-            ))}
+            <label className="settings-search">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+              <input
+                type="search"
+                value={settingsQuery}
+                onChange={(event) => setSettingsQuery(event.target.value)}
+                onKeyDown={(event) => { if (event.key === 'Escape') setSettingsQuery('') }}
+                placeholder="Search settings"
+                aria-label="Search settings"
+              />
+            </label>
+            {SETTINGS_NAV_GROUPS.map((group) => {
+              const items = visibleSettingsSections.filter((section) => section.group === group.id && (!searchMatchedIds || searchMatchedIds.has(section.id)))
+              if (items.length === 0) return null
+              return (
+                <div className="settings-sidebar-group" key={group.id}>
+                  <div className="settings-sidebar-group-label">{group.label}</div>
+                  {items.map((section) => (
+                    <button
+                      key={section.id}
+                      type="button"
+                      className={`settings-sidebar-item ${!searchMatchedIds && activeSectionId === section.id ? 'active' : ''}`}
+                      aria-current={!searchMatchedIds && activeSectionId === section.id ? 'true' : undefined}
+                      onClick={() => {
+                        setSettingsQuery('')
+                        setActiveSectionId(section.id)
+                      }}
+                    >
+                      {section.label}
+                    </button>
+                  ))}
+                </div>
+              )
+            })}
           </nav>
 
-          <div className="settings-content">
-            {activeSectionId === 'devices' && <HardwareCompanionsPanel />}
-            {activeSectionId === 'appearance' && (
+          <div className="settings-content" ref={settingsContentRef}>
+            {searchNeedle && (!searchMatchedIds || searchMatchedIds.size === 0) && (
+              <div className="settings-search-empty">Nothing matches “{settingsQuery.trim()}”. Try a shorter word.</div>
+            )}
+            {showSection('devices') && <HardwareCompanionsPanel />}
+            {showSection('appearance') && (
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Appearance</h3>
@@ -1835,10 +1902,7 @@ export default function SettingsView() {
             </div>
             <div className="settings-cards">
               <CustomThemeEditor />
-              <BackgroundVisualSettings />
               <AlbumTintSettings />
-              <VisualizerHistorySettings />
-              <TrackClickSettings />
               <div className="settings-card">
                 <div className="settings-card-label">Accent</div>
                 <div className="settings-grid">
@@ -2058,7 +2122,7 @@ export default function SettingsView() {
           </section>
             )}
 
-            {activeSectionId === 'library' && (
+            {showSection('library') && (
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Library</h3>
@@ -2255,13 +2319,15 @@ export default function SettingsView() {
           </section>
             )}
 
-            {activeSectionId === 'analyzer' && (
+            {showSection('analyzer') && (
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
-              <h3>Analyzer</h3>
+              <h3>Visuals</h3>
             </div>
             <div className="settings-cards">
               <AnalyzerPlacementSettings />
+              <BackgroundVisualSettings />
+              <VisualizerHistorySettings />
               <div className="settings-card">
                 <div className="settings-card-label">Visualizer</div>
                 <div className="settings-grid">
@@ -2290,7 +2356,7 @@ export default function SettingsView() {
           </section>
             )}
 
-            {activeSectionId === 'audio' && (
+            {showSection('audio') && (
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Audio Output</h3>
@@ -2456,12 +2522,13 @@ export default function SettingsView() {
           </section>
             )}
 
-            {activeSectionId === 'playback' && (
+            {showSection('playback') && (
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Playback</h3>
             </div>
             <div className="settings-cards">
+              <TrackClickSettings />
               <div className="settings-card">
                 <div className="settings-card-label">Audio transitions</div>
                 <div className="settings-grid">
@@ -2574,9 +2641,9 @@ export default function SettingsView() {
           </section>
             )}
 
-            {activeSectionId === 'keybinds' && <KeybindSettings />}
+            {showSection('keybinds') && <KeybindSettings />}
 
-            {activeSectionId === 'integrations' && (
+            {showSection('integrations') && (
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Integrations</h3>
@@ -2585,6 +2652,7 @@ export default function SettingsView() {
               <div className="settings-integration-card">
                 <div className="settings-integration-card-head">
                   <h4>Scrobbling</h4>
+                  <span className={`settings-status-pill ${lastFmEnabled ? 'on' : ''}`}>{lastFmEnabled ? 'On' : 'Off'}</span>
                   <p>Now Playing updates and scrobbles for your connected destinations.</p>
                 </div>
                 <div className="settings-grid">
@@ -2744,6 +2812,7 @@ export default function SettingsView() {
               <div className="settings-integration-card">
                 <div className="settings-integration-card-head">
                   <h4>Lyrics</h4>
+                  <span className={`settings-status-pill ${lyricsEnabled ? 'on' : ''}`}>{lyricsEnabled ? 'On' : 'Off'}</span>
                   <p>LRC, XLRC, embedded lyrics, and optional XLRCDB/LRCLIB lookup.</p>
                 </div>
                 <div className="settings-grid">
@@ -2799,6 +2868,53 @@ export default function SettingsView() {
                     </div>
                     <span style={{ opacity: 0.6, fontSize: 12 }}>
                       Mirrors your library's folder layout. Audio files are never modified.
+                    </span>
+                  </div>
+                  <div className="settings-field">
+                    <span className="settings-field-label">Get Lyrics For Your Library</span>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <button
+                        className="settings-btn"
+                        disabled={!lyricsEnabled || lyricsBulkActive}
+                        onClick={() => void startLyricsBulk()}
+                      >
+                        {lyricsBulkActive ? 'Working...' : 'Get lyrics for every song'}
+                      </button>
+                      <select
+                        className="settings-select"
+                        value={lyricsBulkPace}
+                        onChange={(event) => setLyricsBulkPace(event.target.value as 'gentle' | 'normal' | 'fast')}
+                        aria-label="Lookup speed"
+                      >
+                        <option value="gentle">Gentle (about 3 s per song)</option>
+                        <option value="normal">Normal (about 1.5 s per song)</option>
+                        <option value="fast">Fast (may get rate limited)</option>
+                      </select>
+                    </div>
+                    <div className="settings-field settings-field-inline" style={{ marginTop: 6 }}>
+                      <span className="settings-field-label">Also save .lrc files</span>
+                      <button
+                        className={`settings-toggle ${lyricsBulkSaveSidecars ? 'active' : ''}`}
+                        onClick={() => setLyricsBulkSaveSidecars(!lyricsBulkSaveSidecars)}
+                      >
+                        {lyricsBulkSaveSidecars ? 'Enabled' : 'Disabled'}
+                      </button>
+                    </div>
+                    <span style={{ opacity: 0.6, fontSize: 12 }}>
+                      Runs in the background. Songs that already have lyrics are skipped, and if the lyrics service
+                      limits requests Astra pauses, tells you, and keeps your progress. You can also right-click a
+                      playlist, album or selection and choose Get Lyrics.
+                    </span>
+                  </div>
+                  <div className="settings-field">
+                    <span className="settings-field-label">Move Lyrics To Another Computer</span>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <button className="settings-btn" onClick={() => void exportLyricsFile()}>Export lyrics...</button>
+                      <button className="settings-btn" onClick={() => void importLyricsFile()}>Import lyrics...</button>
+                    </div>
+                    {lyricsTransferNote && <span style={{ fontSize: 12 }}>{lyricsTransferNote}</span>}
+                    <span style={{ opacity: 0.6, fontSize: 12 }}>
+                      Import only fills in songs that are already in this library and have no lyrics yet.
                     </span>
                   </div>
                   <div className="settings-field settings-field-inline">
@@ -2863,6 +2979,7 @@ export default function SettingsView() {
               <div className="settings-integration-card">
                 <div className="settings-integration-card-head">
                   <h4>Discord</h4>
+                  <span className={`settings-status-pill ${discordEnabled ? 'on' : ''}`}>{discordEnabled ? 'On' : 'Off'}</span>
                   <p>Discord Rich Presence integration.</p>
                 </div>
                 <div className="settings-grid">
@@ -2944,6 +3061,7 @@ export default function SettingsView() {
               <div className="settings-integration-card">
                 <div className="settings-integration-card-head">
                   <h4>Local API</h4>
+                  <span className={`settings-status-pill ${localApiEnabled ? 'on' : ''}`}>{localApiEnabled ? 'On' : 'Off'}</span>
                   <p>Companion API for local automations, launchers, widgets, and creative tools.</p>
                 </div>
                 <div className="settings-grid">
@@ -3057,7 +3175,7 @@ export default function SettingsView() {
           </section>
             )}
 
-            {activeSectionId === 'experimental' && (
+            {showSection('experimental') && (
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Experimental</h3>
@@ -3184,6 +3302,7 @@ export default function SettingsView() {
               <div className="settings-integration-card">
                 <div className="settings-integration-card-head">
                   <h4>Phone Remote</h4>
+                  <span className={`settings-status-pill ${phoneRemoteEnabled ? 'on' : ''}`}>{phoneRemoteEnabled ? 'On' : 'Off'}</span>
                   <p>Opt-in LAN controller surface for the phone PWA.</p>
                 </div>
                 <div className="settings-grid">
@@ -3290,6 +3409,7 @@ export default function SettingsView() {
               <div className="settings-integration-card">
                 <div className="settings-integration-card-head">
                   <h4>Library Sync</h4>
+                  <span className={`settings-status-pill ${(phoneRemoteEnabled && phoneRemoteSyncEnabled) ? 'on' : ''}`}>{(phoneRemoteEnabled && phoneRemoteSyncEnabled) ? 'On' : 'Off'}</span>
                   <p>Two-way favorites and playlist sync with paired phones. Independent of playback controls.</p>
                 </div>
                 <div className="settings-grid">
@@ -3362,7 +3482,7 @@ export default function SettingsView() {
           </section>
             )}
 
-            {activeSectionId === 'parallax' && (
+            {showSection('parallax') && (
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Parallax</h3>
@@ -3373,7 +3493,7 @@ export default function SettingsView() {
           </section>
             )}
 
-            {activeSectionId === 'info' && (
+            {showSection('info') && (
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Info</h3>
@@ -3530,7 +3650,7 @@ export default function SettingsView() {
           </section>
             )}
 
-            {activeSectionId === 'developer' && developerSectionVisible && (
+            {showSection('developer') && developerSectionVisible && (
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
               <h3>Developer</h3>
@@ -3736,7 +3856,7 @@ export default function SettingsView() {
           </section>
             )}
 
-            {activeSectionId === 'danger' && (
+            {showSection('danger') && (
             <section className="settings-section settings-section-panel settings-danger-zone">
             <div className="settings-section-head">
               <h3>Danger Zone</h3>

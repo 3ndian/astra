@@ -12,6 +12,8 @@ import { useRatingsStore, type TrackRatingState } from '../../stores/ratingsStor
 import TrackRatingControl, { TrackRatingControlValue } from '../ratings/TrackRatingControl'
 import { useMetadataEditorStore } from '../../stores/metadataEditorStore'
 import { useLyricsEditorStore } from '../../stores/lyricsEditorStore'
+import { useLyricsBulkStore } from '../../stores/lyricsBulkStore'
+import { searchOnYouTube } from '../../utils/youtubeSearch'
 import { useOpenArtistInLibrary } from '../../hooks/useOpenArtistInLibrary'
 import { useOpenAlbumInLibrary } from '../../hooks/useOpenAlbumInLibrary'
 import { Track } from '../../types/audio'
@@ -139,6 +141,8 @@ interface TrackListProps {
   enableDefaultOrderReset?: boolean
   onDefaultOrderReset?: () => void
   rootTableLayout?: RootTrackTableLayout
+  /** When set, header cells (except Title) can be dragged to reorder the columns. */
+  onRootTableLayoutChange?: (layout: RootTrackTableLayout) => void
   onResponsiveHiddenColumnsChange?: (columns: readonly RootTrackColumnId[]) => void
   searchQuery?: string
   /** Greyed "Not downloaded" rows appended after the tracks (display only, never playable). */
@@ -229,6 +233,41 @@ const TRACK_LIST_OVERSCAN_COUNT = 4
 // so moving controller-navigation markers around can never silently break
 // virtualization. Module scope keeps the identity stable for dependency arrays.
 const TRACK_LIST_PAGE_SCROLL_SELECTOR = '[data-track-list-scroll-container]'
+
+type FlexColumnKey = 'title' | 'artist' | 'album'
+type FlexColumnWidths = Partial<Record<FlexColumnKey, number>>
+const FLEX_COLUMN_KEYS: readonly FlexColumnKey[] = ['title', 'artist', 'album']
+const FALLBACK_FLEX_WIDTHS: Readonly<Record<FlexColumnKey, number>> = { title: 340, artist: 240, album: 240 }
+const MIN_FLEX_COLUMN_WIDTH = 60
+const MAX_FLEX_COLUMN_WIDTH = 1600
+const FLEX_WIDTHS_STORAGE_KEY = 'astra.trackListColumnWidths.v1'
+
+function readFlexColumnWidths(): FlexColumnWidths | null {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(FLEX_WIDTHS_STORAGE_KEY) ?? 'null') as FlexColumnWidths | null
+    if (!parsed || typeof parsed !== 'object') return null
+    const widths: FlexColumnWidths = {}
+    for (const key of FLEX_COLUMN_KEYS) {
+      const value = parsed[key]
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        widths[key] = Math.min(MAX_FLEX_COLUMN_WIDTH, Math.max(MIN_FLEX_COLUMN_WIDTH, value))
+      }
+    }
+    return Object.keys(widths).length > 0 ? widths : null
+  } catch {
+    return null
+  }
+}
+
+function writeFlexColumnWidths(widths: FlexColumnWidths | null): void {
+  try {
+    if (widths) localStorage.setItem(FLEX_WIDTHS_STORAGE_KEY, JSON.stringify(widths))
+    else localStorage.removeItem(FLEX_WIDTHS_STORAGE_KEY)
+  } catch {
+    // ignore
+  }
+}
+
 const ROOT_TRACK_COLUMN_CLASSES: Readonly<Record<RootTrackColumnId, string>> = {
   title: 'track-col-title',
   artist: 'track-col-artist',
@@ -1000,6 +1039,7 @@ export default function TrackList({
   enableDefaultOrderReset = false,
   onDefaultOrderReset,
   rootTableLayout,
+  onRootTableLayoutChange,
   onResponsiveHiddenColumnsChange,
   searchQuery = '',
   placeholders = NO_PLACEHOLDERS,
@@ -1091,6 +1131,166 @@ export default function TrackList({
   }), [])
 
   const rootTableActive = Boolean(rootTableLayout)
+
+  // Draggable widths for Title / Artist / Album. Once any is dragged the columns use fixed pixel widths and
+  // the list scrolls sideways when it gets wider than the window.
+  const [columnWidths, setColumnWidths] = useState<FlexColumnWidths | null>(readFlexColumnWidths)
+  const columnWidthsRef = useRef(columnWidths)
+  columnWidthsRef.current = columnWidths
+  const [columnsTotalWidth, setColumnsTotalWidth] = useState<number | null>(null)
+  const startColumnResize = useCallback((event: React.PointerEvent<HTMLElement>, key: FlexColumnKey) => {
+    const handle = event.currentTarget
+    const header = handle.closest('.track-list-header')
+    if (!header) return
+    event.preventDefault()
+    event.stopPropagation()
+    const measured: FlexColumnWidths = {}
+    for (const id of FLEX_COLUMN_KEYS) {
+      const el = header.querySelector<HTMLElement>(`.track-col-${id}`)
+      if (el && el.offsetWidth > 0) measured[id] = el.getBoundingClientRect().width
+    }
+    const startWidth = measured[key]
+    if (startWidth === undefined) return
+    // Freeze every visible stretchy column at its current width so only the dragged one changes.
+    const base: FlexColumnWidths = { ...columnWidthsRef.current, ...measured }
+    const startX = event.clientX
+    handle.setPointerCapture(event.pointerId)
+    document.body.classList.add('track-col-resizing')
+
+    const onMove = (moveEvent: PointerEvent) => {
+      const width = Math.min(MAX_FLEX_COLUMN_WIDTH, Math.max(MIN_FLEX_COLUMN_WIDTH, startWidth + moveEvent.clientX - startX))
+      setColumnWidths({ ...base, [key]: Math.round(width) })
+    }
+    const onUp = () => {
+      handle.removeEventListener('pointermove', onMove)
+      handle.removeEventListener('pointerup', onUp)
+      handle.removeEventListener('pointercancel', onUp)
+      document.body.classList.remove('track-col-resizing')
+      writeFlexColumnWidths(columnWidthsRef.current)
+    }
+    handle.addEventListener('pointermove', onMove)
+    handle.addEventListener('pointerup', onUp)
+    handle.addEventListener('pointercancel', onUp)
+  }, [])
+  const resetColumnWidths = useCallback(() => {
+    setColumnWidths(null)
+    writeFlexColumnWidths(null)
+  }, [])
+  const columnWidthStyle = useMemo(() => {
+    if (!columnWidths) return undefined
+    return {
+      '--tc-title-w': `${columnWidths.title ?? FALLBACK_FLEX_WIDTHS.title}px`,
+      '--tc-artist-w': `${columnWidths.artist ?? FALLBACK_FLEX_WIDTHS.artist}px`,
+      '--tc-album-w': `${columnWidths.album ?? FALLBACK_FLEX_WIDTHS.album}px`,
+      ...(columnsTotalWidth ? { '--tc-total': `${columnsTotalWidth}px` } : {})
+    } as CSSProperties
+  }, [columnWidths, columnsTotalWidth])
+
+  // Drag a header cell sideways to reorder the columns; the others shuffle out of the way as you pass them.
+  const [reorderingColumn, setReorderingColumn] = useState<RootTrackColumnId | null>(null)
+  const rootLayoutRef = useRef<RootTrackTableLayout | undefined>(undefined)
+  rootLayoutRef.current = rootTableLayout
+  const startColumnReorder = useCallback((event: React.PointerEvent<HTMLElement>, id: RootTrackColumnId) => {
+    if (!onRootTableLayoutChange || event.button !== 0) return
+    if ((event.target as HTMLElement).closest('.track-col-resizer')) return
+    const cell = event.currentTarget
+    const header = cell.closest<HTMLElement>('.track-list-header')
+    if (!header) return
+    const startX = event.clientX
+    let dragging = false
+    let grabOffset = 0
+
+    const visibleCells = (): HTMLElement[] => Array.from<HTMLElement>(header.querySelectorAll<HTMLElement>('[data-track-column]'))
+      .filter((el) => el.offsetWidth > 0)
+      .map((el, index) => ({ el, index, order: Number.parseInt(getComputedStyle(el).order, 10) || 0 }))
+      .sort((a, b) => a.order - b.order || a.index - b.index)
+      .map((entry) => entry.el)
+
+    const onMove = (moveEvent: PointerEvent) => {
+      if (!dragging) {
+        if (Math.abs(moveEvent.clientX - startX) < 5) return
+        dragging = true
+        grabOffset = startX - cell.getBoundingClientRect().left
+        setReorderingColumn(id)
+        document.body.classList.add('track-col-reordering')
+      }
+      const cells = visibleCells()
+      const from = cells.indexOf(cell)
+      if (from < 0) return
+      // Swap past any column whose midpoint the pointer has crossed.
+      let to = from
+      cells.forEach((other, index) => {
+        if (other === cell || other.dataset.trackColumn === 'title') return
+        const rect = other.getBoundingClientRect()
+        const mid = rect.left + rect.width / 2
+        if (index > from && moveEvent.clientX > mid) to = Math.max(to, index)
+        if (index < from && moveEvent.clientX < mid) to = Math.min(to === from ? index : to, index)
+      })
+      const layout = rootLayoutRef.current ? normalizeRootTrackTableLayout(rootLayoutRef.current) : null
+      if (to !== from && layout) {
+        const targetId = cells[to].dataset.trackColumn as RootTrackColumnId
+        const columns = layout.columns.filter((entry) => entry.id !== id)
+        const moving = layout.columns.find((entry) => entry.id === id)
+        const targetIndex = columns.findIndex((entry) => entry.id === targetId)
+        if (moving && targetIndex >= 0) {
+          columns.splice(to > from ? targetIndex + 1 : targetIndex, 0, moving)
+          onRootTableLayoutChange({ columns })
+        }
+      }
+      // Keep the grabbed cell under the pointer while its slot moves.
+      cell.style.transform = ''
+      const natural = cell.getBoundingClientRect().left
+      cell.style.transform = `translateX(${moveEvent.clientX - grabOffset - natural}px)`
+    }
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
+      cell.style.transform = ''
+      document.body.classList.remove('track-col-reordering')
+      if (dragging) {
+        setReorderingColumn(null)
+        // The release would otherwise count as a click and flip the sort order.
+        const swallow = (clickEvent: MouseEvent) => { clickEvent.stopPropagation(); clickEvent.preventDefault() }
+        window.addEventListener('click', swallow, { capture: true, once: true })
+        window.setTimeout(() => window.removeEventListener('click', swallow, true), 0)
+      }
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
+  }, [onRootTableLayoutChange])
+
+  // Total width of the header's columns, so the header and rows can scroll sideways together.
+  useLayoutEffect(() => {
+    const header = controllerGroupRef.current?.querySelector<HTMLElement>('.track-list-header')
+    if (!columnWidths || !header) {
+      setColumnsTotalWidth((previous) => (previous === null ? previous : null))
+      return
+    }
+    const style = getComputedStyle(header)
+    let total = (Number.parseFloat(style.paddingLeft) || 0) + (Number.parseFloat(style.paddingRight) || 0)
+    for (const child of Array.from(header.children) as HTMLElement[]) total += child.offsetWidth
+    const rounded = Math.ceil(total)
+    setColumnsTotalWidth((previous) => (previous === rounded ? previous : rounded))
+  })
+
+  const renderColumnResizer = (key: string): ReactElement | null => (
+    key === 'title' || key === 'artist'
+      ? (
+        <span
+          className="track-col-resizer"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={`Resize ${key} column. Double-click to reset.`}
+          title="Drag to resize (double-click to reset)"
+          onPointerDown={(event) => startColumnResize(event, key)}
+          onDoubleClick={resetColumnWidths}
+          onClick={(event) => event.stopPropagation()}
+        />
+      )
+      : null
+  )
 
   useLayoutEffect(() => {
     if (!rootTableActive) return
@@ -1954,6 +2154,13 @@ export default function TrackList({
     setTrackContextMenu(null)
   }, [closeMetadataEditor, openLyricsEditor, trackContextMenu])
 
+  const handleContextGetLyrics = useCallback(() => {
+    if (!trackContextMenu) return
+    const trackPaths = trackContextMenu.tracks.map((track) => track.path)
+    setTrackContextMenu(null)
+    if (trackPaths.length > 0) void useLyricsBulkStore.getState().start(trackPaths)
+  }, [trackContextMenu])
+
   const handleToggleTrackPlaylistMembership = useCallback(async (event: React.MouseEvent, playlistId: number, trackPaths: string[]) => {
     event.stopPropagation()
     if (isPlaylistMembershipMutating) return
@@ -2277,17 +2484,20 @@ export default function TrackList({
       : (direction === 'asc' ? 'ascending' : 'descending')
 
     if (!isColumnSortingEnabled || !onSortColumnToggle) {
-      return <div className={`track-col ${className}`}>{label}</div>
+      return <div className={`track-col ${className}`}>{label}{renderColumnResizer(key)}</div>
     }
 
     return (
       <div
         key={rootColumnId ?? key}
-        className={`track-col ${className}`}
+        className={`track-col ${className}${rootColumnId && reorderingColumn === rootColumnId ? ' track-col-reordering' : ''}${rootTableActive && onRootTableLayoutChange && rootColumnId && rootColumnId !== 'title' ? ' track-col-reorderable' : ''}`}
         role="columnheader"
         aria-sort={getAriaSort(key)}
         data-track-column={rootColumnId}
         style={rootColumnId ? rootColumnStyles?.[rootColumnId] : undefined}
+        onPointerDown={rootTableActive && onRootTableLayoutChange && rootColumnId && rootColumnId !== 'title'
+          ? (event) => startColumnReorder(event, rootColumnId)
+          : undefined}
       >
         <button
           type="button"
@@ -2308,6 +2518,7 @@ export default function TrackList({
             />
           )}
         </button>
+        {renderColumnResizer(key)}
       </div>
     )
   }
@@ -2470,8 +2681,9 @@ export default function TrackList({
 
   return (
     <div
-      className={`track-list ${pageScroll ? 'track-list-page-scroll' : ''} ${rootTableActive ? 'track-list-root-custom' : ''}`}
+      className={`track-list ${pageScroll ? 'track-list-page-scroll' : ''} ${rootTableActive ? 'track-list-root-custom' : ''} ${columnWidths ? 'track-list-custom-widths' : ''}`}
       ref={controllerGroupRef}
+      style={columnWidthStyle}
       data-controller-group="tracks"
       data-controller-axis="vertical"
       data-controller-virtual="true"
@@ -2797,6 +3009,40 @@ export default function TrackList({
               </svg>
             </span>
             {contextMenuTrackCount > 1 ? `Edit Lyrics (${contextMenuTrackCount})` : 'Edit Lyrics'}
+          </button>
+          {contextMenuTrackCount === 1 && (
+            <button
+              type="button"
+              className="track-context-menu-item"
+              onClick={() => {
+                const target = trackContextMenu?.tracks[0]
+                setTrackContextMenu(null)
+                searchOnYouTube(target)
+              }}
+            >
+              <span className="track-context-menu-icon">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="m20 20-3.5-3.5" />
+                </svg>
+              </span>
+              Search on YouTube
+            </button>
+          )}
+          <button
+            type="button"
+            className="track-context-menu-item"
+            onClick={handleContextGetLyrics}
+            disabled={contextMenuContainsMissingPlaylistEntry || contextMenuLocalTrackCount === 0}
+          >
+            <span className="track-context-menu-icon">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 3v12" />
+                <path d="m7 10 5 5 5-5" />
+                <path d="M5 21h14" />
+              </svg>
+            </span>
+            {contextMenuTrackCount > 1 ? `Get Lyrics (${contextMenuTrackCount})` : 'Get Lyrics'}
           </button>
           {integrityEnabled && (
             <button

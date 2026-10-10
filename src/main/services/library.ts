@@ -4726,6 +4726,73 @@ function hasManualLyricsOverride(entry: {
   )
 }
 
+export interface LyricsExportRow {
+  title: string
+  artist: string
+  album: string
+  durationSeconds: number | null
+  format: LyricsFormat
+  plainLyrics: string | null
+  syncedLyrics: string | null
+}
+
+// Songs that already have saved lyrics (manual or fetched), joined with the song details,
+// for exporting to another computer. A manual lyric wins over a fetched one.
+export function listLyricsForExport(): LyricsExportRow[] {
+  if (!db) return []
+  const rows = db.all<Record<string, unknown>>(`
+    SELECT
+      t.title AS title, t.artist AS artist, t.album AS album, t.duration AS duration,
+      o.format AS o_format, o.plain_lyrics AS o_plain, o.synced_lyrics AS o_synced,
+      c.source AS c_source, c.plain_lyrics AS c_plain, c.synced_lyrics AS c_synced
+    FROM tracks t
+    LEFT JOIN lyrics_track_overrides o ON o.track_path = t.path
+    LEFT JOIN lyrics_cache c ON c.track_path = t.path AND c.status = 'hit'
+    WHERE (o.track_path IS NOT NULL AND (o.plain_lyrics IS NOT NULL OR o.synced_lyrics IS NOT NULL))
+       OR (c.track_path IS NOT NULL AND (c.plain_lyrics IS NOT NULL OR c.synced_lyrics IS NOT NULL))
+  `)
+  const out: LyricsExportRow[] = []
+  for (const row of rows) {
+    const title = toText(row.title)
+    const artist = toText(row.artist)
+    if (!title || !artist) continue
+    const manualPlain = toText(row.o_plain)
+    const manualSynced = toText(row.o_synced)
+    const duration = toNumber(row.duration)
+    const common = {
+      title,
+      artist,
+      album: toText(row.album) ?? '',
+      durationSeconds: duration !== null && duration > 0 ? duration : null
+    }
+    if (manualPlain !== null || manualSynced !== null) {
+      const format: LyricsFormat = row.o_format === 'xlrc' ? 'xlrc' : manualSynced !== null ? 'lrc' : 'plain'
+      out.push({ ...common, format, plainLyrics: manualPlain, syncedLyrics: manualSynced })
+      continue
+    }
+    const plain = toText(row.c_plain)
+    const synced = toText(row.c_synced)
+    const format: LyricsFormat = synced === null ? 'plain' : row.c_source === 'xlrcdb' ? 'xlrc' : 'lrc'
+    out.push({ ...common, format, plainLyrics: plain, syncedLyrics: synced })
+  }
+  return out
+}
+
+export function listTrackPathsWithLyrics(): Set<string> {
+  const paths = new Set<string>()
+  if (!db) return paths
+  const rows = db.all<Record<string, unknown>>(`
+    SELECT track_path FROM lyrics_track_overrides WHERE plain_lyrics IS NOT NULL OR synced_lyrics IS NOT NULL
+    UNION
+    SELECT track_path FROM lyrics_cache WHERE status = 'hit' AND (plain_lyrics IS NOT NULL OR synced_lyrics IS NOT NULL)
+  `)
+  for (const row of rows) {
+    const path = toText(row.track_path)
+    if (path) paths.add(path)
+  }
+  return paths
+}
+
 export function getLyricsCache(trackPath: string, metadataSignature: string): LyricsCacheEntry | null {
   if (!db) return null
 

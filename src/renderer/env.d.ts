@@ -366,6 +366,7 @@ declare global {
             platform: NodeJS.Platform
             getAppVersion: () => Promise<string>
             getAppBuildInfo: () => Promise<AppBuildInfo>
+            searchYouTube: (query: string) => Promise<boolean>
             getAppPerformanceStats: () => Promise<{ cpuPercent: number; workingSetMb: number; footprintMb: number | null; appProcessFootprintMb: number | null; childProcessFootprintMb: number | null; footprintSource: import('../shared/processMemoryFootprint').AppMemoryFootprintSource; footprintComplete: boolean; footprintFailedPids: number[]; footprintProcessCount: number; footprintAppProcessCount: number; footprintChildProcessCount: number; privateMemoryExcludingCallerMb: number | null; mainProcessMemoryMb: number | null; helperProcessesMemoryMb: number | null }>
             getMainProcessMemoryStats: () => Promise<MemoryDiagnosticsProcessMemoryStats>
             getRendererMemoryStats: () => Promise<MemoryDiagnosticsRendererMemoryStats>
@@ -578,6 +579,9 @@ declare global {
           getState: () => Promise<SpotifyPopoutState>
           setLayout: (layout: SpotifyPopoutLayout) => Promise<void>
           showContextMenu: () => void
+          dragStart: () => void
+          dragMove: (dx: number, dy: number) => void
+          dragEnd: () => void
           onState: (callback: (state: SpotifyPopoutState) => void) => () => void
           onHover: (callback: (hovering: boolean) => void) => () => void
         }
@@ -593,6 +597,16 @@ declare global {
           emptyBin: () => Promise<void>
           onFulfilled: (callback: (items: Array<{ title: string; artist: string }>) => void) => () => void
         }
+            lyricsBulk: {
+                start: (options?: import('../types/lyricsBulk').LyricsBulkStartOptions) => Promise<import('../types/lyricsBulk').LyricsBulkStartResult>
+                getState: () => Promise<import('../types/lyricsBulk').LyricsBulkState>
+                pause: () => Promise<void>
+                resume: () => Promise<void>
+                cancel: () => Promise<void>
+                exportLyrics: () => Promise<import('../types/lyricsBulk').LyricsTransferResult>
+                importLyrics: () => Promise<import('../types/lyricsBulk').LyricsTransferResult>
+                onState: (callback: (state: import('../types/lyricsBulk').LyricsBulkState) => void) => () => void
+            }
             lyrics: {
                 getStatus: () => Promise<LyricsStatus>
                 setEnabled: (enabled: boolean) => Promise<LyricsStatus>

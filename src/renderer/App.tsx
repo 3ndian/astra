@@ -3,6 +3,7 @@ import TitleBar from './components/layout/TitleBar'
 import Sidebar from './components/layout/Sidebar'
 import AnalyzerDeck from './components/layout/AnalyzerDeck'
 import ViewRouter from './components/layout/ViewRouter'
+import ExpandedSpectrogramPanel from './components/layout/ExpandedSpectrogramPanel'
 import TransportBar from './components/layout/TransportBar'
 import SpotifyTransportBar from './components/layout/SpotifyTransportBar'
 import SpotifyHandoffPrompt from './components/layout/SpotifyHandoffPrompt'
@@ -13,6 +14,7 @@ import QueuePanel from './components/queue/QueuePanel'
 import QueuePanelBoundary from './components/queue/QueuePanelBoundary'
 import TrackDragRuntime from './components/drag/TrackDragRuntime'
 import CollectionQueueContextMenu from './components/queue/CollectionQueueContextMenu'
+import LyricsBulkCard from './components/layout/LyricsBulkCard'
 import InfoSidebar from './components/layout/InfoSidebar'
 import FullscreenMode from './components/layout/FullscreenMode'
 import FullscreenBoundary from './components/layout/FullscreenBoundary'
@@ -260,6 +262,8 @@ function App() {
   const spotifyBarActive = useSpotifyStore(
     (state) => state.activeSource === 'spotify' && state.status.track !== null && (state.status.state === 'playing' || state.status.state === 'paused')
   )
+  const sidebarExpandedForLayout = useUIStore((state) => state.isSidebarExpanded)
+  const sidebarNowPlayingLayout = sidebarExpandedForLayout && !spotifyBarActive
   useEffect(() => startSpotifyWatcher(), [])
   useEffect(() => startResumeTracker(), [])
   useEffect(() => startSleepEndOfFileWatcher(), [])
@@ -520,6 +524,10 @@ function App() {
 
         if (sessionSnapshot?.player) {
           await usePlayerStore.getState().restoreSession(sessionSnapshot.player)
+          // Decode the restored song shortly after startup so the first press of play is instant.
+          window.setTimeout(() => {
+            if (!didUnmount) void usePlayerStore.getState().preloadRestoredTrack().catch(() => undefined)
+          }, 1500)
         }
       } catch (error) {
         console.error('Failed to restore Astra session:', error)
@@ -661,7 +669,7 @@ function App() {
       <RuntimeBridges />
       <ActiveViewEligibilityGuard />
       <div
-        className={`app ${isAnalyzerEditMode ? 'is-analyzer-editing' : ''} ${albumBackdropOn ? 'album-backdrop-on' : ''} ${analyzerPlacement === 'bottom' ? 'analyzer-placed-bottom' : ''}`.trim()}
+        className={`app ${sidebarNowPlayingLayout ? 'sidebar-np-layout' : ''} ${isAnalyzerEditMode ? 'is-analyzer-editing' : ''} ${albumBackdropOn ? 'album-backdrop-on' : ''} ${analyzerPlacement === 'bottom' ? 'analyzer-placed-bottom' : ''}`.trim()}
       >
         <TitleBar />
         {isAnalyzerRackVisible && (
@@ -713,6 +721,7 @@ function App() {
         )}
         <AlbumBackdrop onActiveChange={setSmokyBackdropOn} />
         <MilkdropBackdrop suspended={isFullscreenActive} onActiveChange={setMilkdropBackdropOn} />
+        <ExpandedSpectrogramPanel />
         <div className="app-body">
           <Sidebar />
           <div className="app-content">
@@ -761,6 +770,7 @@ function App() {
         )}
         <SignalShareModal />
         <CollectionQueueContextMenu />
+        <LyricsBulkCard />
         <TrackDragRuntime />
         {fullscreenPresence.shouldRender && <FullscreenBoundary><FullscreenMode presencePhase={fullscreenPresence.phase} /></FullscreenBoundary>}
         <ControllerRuntime showOverlays />

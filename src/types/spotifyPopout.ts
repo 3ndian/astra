@@ -15,6 +15,8 @@ export interface SpotifyPopoutRect {
 export interface SpotifyPopoutPrefs {
   layout: SpotifyPopoutLayout
   alwaysOnTop: boolean
+  /** Tint the window with the album cover's colours. */
+  albumColors: boolean
   square: SpotifyPopoutRect
   wide: SpotifyPopoutRect
 }
@@ -22,11 +24,12 @@ export interface SpotifyPopoutPrefs {
 export interface SpotifyPopoutState {
   layout: SpotifyPopoutLayout
   alwaysOnTop: boolean
+  albumColors: boolean
 }
 
 export const SPOTIFY_POPOUT_LIMITS = {
   square: { min: 160, max: 640, default: 260 },
-  wide: { minWidth: 340, maxWidth: 1000, minHeight: 90, maxHeight: 300, defaultWidth: 420, defaultHeight: 120 }
+  wide: { minWidth: 340, maxWidth: 1000, minHeight: 90, maxHeight: 900, defaultWidth: 420, defaultHeight: 120 }
 } as const
 
 export interface SpotifyPopoutWorkArea {
@@ -77,6 +80,7 @@ export function normalizeSpotifyPopoutPrefs(raw: unknown, displays: SpotifyPopou
   return {
     layout: record.layout === 'wide' ? 'wide' : 'square',
     alwaysOnTop: record.alwaysOnTop !== false,
+    albumColors: record.albumColors !== false,
     square: normalizeRect('square', record.square, displays),
     wide: normalizeRect('wide', record.wide, displays)
   }
@@ -123,4 +127,28 @@ export function proportionalCornerResize(start: PopoutBounds, proposed: PopoutBo
     width,
     height
   }
+}
+
+export interface WideShape {
+  /** true: cover across the top with the details underneath; false: cover on the left. */
+  stacked: boolean
+  /** Scale for everything inside the window (1 = the default 420 x 120 strip). */
+  unit: number
+  /** Side of the square cover in px. */
+  cover: number
+}
+
+const clampUnit = (value: number): number => Math.min(2.6, Math.max(0.7, value))
+
+/** How the wide layout arranges itself for a given window size. */
+export function wideShape(width: number, height: number): WideShape {
+  const landscapeUnit = clampUnit(Math.min(height / 120, width / 400))
+  // The details need roughly 190 units of width next to the cover.
+  if (width - height >= 190 * landscapeUnit) {
+    return { stacked: false, unit: landscapeUnit, cover: height }
+  }
+  const unit = clampUnit(width / 340)
+  const detailsHeight = 112 * unit
+  const cover = Math.max(48, Math.min(width, height - detailsHeight))
+  return { stacked: true, unit, cover: Math.floor(cover) }
 }

@@ -145,7 +145,10 @@ import {
   type ParallaxTlsIdentity
 } from './services/parallaxSecurity'
 import { LastFmService, sanitizePendingScrobbles } from './services/lastFm'
-import { LyricsService } from './services/lyrics'
+import { LyricsService, resolveEmbeddedLyrics } from './services/lyrics'
+import { LyricsBulkRunner, type BulkTrack } from './services/lyricsBulk'
+import { LYRICS_BULK_PACE_MS, type LyricsBulkPace, type LyricsBulkStartOptions, type LyricsBulkStartResult, type LyricsTransferResult } from '../types/lyricsBulk'
+import { buildExportFile, matchImport, parseExportFile } from './services/lyricsTransfer'
 import { MemoryDiagnosticsService } from './services/memoryDiagnostics'
 import { LibraryDiagnosticsService } from './services/libraryDiagnostics'
 import { collectAppMemoryFootprint } from './services/appMemoryFootprint'
@@ -5008,7 +5011,7 @@ let spotifyPopoutHoverTimer: ReturnType<typeof setInterval> | null = null
 
 function spotifyPopoutState() {
   const prefs = spotifyPopoutPrefs
-  return { layout: prefs?.layout ?? 'square', alwaysOnTop: prefs?.alwaysOnTop ?? true }
+  return { layout: prefs?.layout ?? 'square', alwaysOnTop: prefs?.alwaysOnTop ?? true, albumColors: prefs?.albumColors ?? true }
 }
 
 function sendSpotifyPopoutState(): void {
@@ -5200,6 +5203,18 @@ ipcMain.handle('spotify-popout:close', () => {
 })
 ipcMain.handle('spotify-popout:returnToMain', () => returnToMainWindow())
 ipcMain.handle('spotify-popout:getState', () => spotifyPopoutState())
+// Moving the window by dragging anywhere on it (the page reports how far the pointer moved).
+let spotifyPopoutDragOrigin: [number, number] | null = null
+ipcMain.on('spotify-popout:dragStart', () => {
+  spotifyPopoutDragOrigin = spotifyPopoutWindow && !spotifyPopoutWindow.isDestroyed() ? spotifyPopoutWindow.getPosition() as [number, number] : null
+})
+ipcMain.on('spotify-popout:dragMove', (_event, dx: unknown, dy: unknown) => {
+  const win = spotifyPopoutWindow
+  if (!win || win.isDestroyed() || !spotifyPopoutDragOrigin) return
+  if (typeof dx !== 'number' || typeof dy !== 'number' || !Number.isFinite(dx) || !Number.isFinite(dy)) return
+  win.setPosition(Math.round(spotifyPopoutDragOrigin[0] + dx), Math.round(spotifyPopoutDragOrigin[1] + dy))
+})
+ipcMain.on('spotify-popout:dragEnd', () => { spotifyPopoutDragOrigin = null })
 ipcMain.handle('spotify-popout:setLayout', (_event, layout: unknown) => {
   if (layout === 'square' || layout === 'wide') setSpotifyPopoutLayout(layout)
 })
@@ -5218,6 +5233,16 @@ ipcMain.on('spotify-popout:contextMenu', () => {
       click: (item) => {
         prefs.alwaysOnTop = item.checked
         if (!win.isDestroyed()) win.setAlwaysOnTop(item.checked, 'floating')
+        sendSpotifyPopoutState()
+        persistSpotifyPopoutPrefsSoon()
+      }
+    },
+    {
+      label: 'Colours from album cover',
+      type: 'checkbox',
+      checked: prefs.albumColors,
+      click: (item) => {
+        prefs.albumColors = item.checked
         sendSpotifyPopoutState()
         persistSpotifyPopoutPrefsSoon()
       }
@@ -6766,6 +6791,14 @@ ipcMain.handle('library-diagnostics:logRendererTiming', async (_event, rawValue:
   }, timing.runId)
 })
 
+// Opens a YouTube search for the given text in the default browser. The URL is built here, from text only.
+ipcMain.handle('app:searchYouTube', async (_event, rawQuery: unknown) => {
+  const query = typeof rawQuery === 'string' ? rawQuery.trim().slice(0, 300) : ''
+  if (!query) return false
+  await shell.openExternal(`https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`)
+  return true
+})
+
 ipcMain.handle('updates:check', async () => {
   return checkForUpdates(app.getVersion())
 })
@@ -6940,6 +6973,125 @@ ipcMain.handle('lyrics:saveSidecar', async (_event, rawQuery: unknown) => {
   return saveSidecarLrc(query.path, lookup.lyrics, {
     lyricsFolder: lyricsRoot ? { root: lyricsRoot, libraryRoots: getLyricsLibraryRoots() } : null
   })
+})
+
+// ---- Bulk lyrics: fetch lyrics for many songs in the background, gently ----
+let lyricsBulkSaveSidecars = false
+const lyricsBulk = new LyricsBulkRunner({
+  minGapMs: LYRICS_BULK_PACE_MS.normal,
+  lookup: (track) => lyricsService.getForTrack({
+    path: track.path,
+    title: track.title,
+    artist: track.artist,
+    album: track.album,
+    durationSeconds: track.durationSeconds
+  }),
+  onState: (state) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('lyrics-bulk:state', state)
+  },
+  onFetched: async (track, result) => {
+    if (!lyricsBulkSaveSidecars) return
+    const lyricsRoot = getLyricsSidecarFolder()
+    await saveSidecarLrc(track.path, result.lyrics, {
+      lyricsFolder: lyricsRoot ? { root: lyricsRoot, libraryRoots: getLyricsLibraryRoots() } : null
+    })
+  }
+})
+
+function bulkTracksFor(paths?: string[]): BulkTrack[] {
+  const tracks = paths && paths.length > 0 ? library.getTracksByPaths(paths) : library.getAllTracks()
+  return tracks
+    .filter((track) => track.source_type === 'local' && track.is_available !== 0 && track.title && track.artist)
+    .map((track) => ({
+      path: track.path,
+      title: track.title,
+      artist: track.artist,
+      album: track.album || undefined,
+      durationSeconds: track.duration > 0 ? track.duration : undefined
+    }))
+}
+
+ipcMain.handle('lyrics-bulk:start', async (_event, raw: unknown): Promise<LyricsBulkStartResult> => {
+  const options = (raw && typeof raw === 'object' ? raw : {}) as LyricsBulkStartOptions
+  if (lyricsBulk.isActive()) return { started: false, total: 0, error: 'Lyrics are already being fetched.' }
+  if (!lyricsService.getStatus().enabled) {
+    return { started: false, total: 0, error: 'Online lyrics are turned off. Turn them on in Settings > Lyrics first.' }
+  }
+  const paths = Array.isArray(options.paths)
+    ? options.paths.filter((value): value is string => typeof value === 'string' && value.length > 0)
+    : undefined
+  const tracks = bulkTracksFor(paths)
+  if (tracks.length === 0) return { started: false, total: 0, error: 'No songs to look up.' }
+  const pace: LyricsBulkPace = options.pace === 'gentle' || options.pace === 'fast' ? options.pace : 'normal'
+  lyricsBulkSaveSidecars = options.saveSidecars === true
+  lyricsBulk.setMinGap(LYRICS_BULK_PACE_MS[pace])
+  void lyricsBulk.run(tracks).catch((error) => console.warn('[lyrics-bulk] run failed', error))
+  return { started: true, total: tracks.length }
+})
+ipcMain.handle('lyrics-bulk:getState', () => lyricsBulk.getState())
+ipcMain.handle('lyrics-bulk:pause', () => { lyricsBulk.pause() })
+ipcMain.handle('lyrics-bulk:resume', () => { lyricsBulk.resume() })
+ipcMain.handle('lyrics-bulk:cancel', () => { lyricsBulk.cancel() })
+
+ipcMain.handle('lyrics-bulk:export', async (): Promise<LyricsTransferResult> => {
+  const rows = library.listLyricsForExport()
+  if (rows.length === 0) return { status: 'error', message: 'There are no saved lyrics to export yet.' }
+  const target = mainWindow
+    ? await dialog.showSaveDialog(mainWindow, {
+        title: 'Export Lyrics',
+        defaultPath: 'astra-lyrics.json',
+        filters: [{ name: 'Astra lyrics', extensions: ['json'] }]
+      })
+    : null
+  if (!target || target.canceled || !target.filePath) return { status: 'cancelled' }
+  try {
+    await writeFile(target.filePath, JSON.stringify(buildExportFile(rows)), 'utf8')
+    return { status: 'ok', count: rows.length, path: target.filePath }
+  } catch (error) {
+    return { status: 'error', message: error instanceof Error ? error.message : 'Could not write the file.' }
+  }
+})
+
+ipcMain.handle('lyrics-bulk:import', async (): Promise<LyricsTransferResult> => {
+  if (!mainWindow) return { status: 'cancelled' }
+  const picked = await dialog.showOpenDialog(mainWindow, {
+    title: 'Import Lyrics',
+    properties: ['openFile'],
+    filters: [{ name: 'Astra lyrics', extensions: ['json'] }]
+  })
+  if (picked.canceled || picked.filePaths.length === 0) return { status: 'cancelled' }
+  try {
+    const entries = parseExportFile(await readFile(picked.filePaths[0], 'utf8'))
+    if (!entries) return { status: 'error', message: 'That file is not an Astra lyrics export.' }
+    const targets = bulkTracksFor().map((track) => ({
+      path: track.path,
+      title: track.title,
+      artist: track.artist,
+      durationSeconds: track.durationSeconds ?? null
+    }))
+    const have = library.listTrackPathsWithLyrics()
+    const { matches, skipped, unmatched } = matchImport(entries, targets, (path) => have.has(path))
+    let imported = 0
+    let skippedEmbedded = 0
+    for (const match of matches) {
+      // Manual lyrics beat embedded ones, so leave songs that already carry their own lyrics alone.
+      if (await resolveEmbeddedLyrics(match.path).catch(() => null)) {
+        skippedEmbedded += 1
+        continue
+      }
+      const text = match.entry.syncedLyrics ?? match.entry.plainLyrics
+      if (!text) continue
+      try {
+        await lyricsService.importManualLyrics([match.path], text, match.entry.format)
+        imported += 1
+      } catch {
+        // unparsable entry: skip it
+      }
+    }
+    return { status: 'ok', count: imported, skipped: skipped + skippedEmbedded, unmatched }
+  } catch (error) {
+    return { status: 'error', message: error instanceof Error ? error.message : 'Could not read the file.' }
+  }
 })
 
 let spotifyHistory: SpotifyHistoryStore | null = null

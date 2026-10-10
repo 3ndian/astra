@@ -4,6 +4,7 @@ import { usePlayerStore } from '../../stores/playerStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { useUIStore } from '../../stores/uiStore'
 import { resolveCollectionTrackPaths } from '../../utils/collectionQueue'
+import { useLyricsBulkStore } from '../../stores/lyricsBulkStore'
 
 interface MenuPosition {
   left: number
@@ -192,6 +193,28 @@ export default function CollectionQueueContextMenu() {
           </svg>
         </span>
         {busyAction === 'end' ? 'Adding...' : 'Add to Queue'}
+      </button>
+      <button
+        type="button"
+        className="track-context-menu-item"
+        role="menuitem"
+        disabled={busyAction !== null}
+        onClick={() => {
+          if (!request) return
+          void resolveCollectionTrackPaths(request.target)
+            .then((paths) => (paths.length > 0 ? useLyricsBulkStore.getState().start(paths) : undefined))
+            .catch((error) => console.error('Failed to start lyrics fetch:', error))
+          closeMenu()
+        }}
+      >
+        <span className="track-context-menu-icon" aria-hidden="true">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M9 18V5l12-2v13" />
+            <circle cx="6" cy="18" r="3" />
+            <circle cx="18" cy="16" r="3" />
+          </svg>
+        </span>
+        Get Lyrics
       </button>
       {errorMessage && <div className="collection-queue-context-menu-error">{errorMessage}</div>}
     </div>,

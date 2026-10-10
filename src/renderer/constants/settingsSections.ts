@@ -3,13 +3,31 @@ export interface SettingsSectionDefinition {
   label: string
   keywords: readonly string[]
   hidden?: boolean
+  /** Heading the entry sits under in the settings navigation. */
+  group: SettingsNavGroup
 }
+
+export type SettingsNavGroup = 'look' | 'music' | 'connections' | 'app'
+
+export const SETTINGS_NAV_GROUPS: readonly { id: SettingsNavGroup; label: string }[] = [
+  { id: 'look', label: 'Look and feel' },
+  { id: 'music', label: 'Music' },
+  { id: 'connections', label: 'Connections' },
+  { id: 'app', label: 'App' }
+]
 
 export const SETTINGS_SECTIONS = [
   {
     id: 'appearance',
     label: 'Appearance',
-    keywords: ['theme', 'accent', 'cover art', 'color', 'visual', 'dark', 'light', 'background', 'playlist header', 'adaptive']
+    keywords: ['theme', 'accent', 'tint', 'album colour', 'album color', 'scale', 'header',  'cover art', 'color', 'visual', 'dark', 'light', 'background', 'playlist header', 'adaptive'],
+    group: 'look'
+  },
+  {
+    id: 'analyzer',
+    label: 'Visuals',
+    keywords: ['milkdrop', 'background', 'blur', 'opacity', 'history', 'trail', 'placement', 'fft', 'visualizer', 'pitch lock', 'oscilloscope', 'spectrum', 'equalizer', 'eq', 'waveform'],
+    group: 'look'
   },
   {
     id: 'library',
@@ -42,32 +60,20 @@ export const SETTINGS_SECTIONS = [
       'ratings',
       'stars',
       'star rating'
-    ]
-  },
-  {
-    id: 'analyzer',
-    label: 'Analyzer',
-    keywords: ['fft', 'visualizer', 'pitch lock', 'oscilloscope', 'spectrum', 'equalizer', 'eq', 'waveform']
-  },
-  {
-    id: 'audio',
-    label: 'Audio Output',
-    keywords: ['output', 'device', 'routing', 'delay', 'channel', 'sample rate', 'bit depth', 'buffer', 'latency', 'spatial', 'binaural', 'hrtf', 'headphones', 'speaker room', 'virtual speakers', 'upmix', 'surround']
+    ],
+    group: 'music'
   },
   {
     id: 'playback',
     label: 'Playback',
-    keywords: ['sleep timer', 'timer', 'countdown', 'pause', 'fade', 'fade in', 'fade out', 'audio transitions', 'gapless', 'crossfade', 'shuffle', 'repeat', 'jump to playing', 'now playing', 'queue', 'playlist', 'album', 'artist']
+    keywords: ['track click', 'double click', 'click', 'sleep timer', 'timer', 'countdown', 'pause', 'fade', 'fade in', 'fade out', 'audio transitions', 'gapless', 'crossfade', 'shuffle', 'repeat', 'jump to playing', 'now playing', 'queue', 'playlist', 'album', 'artist'],
+    group: 'music'
   },
   {
-    id: 'keybinds',
-    label: 'Keybinds',
-    keywords: ['keyboard', 'shortcut', 'shortcuts', 'keybind', 'binding', 'mouse', 'back', 'forward', 'controls']
-  },
-  {
-    id: 'devices',
-    label: 'Devices',
-    keywords: ['hardware', 'astra thing', 'car thing', 'connect', 'pair', 'pairing', 'controller', 'usb', 'companion']
+    id: 'audio',
+    label: 'Audio output',
+    keywords: ['output', 'device', 'routing', 'delay', 'channel', 'sample rate', 'bit depth', 'buffer', 'latency', 'spatial', 'binaural', 'hrtf', 'headphones', 'speaker room', 'virtual speakers', 'upmix', 'surround'],
+    group: 'music'
   },
   {
     id: 'integrations',
@@ -87,12 +93,14 @@ export const SETTINGS_SECTIONS = [
       'lyric',
       'xlrcdb',
       'lrclib'
-    ]
+    ],
+    group: 'connections'
   },
   {
-    id: 'experimental',
-    label: 'Experimental',
-    keywords: ['experimental', 'beta', 'preview', 'graph', 'relationships', 'artists', 'visualization', 'network', 'integrity', 'scan', 'flac', 'quality', 'activity', 'indicator', 'scope rail', 'controller', 'gamepad', 'xbox', 'playstation', 'stats', 'listening history', 'play count']
+    id: 'devices',
+    label: 'Devices',
+    keywords: ['hardware', 'astra thing', 'car thing', 'connect', 'pair', 'pairing', 'controller', 'usb', 'companion'],
+    group: 'connections'
   },
   {
     id: 'parallax',
@@ -100,23 +108,39 @@ export const SETTINGS_SECTIONS = [
     keywords: ['parallax', 'zone', 'speaker', 'speakers', 'sink', 'host', 'multi-room', 'multiroom', 'sync', 'pair', 'pairing', 'lan'],
     // Experimental feature: hidden until revealed by the "Enable Parallax" master toggle in the
     // Experimental section (mirrors the Developer-section reveal pattern).
-    hidden: true
+    hidden: true,
+    group: 'connections'
+  },
+  {
+    id: 'keybinds',
+    label: 'Keybinds',
+    keywords: ['keyboard', 'shortcut', 'shortcuts', 'keybind', 'binding', 'mouse', 'back', 'forward', 'controls'],
+    group: 'app'
+  },
+  {
+    id: 'experimental',
+    label: 'Experimental',
+    keywords: ['experimental', 'beta', 'preview', 'graph', 'relationships', 'artists', 'visualization', 'network', 'integrity', 'scan', 'flac', 'quality', 'activity', 'indicator', 'scope rail', 'controller', 'gamepad', 'xbox', 'playstation', 'stats', 'listening history', 'play count'],
+    group: 'app'
   },
   {
     id: 'info',
-    label: 'Info',
-    keywords: ['version', 'updates', 'license', 'support', 'ko-fi', 'about', 'changelog', 'transfer', 'settings transfer', 'import settings', 'export settings', 'portable', 'move computers', 'backup', 'restore']
+    label: 'About',
+    keywords: ['version', 'updates', 'license', 'support', 'ko-fi', 'about', 'changelog', 'transfer', 'settings transfer', 'import settings', 'export settings', 'portable', 'move computers', 'backup', 'restore'],
+    group: 'app'
   },
   {
     id: 'developer',
     label: 'Developer',
     keywords: ['memory', 'diagnostics', 'debug', 'log', 'logging', 'heap', 'bundle', 'profiling', 'developer'],
-    hidden: true
+    hidden: true,
+    group: 'app'
   },
   {
     id: 'danger',
     label: 'Danger Zone',
-    keywords: ['reset', 'factory reset', 'clear', 'danger', 'troubleshoot', 'delete', 'wipe', 'ratings', 'reset ratings']
+    keywords: ['reset', 'factory reset', 'clear', 'danger', 'troubleshoot', 'delete', 'wipe', 'ratings', 'reset ratings'],
+    group: 'app'
   }
 ] as const satisfies readonly SettingsSectionDefinition[]
 

@@ -77,6 +77,7 @@ import type {
   LyricsTrackOverride,
   LyricsTrackQuery
 } from '../types/lyrics'
+import type { LyricsBulkStartOptions, LyricsBulkStartResult, LyricsBulkState, LyricsTransferResult } from '../types/lyricsBulk'
 import type {
   SpotifyCommand,
   SpotifyHistoryPage,
@@ -1094,6 +1095,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
   getAppBuildInfo: (): Promise<AppBuildInfo> => ipcRenderer.invoke('app:getBuildInfo'),
   getAppPerformanceStats: () => ipcRenderer.invoke('app:getPerformanceStats'),
+  searchYouTube: (query: string): Promise<boolean> => ipcRenderer.invoke('app:searchYouTube', query),
   getMainProcessMemoryStats: (): Promise<MainProcessMemoryStats> => ipcRenderer.invoke('app:getMainProcessMemoryStats'),
   getRendererMemoryStats: async (): Promise<RendererMemoryStats> => {
     const memoryInfo = await process.getProcessMemoryInfo()
@@ -1465,6 +1467,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getState: (): Promise<SpotifyPopoutState> => ipcRenderer.invoke('spotify-popout:getState'),
     setLayout: (layout: SpotifyPopoutLayout): Promise<void> => ipcRenderer.invoke('spotify-popout:setLayout', layout),
     showContextMenu: (): void => ipcRenderer.send('spotify-popout:contextMenu'),
+    dragStart: (): void => ipcRenderer.send('spotify-popout:dragStart'),
+    dragMove: (dx: number, dy: number): void => ipcRenderer.send('spotify-popout:dragMove', dx, dy),
+    dragEnd: (): void => ipcRenderer.send('spotify-popout:dragEnd'),
     onState: (callback: (state: SpotifyPopoutState) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, state: SpotifyPopoutState) => callback(state)
       ipcRenderer.on('spotify-popout:state', handler)
@@ -1519,6 +1524,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
       const handler = (_event: Electron.IpcRendererEvent, status: LyricsStatus) => callback(status)
       ipcRenderer.on('lyrics:status', handler)
       return () => ipcRenderer.removeListener('lyrics:status', handler)
+    }
+  },
+
+  lyricsBulk: {
+    start: (options?: LyricsBulkStartOptions): Promise<LyricsBulkStartResult> => ipcRenderer.invoke('lyrics-bulk:start', options ?? {}),
+    getState: (): Promise<LyricsBulkState> => ipcRenderer.invoke('lyrics-bulk:getState'),
+    pause: (): Promise<void> => ipcRenderer.invoke('lyrics-bulk:pause'),
+    resume: (): Promise<void> => ipcRenderer.invoke('lyrics-bulk:resume'),
+    cancel: (): Promise<void> => ipcRenderer.invoke('lyrics-bulk:cancel'),
+    exportLyrics: (): Promise<LyricsTransferResult> => ipcRenderer.invoke('lyrics-bulk:export'),
+    importLyrics: (): Promise<LyricsTransferResult> => ipcRenderer.invoke('lyrics-bulk:import'),
+    onState: (callback: (state: LyricsBulkState) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, state: LyricsBulkState) => callback(state)
+      ipcRenderer.on('lyrics-bulk:state', handler)
+      return () => ipcRenderer.removeListener('lyrics-bulk:state', handler)
     }
   },
 
@@ -2150,6 +2170,7 @@ declare global {
       getAppVersion: () => Promise<string>
       getAppBuildInfo: () => Promise<AppBuildInfo>
       getAppPerformanceStats: () => Promise<AppPerformanceStats>
+      searchYouTube: (query: string) => Promise<boolean>
       getMainProcessMemoryStats: () => Promise<MainProcessMemoryStats>
       getRendererMemoryStats: () => Promise<RendererMemoryStats>
       diagnostics: {
@@ -2337,6 +2358,9 @@ declare global {
         getState: () => Promise<SpotifyPopoutState>
         setLayout: (layout: SpotifyPopoutLayout) => Promise<void>
         showContextMenu: () => void
+        dragStart: () => void
+        dragMove: (dx: number, dy: number) => void
+        dragEnd: () => void
         onState: (callback: (state: SpotifyPopoutState) => void) => () => void
         onHover: (callback: (hovering: boolean) => void) => () => void
       }
@@ -2351,6 +2375,16 @@ declare global {
         purge: (id: number) => Promise<void>
         emptyBin: () => Promise<void>
         onFulfilled: (callback: (items: Array<{ title: string; artist: string }>) => void) => () => void
+      }
+      lyricsBulk: {
+        start: (options?: LyricsBulkStartOptions) => Promise<LyricsBulkStartResult>
+        getState: () => Promise<LyricsBulkState>
+        pause: () => Promise<void>
+        resume: () => Promise<void>
+        cancel: () => Promise<void>
+        exportLyrics: () => Promise<LyricsTransferResult>
+        importLyrics: () => Promise<LyricsTransferResult>
+        onState: (callback: (state: LyricsBulkState) => void) => () => void
       }
       lyrics: {
         getStatus: () => Promise<LyricsStatus>

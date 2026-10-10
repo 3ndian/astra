@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import type { SpotifyStatus } from '../../../types/spotify'
-import type { SpotifyPopoutState } from '../../../types/spotifyPopout'
+import { extractAlbumPalette, liftForDisplay } from '../../../shared/color/albumPalette'
+import { DEFAULT_POPOUT_SCHEME, popoutScheme, type PopoutScheme } from '../../../shared/color/popoutScheme'
+import { wideShape, type SpotifyPopoutState, type WideShape } from '../../../types/spotifyPopout'
 import { useWantedStore } from '../../stores/wantedStore'
 import '../../styles/spotify-popout.css'
 
@@ -79,6 +81,54 @@ function SeekBar({ position, duration, enabled, onSeek }: {
   )
 }
 
+const COVER_SAMPLE = 48
+
+/** Reads the cover's colours (main/secondary by prominence, plus the lifted vivid palette). */
+function coverScheme(dataUrl: string): Promise<PopoutScheme> {
+  return new Promise((resolve) => {
+    const image = new Image()
+    image.onload = () => {
+      try {
+        const canvas = document.createElement('canvas')
+        canvas.width = COVER_SAMPLE
+        canvas.height = COVER_SAMPLE
+        const ctx = canvas.getContext('2d', { willReadFrequently: true })
+        if (!ctx) { resolve(DEFAULT_POPOUT_SCHEME); return }
+        ctx.drawImage(image, 0, 0, COVER_SAMPLE, COVER_SAMPLE)
+        const pixels = ctx.getImageData(0, 0, COVER_SAMPLE, COVER_SAMPLE).data
+        resolve(popoutScheme(extractAlbumPalette(pixels, 3, 'prominence'), liftForDisplay(extractAlbumPalette(pixels, 4))))
+      } catch {
+        resolve(DEFAULT_POPOUT_SCHEME)
+      }
+    }
+    image.onerror = () => resolve(DEFAULT_POPOUT_SCHEME)
+    image.src = dataUrl
+  })
+}
+
+/** Drag the window from anywhere that is not a button or the progress line. */
+function useWindowDrag() {
+  const start = useRef<{ x: number; y: number } | null>(null)
+  return {
+    onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0) return
+      if ((event.target as HTMLElement).closest('button, .sp-seek')) return
+      event.currentTarget.setPointerCapture(event.pointerId)
+      start.current = { x: event.screenX, y: event.screenY }
+      window.electronAPI.spotifyPopout.dragStart()
+    },
+    onPointerMove: (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (!start.current) return
+      window.electronAPI.spotifyPopout.dragMove(event.screenX - start.current.x, event.screenY - start.current.y)
+    },
+    onPointerUp: () => {
+      if (!start.current) return
+      start.current = null
+      window.electronAPI.spotifyPopout.dragEnd()
+    }
+  }
+}
+
 function pollDelay(status: SpotifyStatus): number {
   if (status.state === 'playing') return 1000
   if (status.state === 'paused') return 2000
@@ -88,11 +138,14 @@ function pollDelay(status: SpotifyStatus): number {
 export default function SpotifyPopoutApp() {
   const [status, setStatus] = useState<SpotifyStatus>(INITIAL_SPOTIFY_STATUS)
   const [receivedAt, setReceivedAt] = useState(0)
-  const [popout, setPopout] = useState<SpotifyPopoutState>({ layout: 'square', alwaysOnTop: true })
+  const [popout, setPopout] = useState<SpotifyPopoutState>({ layout: 'square', alwaysOnTop: true, albumColors: true })
   const [hover, setHover] = useState(false)
   const [position, setPosition] = useState(0)
   const rootRef = useRef<HTMLDivElement>(null)
+  const dragHandlers = useWindowDrag()
+  const [scheme, setScheme] = useState<PopoutScheme>(DEFAULT_POPOUT_SCHEME)
   const [unit, setUnit] = useState(1)
+  const [shape, setShape] = useState<WideShape>({ stacked: false, unit: 1, cover: 120 })
 
   const isWanted = useWantedStore((state) => (status.track ? state.ids.has(status.track.id) : false))
   const isAdding = useWantedStore((state) => (status.track ? state.adding.has(status.track.id) : false))
@@ -135,15 +188,32 @@ export default function SpotifyPopoutApp() {
     return () => window.removeEventListener('focus', onFocus)
   }, [refreshWanted])
 
+  // Colours follow the cover; they fade because the CSS variables are registered colours.
+  const artwork = status.artworkDataUrl
+  useEffect(() => {
+    if (!popout.albumColors || !artwork) {
+      setScheme(DEFAULT_POPOUT_SCHEME)
+      return
+    }
+    let cancelled = false
+    void coverScheme(artwork).then((next) => { if (!cancelled) setScheme(next) })
+    return () => { cancelled = true }
+  }, [artwork, popout.albumColors])
+
   // Everything is sized from one unit so the layout scales smoothly as the window is resized.
   useEffect(() => {
     const element = rootRef.current
     if (!element) return
     const measure = () => {
       const { width, height } = element.getBoundingClientRect()
-      // Wide: scale by whichever of height or width runs out first, so nothing is ever cut off or squeezed.
-      const raw = popout.layout === 'square' ? width / 260 : Math.min(height / 120, width / 400)
-      setUnit(Math.min(2.6, Math.max(0.7, raw)))
+      if (popout.layout === 'square') {
+        setUnit(Math.min(2.6, Math.max(0.7, width / 260)))
+        return
+      }
+      // Wide: a strip while it is wider than tall, the cover on top once it is dragged tall.
+      const next = wideShape(width, height)
+      setShape((current) => (current.stacked === next.stacked && current.unit === next.unit && current.cover === next.cover ? current : next))
+      setUnit(next.unit)
     }
     measure()
     const observer = new ResizeObserver(measure)
@@ -192,11 +262,17 @@ export default function SpotifyPopoutApp() {
   }
 
   const showControls = !!track && (status.state === 'playing' || status.state === 'paused')
-  const style = { ['--u' as string]: unit } as CSSProperties
+  const style = {
+    ['--u' as string]: unit,
+    ['--sp-bg1' as string]: scheme.bg1,
+    ['--sp-bg2' as string]: scheme.bg2,
+    ['--sp-accent' as string]: scheme.accent,
+    ['--sp-accent-fg' as string]: scheme.accentText
+  } as CSSProperties
   const cover = status.artworkDataUrl
 
   const returnButton = (
-    <button type="button" className="sp-btn sp-return no-drag" aria-label="Return to Astra" title="Return to Astra" onClick={() => void window.electronAPI.spotifyPopout.returnToMain()}>
+    <button type="button" className={`sp-btn sp-return no-drag${popout.layout === 'wide' && shape.stacked ? ' sp-return-glass' : ''}`} aria-label="Return to Astra" title="Return to Astra" onClick={() => void window.electronAPI.spotifyPopout.returnToMain()}>
       <Icon d={PATHS.restore} />
     </button>
   )
@@ -229,10 +305,13 @@ export default function SpotifyPopoutApp() {
 
   if (popout.layout === 'wide') {
     return (
-      <div ref={rootRef} className="sp-root sp-wide" style={style} onContextMenu={(e) => { e.preventDefault(); window.electronAPI.spotifyPopout.showContextMenu() }}>
-        {coverBox}
+      <div ref={rootRef} className={`sp-root sp-wide${shape.stacked ? ' sp-stacked' : ''}`} style={style} {...dragHandlers} onPointerCancel={dragHandlers.onPointerUp} onContextMenu={(e) => { e.preventDefault(); window.electronAPI.spotifyPopout.showContextMenu() }}>
+        <div className="sp-cover-wrap drag" style={shape.stacked ? { width: shape.cover, height: shape.cover } : undefined}>
+          {coverBox}
+          {shape.stacked && returnButton}
+        </div>
         <div className="sp-panel drag">
-          {returnButton}
+          {!shape.stacked && returnButton}
           <div className="sp-text">
             <div className="sp-title">{track ? track.title : emptyText}</div>
             {track && <div className="sp-sub">{track.artist} &middot; {track.album}</div>}
@@ -253,7 +332,7 @@ export default function SpotifyPopoutApp() {
   }
 
   return (
-    <div ref={rootRef} className="sp-root sp-square" style={style} onContextMenu={(e) => { e.preventDefault(); window.electronAPI.spotifyPopout.showContextMenu() }}>
+    <div ref={rootRef} className="sp-root sp-square" style={style} {...dragHandlers} onPointerCancel={dragHandlers.onPointerUp} onContextMenu={(e) => { e.preventDefault(); window.electronAPI.spotifyPopout.showContextMenu() }}>
       {coverBox}
       <div className={`sp-veil drag${hover || !showControls ? ' show' : ''}`}>
         <div className="sp-top">

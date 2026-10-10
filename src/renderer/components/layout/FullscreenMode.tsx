@@ -1,4 +1,4 @@
-import { type Dispatch, type ReactElement, type SetStateAction, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { type Dispatch, type MouseEvent as ReactMouseEvent, type ReactElement, type SetStateAction, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useUIStore } from '../../stores/uiStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useLibraryStore } from '../../stores/libraryStore'
@@ -726,25 +726,22 @@ export default function FullscreenMode({ presencePhase }: { presencePhase: Prese
   const setMilkdropEnabled = useMilkdropStore((state) => state.setEnabled)
   const [milkdropChromeVisible, setMilkdropChromeVisible] = useState(true)
   const [milkdropRunning, setMilkdropRunning] = useState(false)
-  const milkdropChromeTimerRef = useRef<number | null>(null)
 
-  const revealMilkdropChrome = useCallback(() => {
-    setMilkdropChromeVisible(true)
-    if (milkdropChromeTimerRef.current !== null) window.clearTimeout(milkdropChromeTimerRef.current)
-    milkdropChromeTimerRef.current = window.setTimeout(() => setMilkdropChromeVisible(false), 3000)
+  // Tap the visual itself to hide or bring back the player; there is no idle timer.
+  const toggleMilkdropChrome = useCallback((event: ReactMouseEvent<HTMLElement>) => {
+    const target = event.target as HTMLElement | null
+    if (!target || !target.matches('.fullscreen-overlay, .fullscreen-content, .fullscreen-stage, .milkdrop-stage, canvas')) return
+    setMilkdropChromeVisible((visible) => !visible)
   }, [])
 
   useEffect(() => {
-    if (milkdropEnabled) revealMilkdropChrome()
-    return () => {
-      if (milkdropChromeTimerRef.current !== null) window.clearTimeout(milkdropChromeTimerRef.current)
-    }
-  }, [milkdropEnabled, revealMilkdropChrome])
+    if (milkdropEnabled) setMilkdropChromeVisible(true)
+  }, [milkdropEnabled])
 
   return (
     <div
       className={`fullscreen-overlay${milkdropEnabled && milkdropRunning ? ' milkdrop-active' : ''}${milkdropEnabled && milkdropRunning && !milkdropChromeVisible ? ' milkdrop-chrome-hidden' : ''}`}
-      onMouseMove={milkdropEnabled ? revealMilkdropChrome : undefined}
+      onClick={milkdropEnabled ? toggleMilkdropChrome : undefined}
       data-presence={presencePhase}
       role="dialog"
       aria-modal="true"

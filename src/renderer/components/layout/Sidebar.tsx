@@ -15,6 +15,7 @@ import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import PlaylistCover from '../playlists/PlaylistCover'
 import SectionSwitcher from './SectionSwitcher'
 import SidebarCover from './SidebarCover'
+import SidebarNowPlaying from './SidebarNowPlaying'
 import { useSectionsStore } from '../../stores/sectionsStore'
 import { useSpotifyStore } from '../../stores/spotifyStore'
 import { usePresence } from '../../hooks/usePresence'
@@ -213,6 +214,9 @@ export default function Sidebar() {
   const overflowPresence = usePresence(isOverflowOpen && sidebarOverflowPlaylists.length > 0)
   const isSidebarExpanded = useUIStore((state) => state.isSidebarExpanded)
   const sidebarResize = useSidebarWidth(sidebarRef)
+  const spotifyBarActive = useSpotifyStore(
+    (state) => state.activeSource === 'spotify' && state.status.track !== null && (state.status.state === 'playing' || state.status.state === 'paused')
+  )
   const toggleSidebarExpanded = useUIStore((state) => state.toggleSidebarExpanded)
   const activeSectionId = useSectionsStore((state) => state.activeSectionId)
   const spotifyEnabled = useSpotifyStore((state) => state.enabled)
@@ -822,7 +826,7 @@ export default function Sidebar() {
         </div>
       </div>
 
-      {isSidebarExpanded && <SidebarCover />}
+      {isSidebarExpanded && (spotifyBarActive ? <SidebarCover /> : <SidebarNowPlaying />)}
 
       <div className="sidebar-bottom-actions">
         {isSidebarExpanded && expandButton}

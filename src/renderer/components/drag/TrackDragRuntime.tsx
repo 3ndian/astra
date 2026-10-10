@@ -215,6 +215,15 @@ function TrackDragOverlay({ overlayRef }: { overlayRef: React.RefObject<HTMLDivE
   const springTarget = useUIStore((state) => state.trackDrag?.springTarget ?? null)
   const phase = useUIStore((state) => state.trackDrag?.phase ?? null)
   const playlists = usePlaylistStore((state) => state.playlists)
+  const dragActive = phase !== null
+  // A body class (instead of a body:has() rule, which the browser re-checks on every DOM change while the
+  // lists scroll) sets the grabbing cursor and stops the pointer from selecting text while dragging.
+  useEffect(() => {
+    if (!dragActive) return
+    document.body.classList.add('track-dragging')
+    window.getSelection()?.removeAllRanges()
+    return () => document.body.classList.remove('track-dragging')
+  }, [dragActive])
   if (!items || !source || phase === null) return null
 
   const playlistId = target?.surface === 'playlist' || (target?.surface === 'sidebar' && target.kind === 'playlist')

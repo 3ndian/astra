@@ -7,6 +7,7 @@ import { getNativeLoadError, isNativeAvailable } from '../../audio/native/index'
 import { isNativeOnlyScope } from './nativeOnlyScopes'
 import { buildAnalyzerGridTemplateColumns } from '../layout/analyzerLayout'
 import { useScopePopoutStore } from '../../stores/scopePopoutStore'
+import { useSpectrogramExpandStore } from '../../stores/spectrogramExpandStore'
 import { useThemeStore } from '../../stores/themeStore'
 import { useVisualizerSettingsStore, type VectorscopeMode } from '../../stores/visualizerSettingsStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -490,7 +491,7 @@ function DockedVectorscopeTile({
   )
 }
 
-function DockedSpectrogramTile({
+export function DockedSpectrogramTile({
   lineColor,
   displayColors,
   fftSize,
@@ -975,6 +976,8 @@ export default function VisualizerPanel({
   const widthWeights = useVisualizerSettingsStore((s) => s.widthWeights)
   const setScopeWidthWeights = useVisualizerSettingsStore((s) => s.setScopeWidthWeights)
   const scopePopoutState = useScopePopoutStore((s) => s.state)
+  const spectrogramExpanded = useSpectrogramExpandStore((s) => s.open)
+  const toggleSpectrogramExpanded = useSpectrogramExpandStore((s) => s.toggle)
   const openAnalyzerEditMode = useUIStore((s) => s.openAnalyzerEditMode)
   const isFullscreen = useUIStore((s) => s.isFullscreen)
   const panelRef = useRef<HTMLDivElement>(null)
@@ -1129,7 +1132,7 @@ export default function VisualizerPanel({
       spectrumStereo: spectrumDemand && spectrumDisplayMode === 'curve' && spectrumShowSideLine,
       oscilloscope: nativeVisualizersAvailable && isDockedAnalyzerActive && isRunning && visibleScopeSet.has('oscilloscope') && !scopePopoutState.oscilloscope,
       vectorscope: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('vectorscope') && !scopePopoutState.vectorscope,
-      spectrogram: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('spectrogram') && !scopePopoutState.spectrogram,
+      spectrogram: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('spectrogram') && !scopePopoutState.spectrogram && !spectrogramExpanded,
       vumeter: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('vumeter') && !scopePopoutState.vumeter,
       lufsmeter: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('lufsmeter') && !scopePopoutState.lufsmeter,
       waveform: waveformDemand,
@@ -1139,7 +1142,7 @@ export default function VisualizerPanel({
     return () => {
       audioEngine.clearVisualizerConsumerDemand('docked-deck')
     }
-  }, [isDockedAnalyzerActive, isRunning, mountedVisibleScopes, nativeVisualizersAvailable, scopePopoutState, spectrumDisplayMode, spectrumShowSideLine, waveformMode])
+  }, [isDockedAnalyzerActive, isRunning, mountedVisibleScopes, nativeVisualizersAvailable, scopePopoutState, spectrogramExpanded, spectrumDisplayMode, spectrumShowSideLine, waveformMode])
 
   const openScopeEditor = useCallback(() => {
     openAnalyzerEditMode()
@@ -1251,6 +1254,8 @@ export default function VisualizerPanel({
 
   const renderScopeItem = (scope: ScopeKind) => {
     const isPoppedOut = scopePopoutState[scope]
+    const isExpanded = scope === 'spectrogram' && spectrogramExpanded && !isPoppedOut
+    const canExpand = scope === 'spectrogram' && !isPoppedOut && !isEditMode
     const itemIndex = visibleScopes.indexOf(scope)
     const itemClassName = (() => {
       switch (scope) {
@@ -1273,6 +1278,7 @@ export default function VisualizerPanel({
 
     const captionRight = (() => {
       if (isPoppedOut) return 'POPPED OUT'
+      if (isExpanded) return 'EXPANDED'
       switch (scope) {
         case 'spectrum':
           return `${spectrumDisplayModeLabelShort(spectrumDisplayMode)} · FFT ${fftSize}`
@@ -1303,6 +1309,7 @@ export default function VisualizerPanel({
         className={[
           itemClassName,
           isPoppedOut ? 'is-popped-out' : '',
+          canExpand ? 'is-expandable' : '',
           isEditMode ? 'is-edit-mode' : '',
           isEditMode && highlightedScope === scope ? 'is-linked-highlight' : '',
           draggedScope === scope ? 'is-dragging' : '',
@@ -1327,7 +1334,10 @@ export default function VisualizerPanel({
           : undefined}
         onClick={isEditMode && onScopeActivate
           ? () => onScopeActivate(scope)
-          : undefined}
+          : canExpand
+            ? toggleSpectrogramExpanded
+            : undefined}
+        title={canExpand ? (isExpanded ? 'Click to close the tall spectrogram' : 'Click to expand the spectrogram') : undefined}
       >
         <div className="visualizer-caption-left">{scopeLabel(scope).toUpperCase()}</div>
         <div className="visualizer-caption-right-group">
@@ -1335,7 +1345,7 @@ export default function VisualizerPanel({
           {!isPoppedOut && !isEditMode && (
             <button
               className="visualizer-popout-btn"
-              onClick={() => openScopePopout(scope)}
+              onClick={(event) => { event.stopPropagation(); openScopePopout(scope) }}
               title={`Pop out ${scopeLabel(scope).toLowerCase()}`}
               aria-label={`Pop out ${scopeLabel(scope).toLowerCase()}`}
             >
@@ -1343,7 +1353,12 @@ export default function VisualizerPanel({
             </button>
           )}
         </div>
-        {isPoppedOut ? (
+        {isExpanded ? (
+          <div className="visualizer-popout-placeholder">
+            <div className="visualizer-popout-placeholder-label">Spectrogram expanded on the right</div>
+            <button className="visualizer-popout-placeholder-btn" onClick={toggleSpectrogramExpanded}>Close</button>
+          </div>
+        ) : isPoppedOut ? (
           <PopoutPlaceholder scope={scope} onRecall={() => recallScopePopout(scope)} onReset={() => resetScopePopout(scope)} />
         ) : !nativeVisualizersAvailable && isNativeOnlyScope(scope) ? (
           <NativeUnavailableNotice scope={scope} reason={getNativeLoadError()?.message ?? null} />

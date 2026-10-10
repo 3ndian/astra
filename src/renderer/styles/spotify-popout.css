@@ -1,3 +1,7 @@
+@property --sp-bg1 { syntax: '<color>'; inherits: true; initial-value: #14161c; }
+@property --sp-bg2 { syntax: '<color>'; inherits: true; initial-value: #0b0c10; }
+@property --sp-accent { syntax: '<color>'; inherits: true; initial-value: #3ecf79; }
+@property --sp-accent-fg { syntax: '<color>'; inherits: true; initial-value: #07130c; }
 /* Spotify popout window. All sizes use --u (1 = the default window size), set from the window size. */
 html[data-window-mode='spotify-popout'], body[data-window-mode='spotify-popout'] {
   margin: 0; height: 100%; overflow: hidden; background: #0b0c10; color: #f4f5f8; user-select: none;
@@ -69,3 +73,32 @@ body[data-window-mode='spotify-popout'] #root { height: 100%; }
 .sp-wide .sp-first { margin-left: calc(var(--u) * -6px); }
 .sp-wide .sp-panel { padding: calc(var(--u) * 8px) calc(var(--u) * 14px); gap: calc(var(--u) * 3px); }
 .sp-wide .sp-play { width: calc(var(--u) * 36px); height: calc(var(--u) * 36px); }
+
+/* wide layout, tall window: cover across the top, details underneath */
+.sp-cover-wrap { position: relative; flex: none; height: 100%; aspect-ratio: 1; }
+.sp-cover-wrap .sp-cover { position: absolute; inset: 0; width: 100%; height: 100%; }
+.sp-stacked { flex-direction: column; align-items: center; }
+.sp-stacked .sp-cover-wrap { height: auto; aspect-ratio: auto; }
+.sp-stacked .sp-panel { width: 100%; flex: 1 1 0; padding: calc(var(--u) * 10px) calc(var(--u) * 14px) calc(var(--u) * 12px); }
+.sp-stacked .sp-text { padding-right: 0; }
+.sp-return-glass { background: rgba(10, 11, 14, 0.55); backdrop-filter: blur(8px); }
+.sp-return-glass:hover:not(:disabled) { background: rgba(10, 11, 14, 0.75); }
+
+/* colours from the album cover (they fade between songs) */
+.sp-root { transition: --sp-bg1 0.8s ease, --sp-bg2 0.8s ease, --sp-accent 0.8s ease, --sp-accent-fg 0.8s ease; background: var(--sp-bg2); }
+html[data-window-mode='spotify-popout'], body[data-window-mode='spotify-popout'] { background: #0b0c10; }
+.sp-wide .sp-panel { background: linear-gradient(135deg, var(--sp-bg1), var(--sp-bg2)); }
+.sp-wide .sp-play { background: var(--sp-accent); color: var(--sp-accent-fg); }
+.sp-wide .sp-play:hover:not(:disabled) { filter: brightness(1.1); background: var(--sp-accent); }
+.sp-wide .sp-seek-fill { background: var(--sp-accent); }
+.sp-add.on { background: var(--sp-accent); color: var(--sp-accent-fg); }
+.sp-top .sp-btn.on { background: var(--sp-accent); }
+.sp-square .sp-seek-fill, .sp-square .sp-seek-knob { background: var(--sp-accent); }
+.sp-btn:focus-visible { outline-color: var(--sp-accent); }
+@media (prefers-reduced-motion: reduce) { .sp-root { transition: none; } }
+
+/* Moving the window is done in script (see useWindowDrag), so the browser's own drag regions are off. */
+.sp-root .drag, .sp-root .no-drag { -webkit-app-region: no-drag; }
+.sp-root { cursor: grab; }
+.sp-root:active { cursor: grabbing; }
+.sp-root button, .sp-root .sp-seek[data-active='true'] { cursor: pointer; }
