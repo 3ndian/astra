@@ -731,8 +731,13 @@ export default function FullscreenMode({ presencePhase }: { presencePhase: Prese
   const toggleMilkdropChrome = useCallback((event: ReactMouseEvent<HTMLElement>) => {
     const target = event.target as HTMLElement | null
     if (!target || !target.matches('.fullscreen-overlay, .fullscreen-content, .fullscreen-stage, .milkdrop-stage, canvas')) return
+    // First tap hides the player so only the visual shows; a tap on the bare visual then leaves fullscreen.
+    if (!milkdropChromeVisible && milkdropRunning) {
+      setFullscreen(false)
+      return
+    }
     setMilkdropChromeVisible((visible) => !visible)
-  }, [])
+  }, [milkdropChromeVisible, milkdropRunning, setFullscreen])
 
   useEffect(() => {
     if (milkdropEnabled) setMilkdropChromeVisible(true)

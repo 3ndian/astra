@@ -129,6 +129,66 @@ export const INPUT_ACTION_DEFINITIONS: readonly InputActionDefinition[] = [
     allowRepeat: true
   },
   {
+    id: 'speed-slower',
+    group: 'playback',
+    action: 'Slow Down by Half',
+    description: 'Halve the playback speed. Press again to halve it again.',
+    defaultBindings: [keyboard('j', ['shift'])]
+  },
+  {
+    id: 'speed-faster',
+    group: 'playback',
+    action: 'Speed Up (Double)',
+    description: 'Double the playback speed. From a slowed speed this steps back toward normal.',
+    defaultBindings: [keyboard('l', ['shift'])]
+  },
+  {
+    id: 'speed-slower-small',
+    group: 'playback',
+    action: 'Slow Down 10%',
+    description: 'Lower the playback speed by 10% of normal.',
+    defaultBindings: [keyboard('j')],
+    allowRepeat: true
+  },
+  {
+    id: 'speed-faster-small',
+    group: 'playback',
+    action: 'Speed Up 10%',
+    description: 'Raise the playback speed by 10% of normal.',
+    defaultBindings: [keyboard('l')],
+    allowRepeat: true
+  },
+  {
+    id: 'speed-normal',
+    group: 'playback',
+    action: 'Normal Speed and Pitch',
+    description: 'Return to normal playback speed and clear any pitch shift.',
+    defaultBindings: [keyboard('k')]
+  },
+  {
+    id: 'pitch-up',
+    group: 'playback',
+    action: 'Pitch Up (Semitone)',
+    description: 'Raise the pitch by one semitone without changing the speed.',
+    defaultBindings: [keyboard(']')],
+    allowRepeat: true
+  },
+  {
+    id: 'pitch-down',
+    group: 'playback',
+    action: 'Pitch Down (Semitone)',
+    description: 'Lower the pitch by one semitone without changing the speed.',
+    defaultBindings: [keyboard('[')],
+    allowRepeat: true
+  },
+  {
+    id: 'pitch-lock-toggle',
+    group: 'playback',
+    action: 'Keep Pitch When Changing Speed',
+    description: 'Toggle between tape-style speed (pitch follows) and a steady pitch.',
+    defaultBindings: [keyboard('k', ['shift'])]
+  },
+  {
     id: 'jump-to-now-playing',
     group: 'navigation',
     action: 'Jump to Now Playing',

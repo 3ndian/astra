@@ -5,6 +5,8 @@ import AnalyzerDeck from './components/layout/AnalyzerDeck'
 import ViewRouter from './components/layout/ViewRouter'
 import ExpandedSpectrogramPanel from './components/layout/ExpandedSpectrogramPanel'
 import RightPanelResizer from './components/layout/RightPanelResizer'
+import RightRail from './components/layout/RightRail'
+import { useRightRailStore } from './stores/rightRailStore'
 import TransportBar from './components/layout/TransportBar'
 import SpotifyTransportBar from './components/layout/SpotifyTransportBar'
 import SpotifyHandoffPrompt from './components/layout/SpotifyHandoffPrompt'
@@ -239,6 +241,7 @@ function App() {
   const showQueue = useUIStore((s) => s.showQueue)
   const showInfoSidebar = useUIStore((s) => s.showInfoSidebar)
   const spectrogramPanelOpen = useSpectrogramExpandStore((s) => s.open)
+  const rightRailCollapsed = useRightRailStore((s) => s.collapsed)
   const isAnalyzerEditMode = useUIStore((s) => s.isAnalyzerEditMode)
   const [smokyBackdropOn, setSmokyBackdropOn] = useState(false)
   const [milkdropBackdropOn, setMilkdropBackdropOn] = useState(false)
@@ -672,7 +675,7 @@ function App() {
       <RuntimeBridges />
       <ActiveViewEligibilityGuard />
       <div
-        className={`app ${sidebarNowPlayingLayout ? 'sidebar-np-layout' : ''} ${isAnalyzerEditMode ? 'is-analyzer-editing' : ''} ${albumBackdropOn ? 'album-backdrop-on' : ''} ${analyzerPlacement === 'bottom' ? 'analyzer-placed-bottom' : ''} ${spectrogramPanelOpen ? 'spectrogram-panel-open' : ''}`.trim()}
+        className={`app ${sidebarNowPlayingLayout ? 'sidebar-np-layout' : ''} ${isAnalyzerEditMode ? 'is-analyzer-editing' : ''} ${albumBackdropOn ? 'album-backdrop-on' : ''} ${analyzerPlacement === 'bottom' ? 'analyzer-placed-bottom' : ''} ${spectrogramPanelOpen ? 'spectrogram-panel-open' : ''} ${rightRailCollapsed ? 'right-rail-collapsed' : ''}`.trim()}
       >
         <TitleBar />
         {isAnalyzerRackVisible && (
@@ -725,6 +728,7 @@ function App() {
         <AlbumBackdrop onActiveChange={setSmokyBackdropOn} />
         <MilkdropBackdrop suspended={isFullscreenActive} onActiveChange={setMilkdropBackdropOn} />
         <ExpandedSpectrogramPanel />
+        <RightRail />
         <div className="app-body">
           <Sidebar />
           <div className="app-content">

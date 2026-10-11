@@ -32113,3 +32113,245 @@ html.band-selecting, html.band-selecting * { cursor: grabbing !important; user-s
 .band-chip button.is-active { background: #fff; color: #111; }
 .band-chip button.band-chip-close { padding: 3px 8px; font-size: 14px; }
 .band-chip button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Click a panel's title bar to hide it */
+.queue-header-hideable,
+.info-sidebar-header-hideable { cursor: pointer; }
+.queue-header-hideable button,
+.info-sidebar-header-hideable button { cursor: pointer; }
+
+/* Keep the spectrogram clear of the panel's drag edge and the window edge, so a band can sit at either end */
+.spectrogram-expanded-body .visualizer-surface { inset: 0 14px; }
+.spectrogram-expanded-head-hideable { cursor: pointer; }
+
+/* The queue's blanket ".queue-sidebar > *" size rule was stretching the drag edge across the whole panel; keep it a thin strip. */
+.queue-sidebar > .right-panel-resize-handle {
+  width: 8px;
+  min-width: 8px;
+  height: auto;
+  top: 0;
+  bottom: 0;
+}
+
+/* Queue | History tabs */
+.queue-tabs { display: flex; gap: 4px; }
+.queue-tab {
+  border: 0;
+  border-radius: 999px;
+  padding: 5px 12px;
+  background: transparent;
+  color: var(--text-tertiary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.queue-tab:hover { color: var(--text-primary); background: rgba(var(--tint), 0.06); }
+.queue-tab.is-active { color: var(--text-primary); background: rgba(var(--tint), 0.1); }
+.queue-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.queue-panel-history { overflow: hidden; }
+.queue-history-list { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 8px 12px; }
+.queue-history-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.queue-history-row:hover { background: rgba(var(--tint), 0.07); }
+.queue-history-row.is-current { background: rgba(var(--accent-rgb), 0.12); }
+.queue-history-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.queue-history-cover { flex: none; width: 40px; height: 40px; border-radius: 6px; object-fit: cover; }
+.queue-history-text { display: flex; flex-direction: column; min-width: 0; }
+.queue-history-title,
+.queue-history-artist { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-history-title { color: var(--text-primary); font-size: 13px; font-weight: 600; }
+.queue-history-artist { color: var(--text-secondary); font-size: 12px; }
+.queue-history-empty { padding: 28px 20px; text-align: center; color: var(--text-secondary); }
+
+/* Settings window: spans the whole app window (not just the track list), with generous breathing room around it. */
+.settings-overlay {
+  position: fixed;
+  top: var(--titlebar-height);
+  right: 0;
+  bottom: 0;
+  left: 0;
+  inset-inline: 0;
+  z-index: 150;
+  padding: clamp(24px, 7vh, 84px) clamp(28px, 6vw, 120px);
+  background: rgba(0, 0, 0, 0.52);
+}
+.settings-overlay > .settings-view {
+  width: 100%;
+  max-width: 1560px;
+  height: 100%;
+  max-height: 940px;
+}
+.settings-overlay .settings-shell { padding: 28px 34px 30px; }
+.settings-overlay .settings-content {
+  width: 100%;
+  max-width: 1100px;
+  margin-inline: auto;
+}
+@media (max-width: 760px) {
+  .settings-overlay { padding: 0; }
+}
+
+/* Right-click menu on queue and history rows */
+.track-quick-menu { z-index: 260; width: 210px; max-height: calc(100vh - 24px); overflow-y: auto; }
+.track-quick-menu-divider { height: 1px; margin: 4px 6px; background: rgba(var(--tint), 0.1); }
+.track-quick-menu .track-context-menu-item { justify-content: flex-start; }
+.track-quick-menu-chevron { margin-left: auto; opacity: 0.6; }
+.track-quick-menu-playlists { max-height: 180px; overflow-y: auto; margin: 2px 0 2px 8px; padding-left: 4px; border-left: 1px solid rgba(var(--tint), 0.1); }
+.track-quick-menu-empty { padding: 8px 10px; font-size: 12px; color: var(--text-secondary); }
+
+/* Icon rail down the right edge. The whole app (and the spectrogram panel) steps in from it. */
+:root { --right-rail-width: 44px; }
+.app.right-rail-collapsed { --right-rail-width: 16px; }
+.app { padding-right: var(--right-rail-width); }
+.app.spectrogram-panel-open { padding-right: calc(var(--right-rail-width) + var(--spectrogram-width)); }
+.app > .titlebar { margin-right: calc(-1 * var(--right-rail-width)); }
+.app.spectrogram-panel-open > .titlebar { margin-right: calc(-1 * (var(--right-rail-width) + var(--spectrogram-width))); }
+.spectrogram-expanded { right: var(--right-rail-width); }
+.right-rail {
+  position: fixed;
+  top: var(--titlebar-height);
+  right: 0;
+  bottom: 0;
+  width: var(--right-rail-width);
+  z-index: 72;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 0 10px;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--glass-border);
+  transition: width var(--motion-structural-enter, 0.2s) var(--motion-structural-ease, ease);
+}
+.right-rail.is-collapsed { justify-content: center; padding: 0; background: transparent; border-left-color: transparent; }
+.right-rail-items { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.right-rail-btn,
+.right-rail-toggle {
+  position: relative;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+.right-rail-btn { width: 34px; height: 34px; border-radius: 10px; }
+.right-rail-btn:hover { color: var(--text-primary); background: rgba(var(--tint), 0.08); }
+.right-rail-btn.is-active { color: var(--accent); background: rgba(var(--accent-rgb), 0.14); }
+.right-rail-toggle { width: 22px; height: 22px; border-radius: 6px; opacity: 0.55; }
+.right-rail-toggle:hover { opacity: 1; background: rgba(var(--tint), 0.08); color: var(--text-primary); }
+.right-rail.is-collapsed .right-rail-toggle { width: 14px; height: 44px; border-radius: 7px; background: rgba(var(--tint), 0.08); opacity: 0.7; }
+.right-rail-btn:focus-visible,
+.right-rail-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* Label that appears to the left on hover */
+.right-rail-btn::after,
+.right-rail-toggle::after {
+  content: attr(data-label);
+  position: absolute;
+  right: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 4px 8px;
+  border-radius: 7px;
+  background: rgba(10, 10, 14, 0.9);
+  color: #fff;
+  font-size: 12px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+.right-rail-btn:hover::after,
+.right-rail-toggle:hover::after { opacity: 1; transition-delay: 0.35s; }
+
+/* With the spectrogram panel open, the panel takes the window edge and the icon rail sits just left of it. */
+.spectrogram-expanded { right: 0; }
+.right-rail { transition: width var(--motion-structural-enter, 0.2s) var(--motion-structural-ease, ease), right var(--motion-structural-enter, 0.22s) var(--motion-structural-ease, ease); }
+.app.spectrogram-panel-open > .right-rail { right: var(--spectrogram-width); }
+.right-panel-resizing .right-rail { transition: none !important; }
+
+/* Rail icons centered vertically; the collapse chevron stays pinned to the bottom. */
+.right-rail:not(.is-collapsed) { justify-content: center; }
+.right-rail:not(.is-collapsed) > .right-rail-toggle { position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); }
+
+/* The player bar runs the full width of the window; the spectrogram panel and icon rail stop above it. */
+.app:not(.sidebar-np-layout) > .transport-bar { margin-right: calc(-1 * var(--right-rail-width)); transition: margin-right var(--motion-structural-enter, 0.22s) var(--motion-structural-ease, ease); }
+.app.spectrogram-panel-open:not(.sidebar-np-layout) > .transport-bar { margin-right: calc(-1 * (var(--right-rail-width) + var(--spectrogram-width))); }
+.app:not(.sidebar-np-layout) > .right-rail,
+.app:not(.sidebar-np-layout) > .spectrogram-expanded { bottom: var(--now-playing-height); }
+.right-panel-resizing .app > .transport-bar { transition: none !important; }
+
+/* Player bar spans the full window even with the left now-playing pane; panel and rail stop above it. */
+.app.sidebar-np-layout > .transport-bar { margin-right: calc(-1 * var(--right-rail-width)); }
+.app.spectrogram-panel-open.sidebar-np-layout > .transport-bar { margin-right: calc(-1 * (var(--right-rail-width) + var(--spectrogram-width))); }
+.app.sidebar-np-layout > .right-rail,
+.app.sidebar-np-layout > .spectrogram-expanded { bottom: var(--now-playing-height); }
+
+/* Collapsed rail: keep the little tab easy to see (even over Milkdrop) so the icons can be brought back. */
+.right-rail.is-collapsed .right-rail-toggle {
+  width: 18px; height: 64px; opacity: 1; border-radius: 9px 0 0 9px;
+  background: var(--bg-secondary); border: 1px solid var(--glass-border); border-right: none;
+  color: var(--text-secondary); box-shadow: -2px 0 10px rgba(0, 0, 0, 0.25);
+}
+.right-rail.is-collapsed .right-rail-toggle:hover { color: var(--accent); }
+.right-rail.is-collapsed { width: 18px; }
+.app.right-rail-collapsed { --right-rail-width: 18px; }
+
+/* Player bar right side: smaller EQ, thin file readout (click to expand). */
+.transport-eq-btn { width: 64px; }
+.transport-eq-curve { width: 44px; height: 20px; }
+.transport-file-readout-compact {
+  align-self: center; margin: 0 12px; padding: 4px 9px; border-radius: 999px;
+  display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
+  font-family: var(--font-mono); font-size: 10px; line-height: 1;
+  color: var(--text-secondary); background: rgba(var(--tint), 0.06);
+  border: 1px solid var(--glass-border); cursor: pointer;
+}
+.transport-file-readout-compact:hover { color: var(--text-primary); background: rgba(var(--tint), 0.1); }
+.readout-compact-sep { opacity: 0.45; }
+.transport-file-readout[role='button'] { cursor: pointer; }
+
+/* Left now-playing pane: elapsed and total time sit beside the seek bar (one row instead of two) so the play buttons sit higher and the block feels balanced. */
+.sidebar-np-seek { display: grid; grid-template-columns: auto 1fr auto; align-items: center; column-gap: 10px; padding: 6px 16px 0; }
+.sidebar-np-times { display: contents; }
+.sidebar-np-times > span { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; min-width: 30px; }
+.sidebar-np-times > span:first-child { order: -1; text-align: right; }
+.sidebar-np-times > span:last-child { text-align: left; }
+.sidebar-np-meta { padding-bottom: 2px; }
+.sidebar-np-controls { padding: 4px 12px 12px; }
+
+/* Keep the column header pinned while scrolling, even after the Title/Artist/Album columns have been resized.
+   Custom widths made the list its own (sideways) scroll box, which let the header scroll away; here the page scroller handles the sideways scroll instead. */
+.track-list.track-list-page-scroll.track-list-custom-widths { overflow: visible; }
+[data-track-list-scroll-container] { overflow-x: auto; }
+
+/* Shuttle speed badge (J / L). Only shown while the speed is not normal. */
+.transport-speed {
+  align-self: center; margin: 0 6px 0 12px; display: flex; flex-direction: column; align-items: stretch; gap: 3px;
+}
+.transport-speed-value, .transport-speed-pitch {
+  border: 1px solid var(--glass-border); background: rgba(var(--tint), 0.06); color: var(--text-primary);
+  font-family: var(--font-mono); line-height: 1; border-radius: 6px; cursor: pointer; white-space: nowrap;
+}
+.transport-speed-value { padding: 5px 9px; font-size: 12px; font-weight: 600; color: var(--accent); background: rgba(var(--accent-rgb), 0.12); }
+.transport-speed-pitch { padding: 3px 7px; font-size: 9px; letter-spacing: 0.04em; color: var(--text-secondary); }
+.transport-speed-pitch.is-on { color: var(--accent); }
+.transport-speed-value:hover, .transport-speed-pitch:hover { background: rgba(var(--tint), 0.12); }
+
+/* Speed badge is always there so the number can be dragged. */
+.transport-speed-value { cursor: ew-resize; touch-action: none; user-select: none; min-width: 52px; text-align: center; color: var(--text-secondary); background: rgba(var(--tint), 0.06); }
+.transport-speed-value.is-changed { color: var(--accent); background: rgba(var(--accent-rgb), 0.12); }
+.transport-speed-row { display: flex; gap: 3px; }
+.transport-speed-row .transport-speed-pitch { flex: 1; }

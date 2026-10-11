@@ -98,6 +98,31 @@ export function useInputActionDispatcher(): InputActionDispatcher {
       case 'repeat':
         player.toggleRepeat()
         return
+      case 'speed-slower':
+        player.shuttleSlower()
+        return
+      case 'speed-faster':
+        player.shuttleFaster()
+        return
+      case 'speed-slower-small':
+        player.nudgePlaybackRate(-1)
+        return
+      case 'speed-faster-small':
+        player.nudgePlaybackRate(1)
+        return
+      case 'speed-normal':
+        player.resetPlaybackRate()
+        player.resetPitchShift()
+        return
+      case 'pitch-up':
+        player.shiftPitch(1)
+        return
+      case 'pitch-down':
+        player.shiftPitch(-1)
+        return
+      case 'pitch-lock-toggle':
+        player.togglePitchLock()
+        return
       case 'focus-search-field':
         focusShortcutSearchInput()
         return

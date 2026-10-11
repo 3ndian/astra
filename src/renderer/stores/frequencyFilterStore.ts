@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { audioEngine } from '../audio/AudioEngine'
 import type { FrequencyFilterMode, FrequencyFilterRange } from '../../shared/frequencyFilter/plan'
+import { registerUndoScope } from '../utils/undoRouter'
 
 const FOLLOW_KEY = 'astra.frequencyFilter.followVectorscope.v1'
 
@@ -23,6 +24,12 @@ interface FrequencyFilterState {
   setRange: (lowHz: number, highHz: number) => void
   setMode: (mode: FrequencyFilterMode) => void
   clear: () => void
+  /** Call once when a drag begins, so the whole drag can be undone in one step. */
+  beginChange: () => void
+  undo: () => void
+  redo: () => void
+  canUndo: () => boolean
+  canRedo: () => boolean
   refreshSupported: () => void
 }
 
@@ -34,6 +41,15 @@ export const useFrequencyFilterStore = create<FrequencyFilterState>((set, get) =
   const push = (range: FrequencyFilterRange | null) => {
     const applied = audioEngine.setFrequencyFilter(range)
     set({ range, supported: applied || range === null ? audioEngine.canFilterFrequencies() : false })
+  }
+  // Undo / redo of band changes. Only the band itself is tracked, not the Vectorscope toggle.
+  const HISTORY_LIMIT = 100
+  const past: (FrequencyFilterRange | null)[] = []
+  const future: (FrequencyFilterRange | null)[] = []
+  const remember = () => {
+    past.push(get().range ? { ...get().range! } : null)
+    if (past.length > HISTORY_LIMIT) past.shift()
+    future.length = 0
   }
   const initialFollow = loadFollowVectorscope()
   audioEngine.setVisualsFollowFrequencyFilter({ vectorscope: initialFollow })
@@ -53,12 +69,43 @@ export const useFrequencyFilterStore = create<FrequencyFilterState>((set, get) =
     setRange: (lowHz, highHz) => push({ lowHz, highHz, mode: get().range?.mode ?? 'solo' }),
     setMode: (mode) => {
       const current = get().range
-      if (current) push({ ...current, mode })
+      if (!current || current.mode === mode) return
+      remember()
+      push({ ...current, mode })
     },
-    clear: () => push(null),
+    clear: () => {
+      if (!get().range) return
+      remember()
+      push(null)
+    },
+    beginChange: () => remember(),
+    canUndo: () => past.length > 0,
+    canRedo: () => future.length > 0,
+    undo: () => {
+      if (past.length === 0) return
+      const current = get().range
+      future.push(current ? { ...current } : null)
+      push(past.pop() ?? null)
+    },
+    redo: () => {
+      if (future.length === 0) return
+      const current = get().range
+      past.push(current ? { ...current } : null)
+      push(future.pop() ?? null)
+    },
     refreshSupported: () => {
       const supported = audioEngine.canFilterFrequencies()
       if (supported !== get().supported) set({ supported })
     }
   }
+})
+
+// Cmd/Ctrl+Z and Cmd/Ctrl+Shift+Z step through band changes (see utils/undoRouter for how keys are shared).
+registerUndoScope({
+  id: 'spectrogram-band',
+  priority: 10,
+  canUndo: () => useFrequencyFilterStore.getState().canUndo(),
+  canRedo: () => useFrequencyFilterStore.getState().canRedo(),
+  undo: () => useFrequencyFilterStore.getState().undo(),
+  redo: () => useFrequencyFilterStore.getState().redo()
 })

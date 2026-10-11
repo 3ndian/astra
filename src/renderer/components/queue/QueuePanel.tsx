@@ -19,6 +19,9 @@ import {
 } from '../../stores/playerStore'
 import { useLibraryStore, type DbTrack } from '../../stores/libraryStore'
 import { useUIStore, type TrackDragItem } from '../../stores/uiStore'
+import QueueHistoryList from './QueueHistoryList'
+import { useQueueTabStore } from '../../stores/queueTabStore'
+import TrackQuickMenu, { type QuickMenuState } from './TrackQuickMenu'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { shouldSuppressTrackRowDrag } from '../library/trackDragTarget'
 import { hasTrackDragActivated } from '../drag/trackDragModel'
@@ -75,6 +78,7 @@ interface QueueRowSharedProps {
   onTrackPointerDown: (event: React.PointerEvent<HTMLDivElement>, row: QueueTrackRow) => void
   onPlayQueuedTrack: (queueId: string) => void
   onRemoveTrack: (event: MouseEvent<HTMLButtonElement>, queueId: string) => void
+  onTrackContextMenu: (event: MouseEvent<HTMLDivElement>, row: QueueTrackRow) => void
 }
 
 const QUEUE_ITEM_ROW_HEIGHT_FALLBACK_PX = 56
@@ -257,7 +261,8 @@ function QueueRowRenderer({
   formatDuration,
   onTrackPointerDown,
   onPlayQueuedTrack,
-  onRemoveTrack
+  onRemoveTrack,
+  onTrackContextMenu
 }: RowComponentProps<QueueRowSharedProps>): ReactElement | null {
   const row = resolveQueueVirtualRow(model, index)
   if (!row) return null
@@ -317,6 +322,7 @@ function QueueRowRenderer({
         role={canPlay ? 'button' : undefined}
         aria-label={canPlay ? `Play ${row.track.title} by ${row.track.artist}` : undefined}
         onPointerDown={(event) => onTrackPointerDown(event, row)}
+        onContextMenu={(event) => onTrackContextMenu(event, row)}
         onClick={canPlay && row.queueId ? () => onPlayQueuedTrack(row.queueId!) : undefined}
       >
         <div className="queue-item-drag-handle" aria-hidden="true">
@@ -409,6 +415,27 @@ export default function QueuePanel() {
     : null)
   const queueDragItemCount = useUIStore((state) => state.trackDrag?.items.length ?? 0)
   const startTrackDrag = useUIStore((state) => state.startTrackDrag)
+  const toggleQueue = useUIStore((state) => state.toggleQueue)
+  // Clicking the title bar hides the queue; the buttons in it keep their own jobs.
+  const hideOnHeaderClick = (event: MouseEvent<HTMLElement>) => {
+    if ((event.target as HTMLElement).closest('button, a, input, select, textarea')) return
+    toggleQueue()
+  }
+  const queueTab = useQueueTabStore((state) => state.tab)
+  const setQueueTab = useQueueTabStore((state) => state.setTab)
+  const renderQueueHeader = (showClear: boolean) => (
+    <div className="queue-header queue-header-hideable" onClick={hideOnHeaderClick} title="Click empty space here to hide the queue">
+      <div className="queue-tabs" role="tablist" aria-label="Queue and history">
+        <button type="button" role="tab" aria-selected={queueTab === 'queue'} className={`queue-tab${queueTab === 'queue' ? ' is-active' : ''}`} onClick={() => setQueueTab('queue')}>Queue</button>
+        <button type="button" role="tab" aria-selected={queueTab === 'history'} className={`queue-tab${queueTab === 'history' ? ' is-active' : ''}`} onClick={() => setQueueTab('history')}>History</button>
+      </div>
+      {showClear && queueTab === 'queue' && (
+        <button className="queue-clear-btn" onClick={clearAllQueues} title="Clear queue history and queued tracks">
+          Clear
+        </button>
+      )}
+    </div>
+  )
   const queueNowPlayingRevealRequest = useUIStore((state) => state.queueNowPlayingRevealRequest)
   const clearQueueNowPlayingRevealRequest = useUIStore((state) => state.clearQueueNowPlayingRevealRequest)
 
@@ -652,6 +679,33 @@ export default function QueuePanel() {
     ? remoteLoadProgress
     : null
 
+  const startPlaybackContextByPaths = usePlayerStore((state) => state.startPlaybackContextByPaths)
+  const [quickMenu, setQuickMenu] = useState<QuickMenuState | null>(null)
+  const closeQuickMenu = useCallback(() => setQuickMenu(null), [])
+  const handleTrackContextMenu = useCallback((event: MouseEvent<HTMLDivElement>, row: QueueTrackRow) => {
+    event.preventDefault()
+    event.stopPropagation()
+    const track = row.track
+    const queueId = row.queueId
+    setQuickMenu({
+      x: event.clientX,
+      y: event.clientY,
+      track: {
+        path: track.path,
+        title: track.title,
+        artist: track.artist,
+        album: track.album,
+        local: track.sourceType === undefined || track.sourceType === 'local'
+      },
+      queueId: row.variant === 'upcoming' && row.removable ? queueId : null,
+      playNow: row.variant === 'current'
+        ? undefined
+        : row.variant === 'upcoming' && queueId
+          ? () => handlePlayQueuedTrack(queueId)
+          : () => { void startPlaybackContextByPaths([track.path], 0, { recordSelectedTrack: true, contextLabel: 'Queue' }) }
+    })
+  }, [handlePlayQueuedTrack, startPlaybackContextByPaths])
+
   const rowProps = useMemo<QueueRowSharedProps>(() => ({
     model,
     insertDropIndex,
@@ -661,7 +715,8 @@ export default function QueuePanel() {
     formatDuration,
     onTrackPointerDown: handleTrackPointerDown,
     onPlayQueuedTrack: handlePlayQueuedTrack,
-    onRemoveTrack: handleRemoveTrack
+    onRemoveTrack: handleRemoveTrack,
+    onTrackContextMenu: handleTrackContextMenu
   }), [
     model,
     insertDropIndex,
@@ -670,7 +725,8 @@ export default function QueuePanel() {
     formatDuration,
     handleTrackPointerDown,
     handlePlayQueuedTrack,
-    handleRemoveTrack
+    handleRemoveTrack,
+    handleTrackContextMenu
   ])
 
   useEffect(() => {
@@ -718,12 +774,19 @@ export default function QueuePanel() {
     }
   }, [layout.rowCount, model])
 
+  if (queueTab === 'history') {
+    return (
+      <div className="queue-panel queue-panel-history">
+        {renderQueueHeader(false)}
+        <QueueHistoryList />
+      </div>
+    )
+  }
+
   if (layout.rowCount === 0) {
     return (
       <div className={`queue-panel ${isQueueDropActive ? 'queue-panel-drop-active' : ''} ${isQueueDropHover ? 'queue-panel-drop-hover' : ''} ${isDropSettling ? 'queue-panel-drop-settle' : ''}`} ref={controllerGroupRef} data-controller-region="true" data-controller-region-id="queue" data-controller-group="queue-items" data-controller-axis="vertical" data-controller-virtual="true">
-        <div className="queue-header">
-          <h3>Queue</h3>
-        </div>
+        {renderQueueHeader(false)}
         {isQueueDropActive && (
           <div className={`queue-drop-mode-label ${isQueueDropHover ? 'is-hover' : ''}`}>
             {queueDropLabel}
@@ -745,12 +808,8 @@ export default function QueuePanel() {
 
   return (
     <div className={`queue-panel ${isQueueDropActive ? 'queue-panel-drop-active' : ''} ${isQueueDropHover ? 'queue-panel-drop-hover' : ''} ${isDropSettling ? 'queue-panel-drop-settle' : ''}`} ref={controllerGroupRef} data-controller-region="true" data-controller-region-id="queue" data-controller-group="queue-items" data-controller-axis="vertical" data-controller-virtual="true">
-      <div className="queue-header">
-        <h3>Queue</h3>
-        <button className="queue-clear-btn" onClick={clearAllQueues} title="Clear queue history and queued tracks">
-          Clear
-        </button>
-      </div>
+      {renderQueueHeader(true)}
+      {quickMenu && <TrackQuickMenu menu={quickMenu} onClose={closeQuickMenu} />}
       {isQueueDropActive && (
         <div className={`queue-drop-mode-label ${isQueueDropHover ? 'is-hover' : ''}`}>
           {queueDropLabel}

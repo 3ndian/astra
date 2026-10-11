@@ -79,6 +79,8 @@ interface RowSharedProps {
   searchQuery: string
   selectedKey: string | null
   onSelectRow: (key: string) => void
+  /** Width the widest visible row needs, so long names can be scrolled into view sideways. */
+  minRowWidth: number
 }
 
 const FOLDER_ROW_HEIGHT = 32
@@ -107,7 +109,8 @@ function FolderTreeRowRenderer({
   playlistPopupFolderPath,
   searchQuery,
   selectedKey,
-  onSelectRow
+  onSelectRow,
+  minRowWidth
 }: RowComponentProps<RowSharedProps>): ReactElement | null {
   const row = rows[index]
   if (!row) return null
@@ -118,7 +121,7 @@ function FolderTreeRowRenderer({
     const isPlaylistPopupOpen = playlistPopupFolderPath === node.fullPath
 
     return (
-      <div {...ariaAttributes} style={style}>
+      <div {...ariaAttributes} style={{ ...style, width: minRowWidth, minWidth: '100%' }}>
         <div
           className={`folder-browse-node ${isRoot ? 'is-root' : ''} ${selectedKey === `f:${node.fullPath}` ? 'is-selected' : ''}`.trim()}
           onClick={() => {
@@ -188,7 +191,7 @@ function FolderTreeRowRenderer({
   const isActive = track.path === currentTrackPath
 
   return (
-    <div {...ariaAttributes} style={style}>
+    <div {...ariaAttributes} style={{ ...style, width: minRowWidth, minWidth: '100%' }}>
       <div
         className={`folder-browse-track ${isActive ? 'is-active' : ''} ${selectedKey === `t:${track.path}` ? 'is-selected' : ''}`.trim()}
         onClick={() => {
@@ -724,6 +727,19 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
     }
   }, [folderPlaylistPopup])
 
+  // Rough width of the widest visible row (monospace, so character count is a good guide).
+  const minRowWidth = useMemo(() => {
+    let widest = 0
+    for (const row of visibleRows) {
+      const width = row.type === 'folder'
+        ? row.guideMask.length * 20 + (row.isRoot ? 24 : 0) + 24 + 4 + row.node.name.length * 8 + 8 + 70 + 44 + 12
+        : (row.guideMask.length + 1) * 20 + 22 + row.track.title.length * 8 + 12
+          + Math.min(200, row.track.artist.length * 7.4) + 12 + 52 + 12
+      if (width > widest) widest = width
+    }
+    return Math.min(Math.ceil(widest), 4000)
+  }, [visibleRows])
+
   const currentTrackPath = currentTrack?.path ?? null
   const rowProps: RowSharedProps = useMemo(() => ({
     rows: visibleRows,
@@ -736,7 +752,8 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
     playlistPopupFolderPath: folderPlaylistPopup?.folderPath ?? null,
     searchQuery: trimmedSearchQuery,
     selectedKey,
-    onSelectRow: setSelectedKey
+    onSelectRow: setSelectedKey,
+    minRowWidth
   }), [
     selectedKey,
     currentTrackPath,
@@ -745,6 +762,7 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
     handleOpenPlaylistPopup,
     handlePlayTrack,
     handleShuffleFolder,
+    minRowWidth,
     trimmedSearchQuery,
     toggleExpand,
     visibleRows

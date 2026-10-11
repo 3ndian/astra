@@ -144,6 +144,7 @@ export function useSpectrogramBandSelect({
       if (!dragging) {
         if (Math.hypot(move.clientX - startX, move.clientY - startY) < DRAG_START_PX) return
         dragging = true
+        useFrequencyFilterStore.getState().beginChange()
         suppressClickRef.current = true
         document.documentElement.classList.add('band-selecting')
       }
@@ -151,7 +152,7 @@ export function useSpectrogramBandSelect({
     }
     const stop = () => {
       window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', stop)
+      window.removeEventListener('pointerup', onUp)
       window.removeEventListener('pointercancel', stop)
       document.documentElement.classList.remove('band-selecting')
       cleanupRef.current = null
@@ -161,10 +162,19 @@ export function useSpectrogramBandSelect({
         window.setTimeout(() => { suppressClickRef.current = false }, 60)
       }
     }
+    // A plain tap anywhere on the spectrogram (inside the band or out) drops the selection and does nothing else,
+    // so in the top row it does not also open the big panel. Dragging still moves, resizes or starts a band.
+    const onUp = () => {
+      if (!dragging && current) {
+        useFrequencyFilterStore.getState().clear()
+        suppressClickRef.current = true
+      }
+      stop()
+    }
     cleanupRef.current?.()
     cleanupRef.current = stop
     window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', stop)
+    window.addEventListener('pointerup', onUp)
     window.addEventListener('pointercancel', stop)
   }, [bounds, containerRef, scaleMode, setRange, vertical])
 

@@ -24,6 +24,25 @@ import {
 
 type InfoSidebarTab = 'info' | 'lyrics'
 
+const TAB_STORAGE_KEY = 'astra-info-sidebar-tab-v1'
+
+/** The tab you left open (Now Playing or Lyrics) stays until you change it yourself. */
+function readSavedTab(): InfoSidebarTab {
+  try {
+    return window.localStorage.getItem(TAB_STORAGE_KEY) === 'lyrics' ? 'lyrics' : 'info'
+  } catch {
+    return 'info'
+  }
+}
+
+function saveTab(tab: InfoSidebarTab): void {
+  try {
+    window.localStorage.setItem(TAB_STORAGE_KEY, tab)
+  } catch {
+    // session only
+  }
+}
+
 export default function InfoSidebar() {
   const currentTrack = usePlayerStore((s) => s.currentTrack)
   const currentTime = usePlaybackClock(0.1)
@@ -34,7 +53,14 @@ export default function InfoSidebar() {
   const openSignalShare = useUIStore((s) => s.openSignalShare)
   const openArtistInLibrary = useOpenArtistInLibrary()
   const openAlbumInLibrary = useOpenAlbumInLibrary()
-  const [activeTab, setActiveTab] = useState<InfoSidebarTab>('info')
+  const [activeTab, setActiveTabState] = useState<InfoSidebarTab>(readSavedTab)
+  const setActiveTab = useCallback((next: InfoSidebarTab | ((tab: InfoSidebarTab) => InfoSidebarTab)) => {
+    setActiveTabState((current) => {
+      const resolved = typeof next === 'function' ? next(current) : next
+      saveTab(resolved)
+      return resolved
+    })
+  }, [])
   const [coverHidden, setCoverHidden] = useState<boolean>(() => {
     try {
       return window.localStorage.getItem('astra-lyrics-cover-hidden-v1') === '1'
@@ -299,7 +325,14 @@ export default function InfoSidebar() {
 
   return (
     <aside className={`info-sidebar${activeTab === 'lyrics' ? ' info-sidebar-lyrics-active' : ''}${activeTab === 'lyrics' && coverHidden ? ' info-sidebar-cover-hidden' : ''}`}>
-      <div className="info-sidebar-header">
+      <div
+        className="info-sidebar-header info-sidebar-header-hideable"
+        title="Click to hide track info"
+        onClick={(event) => {
+          if ((event.target as HTMLElement).closest('button, a, input, select, textarea')) return
+          toggleInfoSidebar()
+        }}
+      >
         <span className="info-sidebar-label">NOW PLAYING</span>
         <div className="info-sidebar-header-actions">
           {currentTrack && (
@@ -342,17 +375,21 @@ export default function InfoSidebar() {
         >
           Lyrics
         </button>
-        {activeTab === 'lyrics' && (
-          <button
-            type="button"
-            className="info-sidebar-tab info-sidebar-cover-toggle"
-            onClick={toggleCoverHidden}
-            aria-pressed={coverHidden}
-            title={coverHidden ? 'Show album cover' : 'Hide album cover for taller lyrics'}
-          >
-            {coverHidden ? 'Show cover' : 'Hide cover'}
-          </button>
-        )}
+        <button
+          type="button"
+          className={`info-sidebar-cover-toggle ${coverHidden && activeTab === 'lyrics' ? 'is-hidden-cover' : ''}`.trim()}
+          onClick={toggleCoverHidden}
+          disabled={activeTab !== 'lyrics'}
+          aria-pressed={coverHidden}
+          aria-label={coverHidden ? 'Show album cover' : 'Hide album cover for taller lyrics'}
+          title={activeTab !== 'lyrics' ? 'Open Lyrics to hide the cover' : coverHidden ? 'Show album cover' : 'Hide album cover for taller lyrics'}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" />
+            <circle cx="12" cy="12" r="3" />
+            {!coverHidden && <path d="M4 4l16 16" />}
+          </svg>
+        </button>
       </div>
 
       {currentTrack ? (

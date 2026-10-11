@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
+import type { PointerEvent as ReactPointerEvent } from 'react'
 import TransportResizeHandle from './TransportResizeHandle'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -25,7 +26,6 @@ import AudioPipelineShelf from './AudioPipelineShelf'
 import TransportLyricsShelf from './TransportLyricsShelf'
 import OutputDevicePicker, { OPEN_OUTPUT_PICKER_EVENT } from './OutputDevicePicker'
 import AudiobookControls from './AudiobookControls'
-import { useLyricsPopoutStore } from '../../stores/lyricsPopoutStore'
 import { useParallaxStore } from '../../stores/parallaxStore'
 import { resolveTransportInfoLine } from '../../utils/transportInfoLine'
 import type { MiniPlayerWindowState } from '../../../types/miniPlayer'
@@ -123,25 +123,46 @@ export default function TransportBar() {
   const playPrevious = usePlayerStore((s) => s.playPrevious)
   const toggleShuffle = usePlayerStore((s) => s.toggleShuffle)
   const toggleRepeat = usePlayerStore((s) => s.toggleRepeat)
+  const playbackRate = usePlayerStore((s) => s.playbackRate)
+  const pitchLock = usePlayerStore((s) => s.pitchLock)
+  const resetPlaybackRate = usePlayerStore((s) => s.resetPlaybackRate)
+  const setPlaybackRateTo = usePlayerStore((s) => s.setPlaybackRateTo)
+  const pitchSemitones = usePlayerStore((s) => s.pitchSemitones)
+  const resetPitchShift = usePlayerStore((s) => s.resetPitchShift)
+  const speedDragRef = useRef<{ startX: number; startRate: number; moved: boolean } | null>(null)
+  const handleSpeedPointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.currentTarget.setPointerCapture(event.pointerId)
+    speedDragRef.current = { startX: event.clientX, startRate: usePlayerStore.getState().playbackRate, moved: false }
+  }
+  const handleSpeedPointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const drag = speedDragRef.current
+    if (!drag) return
+    const dx = event.clientX - drag.startX
+    if (!drag.moved && Math.abs(dx) < 3) return
+    drag.moved = true
+    // 200 px of drag is one whole 1x; hold Shift for ten times finer.
+    setPlaybackRateTo(drag.startRate + dx * (event.shiftKey ? 0.0005 : 0.005))
+  }
+  const handleSpeedPointerUp = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const drag = speedDragRef.current
+    speedDragRef.current = null
+    if (!drag) return
+    try { event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* ignore */ }
+    if (!drag.moved && event.type === 'pointerup') resetPlaybackRate()
+  }
+  const togglePitchLock = usePlayerStore((s) => s.togglePitchLock)
   const remoteLoadProgress = usePlayerStore((s) => s.remoteLoadProgress)
   const loadingStatus = usePlayerStore((s) => s.loadingStatus)
   const resolvedQueueLength = usePlayerStore((s) => s.getResolvedQueueLength())
 
   const {
-    showQueue,
-    toggleQueue,
-    showInfoSidebar,
-    toggleInfoSidebar,
     showPipelineShelf,
     showLyricsShelf,
     togglePipelineShelf,
-    toggleLyricsShelf,
-    closeLyricsShelf,
     transportInfoLineMode,
     isSidebarExpanded,
     setFullscreen
   } = useUIStore()
-  const lyricsPopoutIsOpen = useLyricsPopoutStore((s) => s.windowState.isOpen)
   const eqEnabled = useEQStore((s) => s.enabled)
   const favorites = useLibraryStore((s) => s.favorites)
   const toggleFavorite = useLibraryStore((s) => s.toggleFavorite)
@@ -165,6 +186,16 @@ export default function TransportBar() {
   const eqPopoverPresence = usePresence(showEQPopover)
   const milkdropBgOn = useMilkdropBackgroundStore((s) => s.enabled)
   const setMilkdropBgOn = useMilkdropBackgroundStore((s) => s.setEnabled)
+  const [readoutExpanded, setReadoutExpanded] = useState<boolean>(() => {
+    try { return localStorage.getItem('astra.transport.readoutExpanded.v1') === '1' } catch { return false }
+  })
+  const toggleReadoutExpanded = useCallback(() => {
+    setReadoutExpanded((value) => {
+      const next = !value
+      try { localStorage.setItem('astra.transport.readoutExpanded.v1', next ? '1' : '0') } catch { /* ignore */ }
+      return next
+    })
+  }, [])
   const [miniWindowState, setMiniWindowState] = useState<MiniPlayerWindowState>({
     isOpen: false,
     alwaysOnTop: true,
@@ -346,15 +377,6 @@ export default function TransportBar() {
     showPipelineShelf ? 'transport-has-pipeline-open' : '',
     showLyricsShelf ? 'transport-has-lyrics-open' : ''
   ].join(' ').trim()
-
-  const handleLyricsToggle = () => {
-    if (showLyricsShelf && lyricsPopoutIsOpen) {
-      void window.electronAPI.lyricsPopout.close()
-      closeLyricsShelf()
-      return
-    }
-    toggleLyricsShelf()
-  }
 
   return (
     <div
@@ -639,6 +661,38 @@ export default function TransportBar() {
 
       {/* Right: EQ + Queue/Info + File readout */}
       <div className="transport-right">
+        <div className="transport-speed">
+          <button
+            type="button"
+            className={`transport-speed-value${playbackRate !== 1 ? ' is-changed' : ''}`}
+            onPointerDown={handleSpeedPointerDown}
+            onPointerMove={handleSpeedPointerMove}
+            onPointerUp={handleSpeedPointerUp}
+            onPointerCancel={handleSpeedPointerUp}
+            title="Playback speed. Drag left or right to change it finely, click for normal. J / L change it by 10%, Shift+J / Shift+L halve or double it."
+          >
+            {playbackRate.toFixed(2).replace(/0$/, '')}×
+          </button>
+          <div className="transport-speed-row">
+            <button
+              type="button"
+              className={`transport-speed-pitch${pitchLock ? ' is-on' : ''}`}
+              onClick={() => togglePitchLock()}
+              aria-pressed={pitchLock}
+              title={pitchLock ? 'Pitch is kept steady when the speed changes. Click for tape-style.' : 'Tape-style: pitch follows speed. Click to keep the pitch steady.'}
+            >
+              {pitchLock ? 'Pitch kept' : 'Tape'}
+            </button>
+            <button
+              type="button"
+              className={`transport-speed-pitch${pitchSemitones !== 0 ? ' is-on' : ''}`}
+              onClick={() => resetPitchShift()}
+              title="Pitch shift in semitones. [ lowers and ] raises it. Click to clear."
+            >
+              {pitchSemitones > 0 ? `+${pitchSemitones}` : pitchSemitones} st
+            </button>
+          </div>
+        </div>
         <div className="transport-mini-lyrics-stack">
           <button
             className={`transport-mini-btn transport-mini-btn-split-top ${miniWindowState.isOpen ? 'active' : ''} ${miniWindowState.alwaysOnTop ? 'pinned' : ''}`}
@@ -653,20 +707,6 @@ export default function TransportBar() {
               <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
               <line x1="7" y1="8.5" x2="17" y2="8.5" />
               <line x1="7" y1="12.5" x2="14" y2="12.5" />
-            </svg>
-          </button>
-          <button
-            className={`transport-lyrics-btn ${showLyricsShelf ? 'active' : ''}`}
-            onClick={handleLyricsToggle}
-            title={showLyricsShelf && lyricsPopoutIsOpen ? 'Close popped out lyrics' : 'Toggle lyrics shelf'}
-            aria-label="Toggle lyrics shelf"
-            aria-pressed={showLyricsShelf}
-            disabled={!currentTrack}
-          >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M4 7h16" />
-              <path d="M4 12h12" />
-              <path d="M4 17h9" />
             </svg>
           </button>
           <button
@@ -692,34 +732,19 @@ export default function TransportBar() {
           disabled={eqControlDisabled}
         >
           <span className="transport-eq-label">EQ</span>
-          <EQResponsePreview className="transport-eq-curve" width={80} height={30} showFill={false} />
+          <EQResponsePreview className="transport-eq-curve" width={56} height={22} showFill={false} />
         </button>
 
-        {/* Queue + Info stacked vertically */}
-        <div className="transport-qi-stack">
-          <button
-            className={`transport-qi-btn ${showQueue ? 'active' : ''}`}
-            onClick={toggleQueue}
-            title="Toggle queue"
-            data-track-drop-queue-toggle
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/>
-            </svg>
-          </button>
-          <button
-            className={`transport-qi-btn ${showInfoSidebar ? 'active' : ''}`}
-            onClick={toggleInfoSidebar}
-            title="Toggle track info"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/>
-            </svg>
-          </button>
-        </div>
-
         {/* File info readout — 2x2 grid */}
-        <div className="transport-file-readout">
+        {readoutExpanded ? (
+          <div
+            className="transport-file-readout"
+            role="button"
+            tabIndex={0}
+            title="Click to shrink"
+            onClick={() => toggleReadoutExpanded()}
+            onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggleReadoutExpanded() } }}
+          >
           <div className="readout-cell">
             <span className="readout-label">FMT</span>
             <span className="readout-value">{currentTrack?.format?.toUpperCase() ?? '—'}</span>
@@ -740,7 +765,14 @@ export default function TransportBar() {
               {normalizationReadout.value}
             </span>
           </div>
-        </div>
+          </div>
+        ) : (
+          <button type="button" className="transport-file-readout-compact" title="Click for full file details" onClick={() => toggleReadoutExpanded()}>
+            <span>{currentTrack?.format?.toUpperCase() ?? '—'}</span>
+            <span className="readout-compact-sep">·</span>
+            <span>{currentTrack?.bitDepth ?? '—'}/{currentTrack?.sampleRate ? (currentTrack.sampleRate / 1000).toFixed(1) : '—'}</span>
+          </button>
+        )}
       </div>
 
       {/* EQ Popover */}

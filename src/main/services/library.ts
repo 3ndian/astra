@@ -15,6 +15,7 @@ import {
 } from './playlistPathResolver'
 import { getMusicMetadataParseOptions } from '../utils/musicMetadata'
 import { compareBaseLocaleText } from '../../shared/localeSort'
+import { listenThresholdSeconds, SHORT_TRACK_SECONDS } from '../../shared/stats/listenThreshold'
 import { collectIamfStreamStats } from '../../shared/iamf/obuWalker'
 import { mp4HasIamfTrack, readMp4DurationSeconds } from '../../shared/iamf/mp4'
 import {
@@ -9887,7 +9888,6 @@ function qualifyListeningSession(track: DbTrack, sourcePlaylistId: number | null
   }
 }
 
-const LISTENING_QUALIFICATION_SECONDS = 15
 const SHORT_TRACK_COMPLETION_TOLERANCE_SECONDS = 0.5
 const SHORT_TRACK_COMPLETION_TOLERANCE_RATIO = 0.1
 
@@ -9895,7 +9895,7 @@ function listeningSessionQualifies(
   checkpoint: ListeningSessionCheckpoint,
   session: { listened_seconds: number; duration_seconds: number }
 ): boolean {
-  if (session.duration_seconds > 0 && session.duration_seconds < LISTENING_QUALIFICATION_SECONDS) {
+  if (session.duration_seconds > 0 && session.duration_seconds < SHORT_TRACK_SECONDS) {
     if (checkpoint.finalizeSession !== true || checkpoint.completedNaturally !== true) return false
 
     const toleranceSeconds = Math.min(
@@ -9905,7 +9905,7 @@ function listeningSessionQualifies(
     return session.listened_seconds >= session.duration_seconds - toleranceSeconds
   }
 
-  return session.listened_seconds >= LISTENING_QUALIFICATION_SECONDS
+  return session.listened_seconds >= listenThresholdSeconds(session.duration_seconds)
 }
 
 export async function checkpointListeningSession(

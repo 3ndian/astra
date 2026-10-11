@@ -3847,12 +3847,12 @@ test('duration helpers preserve positive track durations through zero engine val
   assert.equal(shouldApplyDurationChange(190, makeTrack('/music/a.flac', { duration: 185 }), 'playing'), true)
 })
 
-test('recent play threshold uses fifteen seconds or full short-track duration', () => {
-  assert.equal(RECENT_PLAY_MIN_SECONDS, 15)
-  assert.equal(getRecentPlayThresholdSecondsForDuration(180), 15)
+test('recent play threshold is half the track (30 s to 2 min) or the full short-track duration', () => {
+  assert.equal(RECENT_PLAY_MIN_SECONDS, 30)
+  assert.equal(getRecentPlayThresholdSecondsForDuration(180), 90)
   assert.equal(getRecentPlayThresholdSecondsForDuration(4), 4)
-  assert.equal(getRecentPlayThresholdSecondsForDuration(0), 15)
-  assert.equal(getRecentPlayThresholdSecondsForDuration(null), 15)
+  assert.equal(getRecentPlayThresholdSecondsForDuration(0), 30)
+  assert.equal(getRecentPlayThresholdSecondsForDuration(null), 30)
 })
 
 test('recent play accumulation only counts elapsed playing time', () => {
@@ -3862,12 +3862,12 @@ test('recent play accumulation only counts elapsed playing time', () => {
   assert.equal(state.accumulatedSeconds, 0)
   assert.equal(state.lastAccumulatedAtMs, 1_000)
 
-  state = advanceRecentPlayAccumulation(state, 'playing', 15_900)
-  assert.equal(state.accumulatedSeconds, 14.9)
+  state = advanceRecentPlayAccumulation(state, 'playing', 30_900)
+  assert.equal(state.accumulatedSeconds, 29.9)
   assert.equal(state.accumulatedSeconds < RECENT_PLAY_MIN_SECONDS, true)
 
-  state = advanceRecentPlayAccumulation(state, 'playing', 16_000)
-  assert.equal(state.accumulatedSeconds, 15)
+  state = advanceRecentPlayAccumulation(state, 'playing', 31_000)
+  assert.equal(state.accumulatedSeconds, 30)
   assert.equal(state.accumulatedSeconds >= RECENT_PLAY_MIN_SECONDS, true)
 })
 

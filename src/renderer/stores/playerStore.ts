@@ -1,6 +1,7 @@
 import { getResumeStart } from '../utils/audiobookResume'
 import { create } from 'zustand'
 import type { PlaybackSourceContext } from '../../types/playbackSource'
+import { listenThresholdSeconds, SHORT_TRACK_SECONDS } from '../../shared/stats/listenThreshold'
 import { normalizePlaybackSourceContext, playbackSourceKey, resolveCurrentPlaybackSource } from '../../shared/home/playbackSources'
 export type { PlaybackSourceContext } from '../../types/playbackSource'
 import {
@@ -84,6 +85,8 @@ interface CommittedPlaybackTransition {
 interface PlaybackLoadOptions {
   manualStart?: boolean
   startTime?: number
+  /** Decode and seek the track but leave it paused (used to warm up the restored track at startup). */
+  preloadOnly?: boolean
   attempt?: PlaybackAttempt
 }
 
@@ -318,6 +321,19 @@ interface PlayerStore {
   stop: () => void
   replaceLocalTrackPaths: (replacements: Record<string, string>) => Promise<void>
   seek: (time: number) => Promise<void>
+  /** Shuttle speed: 1 is normal. Halving/doubling (J / L) and 10% nudges (Shift+J / Shift+L). */
+  playbackRate: number
+  pitchLock: boolean
+  /** Pitch shift in semitones (-12..12), independent of speed. */
+  pitchSemitones: number
+  setPlaybackRateTo: (rate: number) => void
+  shiftPitch: (direction: 1 | -1) => void
+  resetPitchShift: () => void
+  shuttleSlower: () => void
+  shuttleFaster: () => void
+  nudgePlaybackRate: (direction: 1 | -1) => void
+  resetPlaybackRate: () => void
+  togglePitchLock: () => void
   setVolume: (volume: number) => void
   toggleMute: () => void
   resetAudioPreferences: () => void
@@ -367,6 +383,8 @@ interface PlayerStore {
   clearAssociatedOpenNotice: () => void
   getSessionSnapshot: () => PlayerSessionSnapshot
   restoreSession: (snapshot: PlayerSessionSnapshot) => Promise<void>
+  /** Decodes the restored track in the background so the first press of play starts instantly. */
+  preloadRestoredTrack: () => Promise<void>
   resetListeningHistoryTracking: (status: ListeningHistoryStatus) => void
 
   // Internal
@@ -384,7 +402,7 @@ const waveformCache = new Map<string, Float32Array>()
 const MAX_WAVEFORM_CACHE_ENTRIES = 128
 const SLOW_PATH_THRESHOLD_MS = 1500
 const OUTPUT_DELAY_NOTICE_THRESHOLD_MS = 120
-export const RECENT_PLAY_MIN_SECONDS = 15
+export const RECENT_PLAY_MIN_SECONDS = SHORT_TRACK_SECONDS
 const DEFAULT_PLAYER_VOLUME = 0.7
 const CURRENT_TIME_STORE_THROTTLE_MS = 100
 const LISTENING_HISTORY_CHECKPOINT_SECONDS = 10
@@ -562,10 +580,7 @@ export interface RecentPlayAccumulationState {
 }
 
 export function getRecentPlayThresholdSecondsForDuration(duration: number | null | undefined): number {
-  if (!Number.isFinite(duration) || (duration ?? 0) <= 0) {
-    return RECENT_PLAY_MIN_SECONDS
-  }
-  return Math.min(RECENT_PLAY_MIN_SECONDS, Math.max(0, duration ?? 0))
+  return listenThresholdSeconds(duration)
 }
 
 export function advanceRecentPlayAccumulation(
@@ -1168,7 +1183,22 @@ async function ensureCompatiblePlaybackMode(track: Track): Promise<void> {
   })
 }
 
+const PITCH_LOCK_STORAGE_KEY = 'astra.player.pitchLock.v1'
+function readStoredPitchLock(): boolean {
+  try { return localStorage.getItem(PITCH_LOCK_STORAGE_KEY) === '1' } catch { return false }
+}
+
 export const usePlayerStore = create<PlayerStore>((set, get) => {
+  // Shuttle speed. Snaps to exactly 1x near normal; refuses quietly when the output cannot change speed.
+  const applyShuttleRate = (requested: number): void => {
+    let next = Math.min(4, Math.max(0.1, Math.round(requested * 100) / 100))
+    if (Math.abs(next - 1) < 0.005) next = 1
+    if (next === get().playbackRate) return
+    if (!audioEngine.setPlaybackRate(next)) return
+    audioEngine.setPitchLock(get().pitchLock)
+    set({ playbackRate: next })
+  }
+
   // Track if listeners are initialized
   let listenersInitialized = false
   let remoteLoadProgressUnsubscribe: (() => void) | null = null
@@ -1796,6 +1826,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   // Standard decoding is safe to supersede: the first request starts immediately and
   // subsequent rapid requests collapse into a 75 ms latest-wins window. Native control
   // calls remain strictly serialized; only their abortable probe/decode phase is canceled.
+  let startupPreloadPromise: Promise<void> | null = null
+
   const runSerializedTrackLoad = (
     track: Track,
     options: PlaybackLoadOptions = {},
@@ -3179,6 +3211,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     duration: 0,
     volume: initialPlayerVolume,
     isMuted: false,
+    playbackRate: 1,
+    pitchLock: readStoredPitchLock(),
+    pitchSemitones: 0,
     waveformData: null,
     waveformBufferedRatio: 1,
     waveformAnalyzedRatio: 1,
@@ -3434,6 +3469,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     // Playback controls
     play: async () => {
       if (blockLocalPlaybackInParallaxSinkMode()) return
+      // Pressing play while the restored track is still warming up waits for it, then resumes normally.
+      if (startupPreloadPromise) await startupPreloadPromise
 
       const state = get()
       const pendingInterruption = pendingPlaybackInterruptionReconciliation
@@ -3897,6 +3934,14 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       // Phase-1 sink follow.
       void useParallaxStore.getState().cancelHostNextStream()
 
+      // Rewinding to the start of a track that has already counted begins a fresh listen, so repeating a
+      // song by seeking back counts again once it has been listened to long enough.
+      if (time < 3 && recentPlaySession?.counted && get().currentTrack) {
+        const replayPath = recentPlaySession.trackPath
+        void finalizeRecentPlaySession()
+        startRecentPlaySession(replayPath)
+      }
+
       const state = get()
       if (state.restoredTrackNeedsLoad) {
         const duration = resolvePositiveDuration(state.duration, state.currentTrack?.duration)
@@ -3939,6 +3984,29 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       audioEngine.setVolume(normalized)
       set({ volume: normalized, isMuted: false })
       persistPlayerVolume(normalized)
+    },
+
+    shuttleSlower: () => applyShuttleRate(get().playbackRate * 0.5),
+    shuttleFaster: () => applyShuttleRate(get().playbackRate * 2),
+    nudgePlaybackRate: (direction) => applyShuttleRate(get().playbackRate + direction * 0.1),
+    resetPlaybackRate: () => applyShuttleRate(1),
+    setPlaybackRateTo: (rate) => applyShuttleRate(rate),
+    shiftPitch: (direction) => {
+      const next = Math.min(12, Math.max(-12, get().pitchSemitones + direction))
+      if (next === get().pitchSemitones) return
+      if (!audioEngine.setPitchSemitones(next)) return
+      set({ pitchSemitones: next })
+    },
+    resetPitchShift: () => {
+      if (get().pitchSemitones === 0) return
+      audioEngine.setPitchSemitones(0)
+      set({ pitchSemitones: 0 })
+    },
+    togglePitchLock: () => {
+      const next = !get().pitchLock
+      audioEngine.setPitchLock(next)
+      set({ pitchLock: next })
+      try { localStorage.setItem(PITCH_LOCK_STORAGE_KEY, next ? '1' : '0') } catch { /* ignore */ }
     },
 
     toggleMute: () => {
@@ -4238,6 +4306,53 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         repeat: snapshot.repeat,
         playbackHistory
       })
+    },
+
+    preloadRestoredTrack: async () => {
+      if (startupPreloadPromise) return startupPreloadPromise
+      const run = async (): Promise<void> => {
+        const state = get()
+        const track = state.currentTrack
+        if (!track || !state.restoredTrackNeedsLoad || state.playbackState !== 'paused') return
+        if (track.sourceType && track.sourceType !== 'local') return
+        if (isUnavailableRemoteTrack(track)) return
+        if (isParallaxSinkModeActive()) return
+        if (audioEngine.getPlaybackOutputMode() !== 'standard' || shouldUseNativeExclusivePath(track)) return
+
+        const startTime = state.restoredPlaybackTime ?? state.currentTime
+        const intentId = beginPlaybackIntent()
+        const attempt = createPlaybackAttempt('resume', performance.now(), { prebufferStatus: 'miss' })
+        commitPlaybackTransition(attempt, intentId, track, {
+          queueItemId: state.currentQueueItemId,
+          standaloneTrackPath: null
+        })
+        let outcome: PlaybackLoadOutcome = 'failed'
+        try {
+          outcome = await runSerializedTrackLoad(track, {
+            manualStart: false,
+            preloadOnly: true,
+            startTime,
+            attempt
+          }, 'resume')
+        } catch {
+          outcome = 'failed'
+        }
+        if (outcome === 'loaded') return
+        // Not warmed up (unsupported path, failure, or interrupted): leave it ready for the normal first press.
+        const after = get()
+        if (outcome === 'failed' && after.currentTrack?.path === track.path && after.playbackState !== 'playing') {
+          set({
+            playbackState: 'paused',
+            currentTime: startTime,
+            restoredTrackNeedsLoad: true,
+            restoredPlaybackTime: startTime
+          })
+        }
+      }
+      startupPreloadPromise = run().finally(() => {
+        startupPreloadPromise = null
+      })
+      return startupPreloadPromise
     },
 
     resetListeningHistoryTracking: (status) => {
@@ -4753,6 +4868,21 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         })
       }
 
+      // The warm-up only handles the plain in-memory path; anything else waits for the play button.
+      const abortPreload = (): PlaybackLoadOutcome => {
+        const resumeAt = Number.isFinite(options.startTime) ? Math.max(0, Number(options.startTime)) : 0
+        set({
+          playbackState: 'paused',
+          currentTime: resumeAt,
+          restoredTrackNeedsLoad: true,
+          restoredPlaybackTime: resumeAt,
+          remoteLoadProgress: null,
+          loadingStatus: null
+        })
+        finishAttempt('superseded')
+        return 'superseded'
+      }
+
       if (blockLocalPlaybackInParallaxSinkMode()) {
         finishAttempt('superseded')
         return 'superseded'
@@ -4789,7 +4919,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         restoredTrackNeedsLoad: false,
         restoredPlaybackTime: null
       })
-      startRecentPlaySession(track.path)
+      if (!options.preloadOnly) startRecentPlaySession(track.path)
       attempt.loadingStateAtMs = performance.now()
       const loadListeningSession = recentPlaySession
 
@@ -5086,6 +5216,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         localFilePreflightMs = performance.now() - localPreflightStartedAt
         throwIfSupersededLoad(loadRequestId)
         if (useLocalProgressive) {
+          if (options.preloadOnly) return abortPreload()
           return await loadMandatoryLocalProgressive('preflight')
         }
 
@@ -5182,6 +5313,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           attemptStandardLoadPipelineMs = performance.now() - decodeStart
           attemptDecodeMs = attemptStandardLoadPipelineMs
         }
+        if (nativePcmRequiresProgressive && options.preloadOnly) return abortPreload()
         if (nativePcmRequiresProgressive) {
           logMemoryDiagnosticsEvent('native_pcm_limit_progressive_escalation', {
             trackPath: track.path,
@@ -5233,6 +5365,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           showOutputDelayNotice(resolvedTrack)
         }
         throwIfSupersededLoad(loadRequestId)
+        if (options.preloadOnly) {
+          // Warmed up: decoded and seeked, but waiting for the user to press play.
+          set({ playbackState: 'paused', currentTime: startTime })
+          finishAttempt('loaded')
+          return 'loaded'
+        }
         const backendStart = performance.now()
         try {
           await playWithParallaxIfNeeded(resolvedTrack, () => isActiveLoadRequest(loadRequestId))
@@ -6005,6 +6143,15 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       listenersInitialized = false
     }
   }
+})
+
+// A new song always starts at normal speed.
+usePlayerStore.subscribe((nextState, prevState) => {
+  if (nextState.playbackRate === 1 && nextState.pitchSemitones === 0) return
+  if (nextState.currentTrack?.path === prevState.currentTrack?.path) return
+  audioEngine.setPlaybackRate(1)
+  audioEngine.setPitchSemitones(0)
+  usePlayerStore.setState({ playbackRate: 1, pitchSemitones: 0 })
 })
 
 useAudioSettingsStore.subscribe((nextState, prevState) => {

@@ -550,6 +550,7 @@ export class AudioEngine {
     dry: GainNode
     soloWet: GainNode
     cutWet: GainNode
+    join: GainNode
     /** Each bank is one or two lines of filters; every line is fed from the same input. */
     solo: BiquadFilterNode[][]
     cut: BiquadFilterNode[][]
@@ -621,6 +622,13 @@ export class AudioEngine {
   private nextBuffer: AudioBuffer | null = null
   private nextSourceNode: AudioBufferSourceNode | null = null
   private scheduledEndTime: number = 0
+  // Shuttle speed (1 = normal). The clock above runs in track time: (context time - startTime) * playbackRate.
+  private playbackRate = 1
+  private pitchLock = false
+  private pitchSemitones = 0
+  private pitchCorrectNode: AudioWorkletNode | null = null
+  private pitchCorrectModuleLoaded = false
+  private pitchCorrectEngaged = false
   private isGaplessTransition: boolean = false
 
   private animationFrame: number | null = null
@@ -1722,6 +1730,7 @@ export class AudioEngine {
     this.connectSourceToAnalysisTap(this.sourceNode, buffer.numberOfChannels)
     const releasedSource = this.sourceNode
     releasedSource.onended = () => this.handleStandardSourceEnded(releasedSource)
+    this.playbackRate = 1 // Parallax-synced playback always runs at normal speed.
     const startAt = ctx.currentTime
     this.startTime = startAt - offset
     this.pauseTime = offset
@@ -4002,6 +4011,7 @@ export class AudioEngine {
     this.connectSourceToAnalysisTap(this.sourceNode, this.audioBuffer.numberOfChannels)
     const parallaxSource = this.sourceNode
     parallaxSource.onended = () => this.handleStandardSourceEnded(parallaxSource)
+    this.playbackRate = 1 // Parallax-synced playback always runs at normal speed.
     this.startTime = startAtContextTime - offset
     this.pauseTime = offset
     // A pause fade leaves fadeGainNode at 0 and only play() restores it, which this parallax
@@ -5613,7 +5623,7 @@ export class AudioEngine {
     }
     if (!this.context || this._playbackState === 'stopped' || this._playbackState === 'loading') return 0
     if (this._playbackState === 'paused') return this.pauseTime
-    return Math.max(0, this.context.currentTime - this.startTime - this.getAdaptiveUpmixLatencySeconds())
+    return Math.max(0, (this.context.currentTime - this.startTime) * this.playbackRate - this.getAdaptiveUpmixLatencySeconds())
   }
 
   get duration(): number {
@@ -8179,7 +8189,7 @@ export class AudioEngine {
 
     // Calculate when current track will end
     const currentPosition = this.currentTime + this.getAdaptiveUpmixLatencySeconds()
-    const remaining = this.audioBuffer.duration - currentPosition
+    const remaining = (this.audioBuffer.duration - currentPosition) / this.playbackRate
     this.scheduledEndTime = this.context.currentTime + remaining
 
     // Create and schedule the next source
@@ -8189,6 +8199,7 @@ export class AudioEngine {
     this.connectSourceToAnalysisTap(this.nextSourceNode, this.nextBuffer.numberOfChannels)
 
     // Schedule to start exactly when current track ends
+    this.applySourcePlaybackRate(this.nextSourceNode)
     this.nextSourceNode.start(this.scheduledEndTime)
     if (this.nextNormalizationLinearGain != null) {
       this.scheduleNormalizationTransition(
@@ -8326,6 +8337,7 @@ export class AudioEngine {
     newSource.onended = () => this.handleStandardSourceEnded(newSource)
 
     const now = this.context.currentTime
+    this.applySourcePlaybackRate(newSource)
     newSource.start(now, 0)
 
     // Dip the shared fade node to silence and back; stop the outgoing source at the dip bottom.
@@ -8558,7 +8570,8 @@ export class AudioEngine {
 
     // Start from the pause position, with the optional playback fade.
     const offset = this.pauseTime
-    this.startTime = this.context.currentTime - offset
+    this.applySourcePlaybackRate(playingSource)
+    this.startTime = this.context.currentTime - offset / this.playbackRate
     this.schedulePlaybackFade(1, undefined, 0)
     this.sourceNode.start(0, offset)
 
@@ -8668,7 +8681,7 @@ export class AudioEngine {
     if (this._playbackState !== 'playing' || !this.context) return
 
     // Record the pause position now so the seek bar/time stay correct while the audio fades out.
-    this.pauseTime = this.context.currentTime - this.startTime
+    this.pauseTime = (this.context.currentTime - this.startTime) * this.playbackRate
     this.cancelScheduledNext() // Cancel scheduled next track
 
     this._playbackState = 'paused'
@@ -8840,7 +8853,8 @@ export class AudioEngine {
       const seekSource = this.sourceNode
       seekSource.onended = () => this.handleStandardSourceEnded(seekSource)
 
-      this.startTime = this.context.currentTime - clampedTime
+      this.applySourcePlaybackRate(seekSource)
+      this.startTime = this.context.currentTime - clampedTime / this.playbackRate
       this.sourceNode.start(0, clampedTime)
 
       // Reschedule gapless transition with new timing
@@ -9036,10 +9050,16 @@ export class AudioEngine {
     }
     const solo = [makeLine(['highpass', 'highpass', 'lowpass', 'lowpass'], soloWet)]
     const cut = [makeLine(['lowpass', 'lowpass'], cutWet), makeLine(['highpass', 'highpass'], cutWet)]
-    dry.connect(this.preampNode)
-    soloWet.connect(this.preampNode)
-    cutWet.connect(this.preampNode)
-    this.rangeFilterGraph = { dry, soloWet, cutWet, solo, cut, fed: { solo: false, cut: false }, timers: { solo: null, cut: null } }
+    // Everything meets at `join` before the preamp, so the pitch-correcting stage can sit in one place.
+    const join = context.createGain()
+    dry.connect(join)
+    soloWet.connect(join)
+    cutWet.connect(join)
+    join.connect(this.preampNode)
+    this.rangeFilterGraph = { dry, soloWet, cutWet, join, solo, cut, fed: { solo: false, cut: false }, timers: { solo: null, cut: null } }
+    // A fresh graph starts without the pitch stage; put it back if it is wanted.
+    this.pitchCorrectEngaged = false
+    void this.syncPitchCorrection()
     return this.rangeFilterGraph
   }
 
@@ -9055,6 +9075,131 @@ export class AudioEngine {
     }
     this.normalizationGainNode.connect(graph.dry)
     this.applyRangeFilterGraph()
+  }
+
+  // ---- Shuttle speed (standard output only) ----
+
+  /** Speed can change only for ordinary local playback through Web Audio. */
+  canShuttle(): boolean {
+    return Boolean(
+      this.context
+      && !this.isNativeExclusiveMode()
+      && !this.remoteStreamState
+      && !this.parallaxSinkState
+      && this.getPlaybackOutputMode() === 'standard'
+    )
+  }
+
+  getPlaybackRate(): number {
+    return this.playbackRate
+  }
+
+  getPitchLock(): boolean {
+    return this.pitchLock
+  }
+
+  /** Shift the pitch by whole or fractional semitones (-12 to +12) without changing the speed. */
+  setPitchSemitones(semitones: number): boolean {
+    if (!Number.isFinite(semitones)) return false
+    const next = Math.min(12, Math.max(-12, semitones))
+    if (next !== 0 && !this.canShuttle()) return false
+    this.pitchSemitones = next
+    this.updatePitchCorrection()
+    return true
+  }
+
+  /** How much the pitch stage must shift the (speed-changed) signal: the chosen shift, plus undoing the speed's own shift when the pitch is locked. */
+  private desiredPitchRatio(): number {
+    return Math.pow(2, this.pitchSemitones / 12) * (this.pitchLock ? 1 / this.playbackRate : 1)
+  }
+
+  private applySourcePlaybackRate(source: AudioBufferSourceNode | null): void {
+    if (!source || this.playbackRate === 1) return
+    try { source.playbackRate.value = this.playbackRate } catch { /* ignore */ }
+  }
+
+  /** Change the playback speed (0.1x to 4x). Returns false when this output mode cannot do it. */
+  setPlaybackRate(rate: number): boolean {
+    if (!Number.isFinite(rate)) return false
+    const next = Math.min(4, Math.max(0.1, rate))
+    if (next === this.playbackRate) return true
+    const ctx = this.context
+    if (!ctx || !this.canShuttle()) {
+      // Going back to normal is always allowed so a stale speed can never get stuck.
+      if (next === 1) this.playbackRate = 1
+      return next === 1
+    }
+    const playing = this._playbackState === 'playing' && this.sourceNode !== null
+    if (playing && this.sourceNode) {
+      // Keep the track position steady across the change: media = (now - startTime) * rate.
+      const media = (ctx.currentTime - this.startTime) * this.playbackRate
+      this.playbackRate = next
+      this.startTime = ctx.currentTime - media / next
+      try { this.sourceNode.playbackRate.setValueAtTime(next, ctx.currentTime) } catch { /* ignore */ }
+      if (this.nextBuffer) this.scheduleGaplessTransition()
+    } else {
+      this.playbackRate = next
+    }
+    this.updatePitchCorrection()
+    return true
+  }
+
+  /** Keep the pitch steady while the speed is not 1x (a small pitch-shifting stage is switched in). */
+  setPitchLock(on: boolean): void {
+    this.pitchLock = on
+    this.updatePitchCorrection()
+  }
+
+  private updatePitchCorrection(): void {
+    const ctx = this.context
+    const node = this.pitchCorrectNode
+    if (ctx && node && this.pitchCorrectEngaged) {
+      try { node.parameters.get('ratio')?.setTargetAtTime(this.desiredPitchRatio(), ctx.currentTime, 0.02) } catch { /* ignore */ }
+    }
+    void this.syncPitchCorrection()
+  }
+
+  private async syncPitchCorrection(): Promise<void> {
+    const ctx = this.context
+    const graph = this.rangeFilterGraph
+    if (!ctx || !graph || !this.preampNode) return
+    const want = Math.abs(this.desiredPitchRatio() - 1) > 0.0005 && this.canShuttle()
+    if (want === this.pitchCorrectEngaged) return
+
+    if (!want) {
+      try { graph.join.disconnect() } catch { /* ignore */ }
+      try { graph.join.connect(this.preampNode) } catch { /* ignore */ }
+      try { this.pitchCorrectNode?.disconnect() } catch { /* ignore */ }
+      this.pitchCorrectEngaged = false
+      return
+    }
+
+    try {
+      if (!this.pitchCorrectModuleLoaded) {
+        await ctx.audioWorklet.addModule('./pitch-correct-worklet.js')
+        this.pitchCorrectModuleLoaded = true
+      }
+      // Things may have changed while the module loaded.
+      if (this.context !== ctx || this.rangeFilterGraph !== graph || !this.preampNode) return
+      if (!(Math.abs(this.desiredPitchRatio() - 1) > 0.0005) || this.pitchCorrectEngaged) return
+      if (!this.pitchCorrectNode) {
+        this.pitchCorrectNode = new AudioWorkletNode(ctx, 'pitch-correct-processor', {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          outputChannelCount: [2],
+          channelCount: 2,
+          channelCountMode: 'explicit'
+        })
+      }
+      const node = this.pitchCorrectNode
+      node.parameters.get('ratio')?.setValueAtTime(this.desiredPitchRatio(), ctx.currentTime)
+      try { graph.join.disconnect() } catch { /* ignore */ }
+      graph.join.connect(node)
+      node.connect(this.preampNode)
+      this.pitchCorrectEngaged = true
+    } catch (error) {
+      console.error('Failed to start the pitch-correcting stage:', error)
+    }
   }
 
   private feedRangeFilterBank(graph: NonNullable<AudioEngine['rangeFilterGraph']>, bank: 'solo' | 'cut', on: boolean): void {
@@ -9369,6 +9514,9 @@ export class AudioEngine {
       }
       this.rangeFilterGraph = null
     }
+    this.pitchCorrectNode = null
+    this.pitchCorrectModuleLoaded = false
+    this.pitchCorrectEngaged = false
     this.gainNode = null
     this.normalizationGainNode = null
     this.analysisNormalizationGainNode = null
