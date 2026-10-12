@@ -89,7 +89,7 @@ export function useSpectrogramBandSelect({
   const onPointerDown = useCallback((event: ReactPointerEvent<HTMLElement>) => {
     if (event.button !== 0) return
     const target = event.target as HTMLElement
-    if (target.closest('.band-chip')) return
+    if (target.closest('.band-chip, .song-view-strip, .song-view-btn')) return
     const surface = containerRef.current
     if (!surface) return
     const rect = surface.getBoundingClientRect()

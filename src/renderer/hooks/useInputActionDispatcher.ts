@@ -5,6 +5,7 @@ import { usePlayerStore } from '../stores/playerStore'
 import { getNextUIScalePercent, useUIStore } from '../stores/uiStore'
 import { navigateInputBack, navigateInputForward } from '../utils/inputNavigation'
 import { useJumpToNowPlaying } from './useJumpToNowPlaying'
+import { useLiveInputStore } from '../stores/liveInputStore'
 
 const clamp = (value: number, min: number, max: number): number => {
   return Math.min(max, Math.max(min, value))
@@ -122,6 +123,12 @@ export function useInputActionDispatcher(): InputActionDispatcher {
         return
       case 'pitch-lock-toggle':
         player.togglePitchLock()
+        return
+      case 'live-input-toggle':
+        void useLiveInputStore.getState().toggle()
+        return
+      case 'stereo-mode-cycle':
+        player.cycleStereoMode()
         return
       case 'focus-search-field':
         focusShortcutSearchInput()

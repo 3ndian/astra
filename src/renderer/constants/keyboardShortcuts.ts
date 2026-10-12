@@ -168,16 +168,16 @@ export const INPUT_ACTION_DEFINITIONS: readonly InputActionDefinition[] = [
   {
     id: 'pitch-up',
     group: 'playback',
-    action: 'Pitch Up (Semitone)',
-    description: 'Raise the pitch by one semitone without changing the speed.',
+    action: 'Pitch Up 10%',
+    description: 'Raise the pitch by 10% of normal without changing the speed (the same step size as the speed keys).',
     defaultBindings: [keyboard(']')],
     allowRepeat: true
   },
   {
     id: 'pitch-down',
     group: 'playback',
-    action: 'Pitch Down (Semitone)',
-    description: 'Lower the pitch by one semitone without changing the speed.',
+    action: 'Pitch Down 10%',
+    description: 'Lower the pitch by 10% of normal without changing the speed (the same step size as the speed keys).',
     defaultBindings: [keyboard('[')],
     allowRepeat: true
   },
@@ -189,11 +189,25 @@ export const INPUT_ACTION_DEFINITIONS: readonly InputActionDefinition[] = [
     defaultBindings: [keyboard('k', ['shift'])]
   },
   {
+    id: 'stereo-mode-cycle',
+    group: 'playback',
+    action: 'Cycle Listen Mode (Stereo / Mid / Side / L / R)',
+    description: 'Hear the centre only (vocals, kick), the sides only (width, reverb), or a single channel. Stereo is the normal mode.',
+    defaultBindings: [keyboard('m', ['shift'])]
+  },
+  {
+    id: 'live-input-toggle',
+    group: 'playback',
+    action: 'Live Input on/off',
+    description: 'Show the chosen microphone or BlackHole input in the visualizers (set the device in Settings > Visuals).',
+    defaultBindings: [keyboard('i', ['shift'])]
+  },
+  {
     id: 'jump-to-now-playing',
     group: 'navigation',
     action: 'Jump to Now Playing',
     description: 'Reveal the current track using the configured destination.',
-    defaultBindings: [keyboard('j')]
+    defaultBindings: [keyboard('g')]
   },
   {
     id: 'focus-search-field',

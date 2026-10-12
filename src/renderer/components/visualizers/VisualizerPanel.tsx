@@ -13,6 +13,8 @@ import { useVisualizerSettingsStore, type VectorscopeMode } from '../../stores/v
 import { useUIStore } from '../../stores/uiStore'
 import { useBufferedCanvasResize } from '../../hooks/useBufferedCanvasResize'
 import { isSpectrogramBandDragClick, useSpectrogramBandSelect } from './useSpectrogramBandSelect'
+import { SongSpectrogramView } from './SongSpectrogramView'
+import { useSongViewStore } from '../../stores/songViewStore'
 import type { ScopeKind } from '../../../types/scopePopout'
 import type { SpectrogramClarityMode, SpectrogramScaleMode, SpectrogramOrientation } from '../../../types/spectrogram'
 import type { SpectrumDisplayMode } from '../../../types/spectrum'
@@ -526,6 +528,8 @@ export function DockedSpectrogramTile({
     onResize: () => visualizerRef.current?.resize(),
   })
   const bandSelect = useSpectrogramBandSelect({ containerRef, orientation, scaleMode, rangeMode })
+  const songView = useSongViewStore((s) => s.enabled)
+  const setSongView = useSongViewStore((s) => s.setEnabled)
 
   useEffect(() => {
     applyResizeNow()
@@ -577,17 +581,38 @@ export function DockedSpectrogramTile({
   }, [clarityMode, displayColors, lineColor, fftSize, scrollSpeed, scaleMode, rangeMode, tiltDbPerOctave, contrast, orientation])
 
   useEffect(() => {
-    if (isRunning) {
+    if (isRunning && !songView) {
       visualizerRef.current?.start()
     } else {
       visualizerRef.current?.stop()
     }
-  }, [isRunning])
+  }, [isRunning, songView])
 
   return (
     <div ref={containerRef} className="visualizer-surface has-band-select" {...bandSelect.surfaceProps}>
-      <canvas ref={canvasRef} className="visualizer-canvas" />
+      <canvas ref={canvasRef} className="visualizer-canvas" style={songView ? { visibility: 'hidden' } : undefined} />
+      {songView && (
+        <SongSpectrogramView
+          orientation={orientation}
+          scaleMode={scaleMode}
+          rangeMode={rangeMode}
+          fftSize={fftSize}
+          tiltDbPerOctave={tiltDbPerOctave}
+          contrast={contrast}
+          backgroundColor={displayColors.backgroundColor}
+          labelColor={displayColors.labelColor}
+        />
+      )}
       {bandSelect.layer}
+      <button
+        type="button"
+        className="song-view-btn song-view-toggle"
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => { event.stopPropagation(); setSongView(!songView) }}
+        title={songView ? 'Back to the live scrolling spectrogram' : 'Show the whole song so you can look around in it'}
+      >
+        {songView ? 'Live' : 'Song'}
+      </button>
     </div>
   )
 }

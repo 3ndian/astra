@@ -139,7 +139,7 @@ type ColorStop = {
   color: [number, number, number, number]
 }
 
-const LEGACY_DEFAULT_HEAT_COLORS: [string, string, string] = [
+export const LEGACY_DEFAULT_HEAT_COLORS: [string, string, string] = [
   'rgb(15, 7, 33)',
   'rgb(163, 26, 121)',
   'rgb(255, 241, 209)',
@@ -205,7 +205,7 @@ function lerpChannel(start: number, end: number, amount: number): number {
   return Math.round(start + ((end - start) * amount))
 }
 
-function buildHeatLUT(colors: [string, string, string]): Uint8ClampedArray {
+export function buildHeatLUT(colors: [string, string, string]): Uint8ClampedArray {
   const heatStops = buildHeatStops(colors)
   const lut = new Uint8ClampedArray(256 * 4)
 

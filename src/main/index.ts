@@ -52,6 +52,7 @@ import {
 } from '../shared/sections/sections'
 import { isAllowedArtworkProtocolHash } from './services/artworkProtocol'
 import type { DynamicPlaylistRules } from '../shared/playlists/dynamicPlaylist'
+import { BPM_DETECT_SAMPLE_RATE, detectBpm } from '../shared/audio/bpmDetect'
 import type {
   ListeningSessionCheckpoint,
   ListeningStatsApplyRequest,
@@ -5458,6 +5459,108 @@ function scheduleFileCreatedAtBackfillMigration(): void {
   }, FILE_CREATED_AT_BACKFILL_STARTUP_DELAY_MS)
 }
 
+// ── BPM detection ───────────────────────────────────────────────────────────
+// Tracks with no BPM tag get a tempo found by listening to ~90 seconds of the song. The result is
+// stored beside (never over) the tag value, so tags always win and rescans cannot erase it.
+const BPM_DETECT_STARTUP_DELAY_MS = 45_000
+const BPM_DETECT_RECHECK_INTERVAL_MS = 10 * 60_000
+const BPM_DETECT_BATCH_SIZE = 50
+const BPM_DETECT_FFMPEG_TIMEOUT_MS = 60_000
+const BPM_DETECT_MIN_CONFIDENCE = 0.05
+let bpmDetectionRunning = false
+
+async function decodeSamplesForBpm(ffmpegPath: string, filePath: string, startSeconds: number): Promise<Float32Array | null> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = []
+    let total = 0
+    let settled = false
+    const ffmpeg = spawn(
+      ffmpegPath,
+      [
+        '-v', 'error', '-nostdin',
+        '-ss', String(startSeconds),
+        '-i', filePath,
+        '-t', '90',
+        '-map', '0:a:0', '-vn',
+        '-ac', '1', '-ar', String(BPM_DETECT_SAMPLE_RATE),
+        '-f', 'f32le', 'pipe:1'
+      ],
+      { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }
+    )
+    const finish = (value: Float32Array | null): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(value)
+    }
+    const timer = setTimeout(() => { try { ffmpeg.kill() } catch { /* ignore */ } finish(null) }, BPM_DETECT_FFMPEG_TIMEOUT_MS)
+    if (typeof ffmpeg.pid === 'number') {
+      try { setPriority(ffmpeg.pid, osConstants.priority.PRIORITY_BELOW_NORMAL) } catch { /* ignore */ }
+    }
+    ffmpeg.stdout.on('data', (chunk: Buffer) => { chunks.push(chunk); total += chunk.length })
+    ffmpeg.on('error', () => finish(null))
+    ffmpeg.on('close', () => {
+      const bytes = total - (total % 4)
+      if (bytes < 4) { finish(null); return }
+      const buffer = Buffer.concat(chunks, total)
+      const copy = new Uint8Array(bytes)
+      copy.set(buffer.subarray(0, bytes))
+      finish(new Float32Array(copy.buffer))
+    })
+  })
+}
+
+async function detectBpmForFile(ffmpegPath: string, filePath: string): Promise<number | null> {
+  // Skip the intro when the song is long enough, and retry from the start for short ones.
+  for (const startSeconds of [20, 0]) {
+    const samples = await decodeSamplesForBpm(ffmpegPath, filePath, startSeconds)
+    if (!samples || samples.length < BPM_DETECT_SAMPLE_RATE * 8) continue
+    const result = detectBpm(samples, BPM_DETECT_SAMPLE_RATE)
+    if (result && result.confidence >= BPM_DETECT_MIN_CONFIDENCE) return result.bpm
+    if (startSeconds === 0) return null
+  }
+  return null
+}
+
+async function runBpmDetectionPass(): Promise<void> {
+  if (bpmDetectionRunning) return
+  bpmDetectionRunning = true
+  try {
+    const ffmpegPath = await resolveBinary('ffmpeg')
+    if (!ffmpegPath) return
+    for (;;) {
+      if (isOnBatteryPowerMain()) return
+      const candidates = library.getBpmDetectionCandidates(BPM_DETECT_BATCH_SIZE)
+      if (candidates.length === 0) return
+      let updated = 0
+      for (const filePath of candidates) {
+        if (isOnBatteryPowerMain()) break
+        let bpm: number | null = null
+        try {
+          bpm = await detectBpmForFile(ffmpegPath, filePath)
+        } catch (error) {
+          console.warn(`BPM detection failed for ${filePath}:`, error)
+        }
+        library.setDetectedBpm(filePath, bpm)
+        if (bpm != null) updated += 1
+        await new Promise((resolve) => setTimeout(resolve, 150))
+      }
+      if (updated > 0) {
+        mainWindow?.webContents.send('library:audioMetadataBackfillComplete', { scanned: candidates.length, updated, errors: 0 })
+      }
+    }
+  } catch (error) {
+    console.warn('BPM detection pass failed:', error)
+  } finally {
+    bpmDetectionRunning = false
+  }
+}
+
+function scheduleBpmDetection(): void {
+  setTimeout(() => { void runBpmDetectionPass() }, BPM_DETECT_STARTUP_DELAY_MS)
+  setInterval(() => { void runBpmDetectionPass() }, BPM_DETECT_RECHECK_INTERVAL_MS)
+}
+
 function scheduleAudioMetadataBackfillMigration(): void {
   if (library.getAppMeta(AUDIO_METADATA_BACKFILL_MIGRATION_KEY) === '1') {
     return
@@ -6094,6 +6197,7 @@ app.whenReady().then(async () => {
   })()
   scheduleFileCreatedAtBackfillMigration()
   scheduleAudioMetadataBackfillMigration()
+  scheduleBpmDetection()
   scheduleArtistCreditsBackfillMigration()
   scheduleGenreMetadataBackfillMigration()
   scheduleReplayGainBackfillMigration()

@@ -25,7 +25,8 @@ export const defaultVisualizerSessionSource: VisualizerSessionSource = {
   getSampleRate: () => audioEngine.getSampleRate(),
   // Keep the scopes "alive" while paused (analyzer active = playing OR paused) so they
   // hold their last frame instead of blanking; they only reset/blank once stopped.
-  isPlaying: () => isPlaybackAnalyzerActive(audioEngine.playbackState),
+  // A live input (microphone or BlackHole) keeps the scopes running even with no song playing.
+  isPlaying: () => isPlaybackAnalyzerActive(audioEngine.playbackState) || audioEngine.isLiveInputActive(),
   isPaused: () => audioEngine.playbackState === 'paused',
   subscribeToSessionChanges: (listener, options) => {
     let previousState: string = audioEngine.playbackState

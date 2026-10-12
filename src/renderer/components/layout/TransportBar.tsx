@@ -15,6 +15,7 @@ import { useOpenAlbumInLibrary } from '../../hooks/useOpenAlbumInLibrary'
 import { useJumpToNowPlaying } from '../../hooks/useJumpToNowPlaying'
 import { usePlaybackClock } from '../../hooks/usePlaybackClock'
 import { audioEngine } from '../../audio/AudioEngine'
+import { PITCH_ENGINES, PITCH_ENGINE_ORDER, type PitchEngineId } from '../../audio/pitchEngines'
 import AlbumArtwork from '../library/AlbumArtwork'
 import ArtistNameLinks from '../library/ArtistNameLinks'
 import WaveformSeekBar from '../player/WaveformSeekBar'
@@ -127,8 +128,22 @@ export default function TransportBar() {
   const pitchLock = usePlayerStore((s) => s.pitchLock)
   const resetPlaybackRate = usePlayerStore((s) => s.resetPlaybackRate)
   const setPlaybackRateTo = usePlayerStore((s) => s.setPlaybackRateTo)
-  const pitchSemitones = usePlayerStore((s) => s.pitchSemitones)
+  const pitchShift = usePlayerStore((s) => s.pitchShift)
   const resetPitchShift = usePlayerStore((s) => s.resetPitchShift)
+  const stereoMode = usePlayerStore((s) => s.stereoMode)
+  const [pitchEngine, setPitchEngineLabelId] = useState<PitchEngineId>(() => audioEngine.getPitchEngine())
+  useEffect(() => {
+    const sync = (): void => setPitchEngineLabelId(audioEngine.getPitchEngine())
+    sync()
+    const off = audioEngine.on('stateChange', sync)
+    return () => off?.()
+  }, [])
+  const cyclePitchEngine = (): void => {
+    const next = PITCH_ENGINE_ORDER[(PITCH_ENGINE_ORDER.indexOf(audioEngine.getPitchEngine()) + 1) % PITCH_ENGINE_ORDER.length]
+    audioEngine.setPitchEngine(next)
+    setPitchEngineLabelId(audioEngine.getPitchEngine())
+  }
+  const cycleStereoMode = usePlayerStore((s) => s.cycleStereoMode)
   const speedDragRef = useRef<{ startX: number; startRate: number; moved: boolean } | null>(null)
   const handleSpeedPointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
     event.currentTarget.setPointerCapture(event.pointerId)
@@ -685,11 +700,27 @@ export default function TransportBar() {
             </button>
             <button
               type="button"
-              className={`transport-speed-pitch${pitchSemitones !== 0 ? ' is-on' : ''}`}
+              className={`transport-speed-pitch${pitchShift !== 1 ? ' is-on' : ''}`}
               onClick={() => resetPitchShift()}
-              title="Pitch shift in semitones. [ lowers and ] raises it. Click to clear."
+              title="Pitch shift, in the same 10% steps as speed. [ lowers and ] raises it. Click to clear."
             >
-              {pitchSemitones > 0 ? `+${pitchSemitones}` : pitchSemitones} st
+              Pitch {pitchShift.toFixed(2).replace(/0$/, '')}×
+            </button>
+            <button
+              type="button"
+              className={`transport-speed-pitch${pitchEngine === 'rubberband' ? ' is-on' : ''}`}
+              onClick={cyclePitchEngine}
+              title={`Pitch quality: ${PITCH_ENGINES[pitchEngine].label}. Click to switch between Smooth, Rubber Band and Simple. Rubber Band needs the rubberband-web package installed; if it is missing the app uses Smooth.`}
+            >
+              {({ wsola: 'Smooth', rubberband: 'Rubber Band', simple: 'Simple' } as const)[pitchEngine]}
+            </button>
+            <button
+              type="button"
+              className={`transport-speed-pitch${stereoMode !== 'stereo' ? ' is-on' : ''}`}
+              onClick={() => cycleStereoMode()}
+              title="Listen mode: Stereo (normal), Mid (the centre: vocals, kick), Side (the width: reverb, wide synths), or Left / Right on both ears. Shift+M cycles. The visuals keep showing the full mix."
+            >
+              {({ stereo: 'Stereo', mid: 'Mid', side: 'Side', left: 'L only', right: 'R only' } as const)[stereoMode]}
             </button>
           </div>
         </div>

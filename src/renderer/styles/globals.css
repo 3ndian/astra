@@ -32355,3 +32355,19 @@ html.band-selecting, html.band-selecting * { cursor: grabbing !important; user-s
 .transport-speed-value.is-changed { color: var(--accent); background: rgba(var(--accent-rgb), 0.12); }
 .transport-speed-row { display: flex; gap: 3px; }
 .transport-speed-row .transport-speed-pitch { flex: 1; }
+
+/* Whole-song spectrogram view */
+.song-view { position: absolute; inset: 0; overflow: hidden; }
+.song-view-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.song-view-note { position: absolute; left: 8px; right: 8px; top: 50%; transform: translateY(-50%); text-align: center; font-size: 11px; color: var(--text-secondary); pointer-events: none; }
+.song-view-strip { position: absolute; z-index: 3; cursor: grab; touch-action: none; border-radius: 3px; }
+.song-view-strip:active { cursor: grabbing; }
+.song-view-strip.is-horizontal { left: 0; right: 0; bottom: 0; width: 100%; height: 16px; }
+.song-view-strip.is-vertical { top: 0; bottom: 0; right: 0; height: 100%; width: 14px; }
+.song-view-btn { position: absolute; z-index: 4; font-size: 10px; line-height: 1; padding: 3px 7px; border-radius: 999px; border: 1px solid rgba(var(--tint), 0.25); background: rgba(0, 0, 0, 0.55); color: #fff; cursor: pointer; }
+.song-view-btn:hover { background: rgba(0, 0, 0, 0.75); }
+.song-view-toggle { top: 4px; left: 4px; opacity: 0.55; }
+.visualizer-surface:hover .song-view-toggle { opacity: 1; }
+.song-view-follow { top: 4px; right: 4px; background: rgba(var(--accent-rgb), 0.85); }
+.spectrogram-expanded-body .song-view-follow { right: 18px; }
+.transport-speed-row { flex-wrap: wrap; }

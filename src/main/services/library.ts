@@ -939,7 +939,7 @@ const EFFECTIVE_TRACK_SELECT_COLUMNS = `
   t.is_iamf AS is_iamf,
   t.replaygain_track_gain_db AS replaygain_track_gain_db,
   t.replaygain_album_gain_db AS replaygain_album_gain_db,
-  t.bpm AS bpm,
+  COALESCE(t.bpm, t.bpm_detected) AS bpm,
   t.musical_key AS musical_key,
   t.source_type AS source_type,
   t.source_id AS source_id,
@@ -2562,6 +2562,17 @@ export async function initDatabase(sectionId: string = DEFAULT_SECTION_ID): Prom
   }
   try {
     db.run('ALTER TABLE tracks ADD COLUMN bpm REAL')
+  } catch {
+    // Column already exists.
+  }
+  // Tempo found by listening (see bpmDetect). Kept apart from the tag value so rescans never erase it.
+  try {
+    db.run('ALTER TABLE tracks ADD COLUMN bpm_detected REAL')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE tracks ADD COLUMN bpm_detect_attempted INTEGER NOT NULL DEFAULT 0')
   } catch {
     // Column already exists.
   }
@@ -4914,6 +4925,33 @@ export interface TrackLoudnessUpsertInput {
   method: string
   fileSize: number | null
   fileMtimeMs: number | null
+}
+
+/** Local tracks with no BPM tag that have not been listened to yet, newest first. */
+export function getBpmDetectionCandidates(limit: number): string[] {
+  if (!db) return []
+  return db.all<{ path?: unknown }>(`
+    SELECT path
+    FROM tracks
+    WHERE source_type = 'local'
+      AND COALESCE(is_iamf, 0) = 0
+      AND COALESCE(is_available, 1) = 1
+      AND bpm IS NULL
+      AND bpm_detected IS NULL
+      AND bpm_detect_attempted = 0
+    ORDER BY added_at DESC
+    LIMIT ?
+  `, [Math.max(1, Math.floor(limit))])
+    .map((row) => (typeof row.path === 'string' ? row.path : null))
+    .filter((value): value is string => value !== null)
+}
+
+export function setDetectedBpm(trackPath: string, bpm: number | null): void {
+  if (!db) return
+  db.run(
+    "UPDATE tracks SET bpm_detected = ?, bpm_detect_attempted = 1 WHERE path = ? AND source_type = 'local'",
+    [bpm, trackPath]
+  )
 }
 
 export function getTrackLoudness(trackPath: string): TrackLoudnessEntry | null {
@@ -11541,7 +11579,7 @@ const DYNAMIC_NUMERIC_FIELD_SQL: Record<DynamicPlaylistNumericField, string> = {
   play_count: 'COALESCE(t.play_count, 0)',
   year: 'COALESCE(o.year, t.year)',
   duration_seconds: 't.duration',
-  bpm: 't.bpm',
+  bpm: 'COALESCE(t.bpm, t.bpm_detected)',
   // NULL for unrated tracks, so numeric conditions never match them; the
   // 'rated' exact field is the way to target unrated tracks.
   rating: 'r.rating'
@@ -11561,7 +11599,7 @@ const DYNAMIC_SORT_FIELD_SQL: Record<DynamicPlaylistSortField, { expression: str
   play_count: { expression: 'COALESCE(t.play_count, 0)', nullable: false },
   year: { expression: 'COALESCE(o.year, t.year)', nullable: true },
   duration_seconds: { expression: 't.duration', nullable: false },
-  bpm: { expression: 't.bpm', nullable: true },
+  bpm: { expression: 'COALESCE(t.bpm, t.bpm_detected)', nullable: true },
   rating: { expression: 'r.rating', nullable: true }
 }
 

@@ -8,7 +8,8 @@ import {
   audioEngine,
   isSupersededAudioLoadError,
   type AudioBufferReadyMetadata,
-  type AudioLoadTimings
+  type AudioLoadTimings,
+  type StereoListenMode
 } from '../audio/AudioEngine'
 import type { Track, PlaybackState } from '../types/audio'
 import type { NativeAudioCapabilities, NativeAudioTrackLoadResult } from '../../types/nativeAudio'
@@ -324,11 +325,15 @@ interface PlayerStore {
   /** Shuttle speed: 1 is normal. Halving/doubling (J / L) and 10% nudges (Shift+J / Shift+L). */
   playbackRate: number
   pitchLock: boolean
-  /** Pitch shift in semitones (-12..12), independent of speed. */
-  pitchSemitones: number
+  /** Pitch shift as a ratio (1 = normal, 1.1 = 10% higher), independent of speed. */
+  pitchShift: number
   setPlaybackRateTo: (rate: number) => void
   shiftPitch: (direction: 1 | -1) => void
   resetPitchShift: () => void
+  /** What the speakers get: normal stereo, the centre (mid), the sides, or one channel on both ears. */
+  stereoMode: StereoListenMode
+  setStereoMode: (mode: StereoListenMode) => void
+  cycleStereoMode: () => void
   shuttleSlower: () => void
   shuttleFaster: () => void
   nudgePlaybackRate: (direction: 1 | -1) => void
@@ -3213,7 +3218,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     isMuted: false,
     playbackRate: 1,
     pitchLock: readStoredPitchLock(),
-    pitchSemitones: 0,
+    pitchShift: 1,
+    stereoMode: 'stereo',
     waveformData: null,
     waveformBufferedRatio: 1,
     waveformAnalyzedRatio: 1,
@@ -3992,15 +3998,26 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     resetPlaybackRate: () => applyShuttleRate(1),
     setPlaybackRateTo: (rate) => applyShuttleRate(rate),
     shiftPitch: (direction) => {
-      const next = Math.min(12, Math.max(-12, get().pitchSemitones + direction))
-      if (next === get().pitchSemitones) return
-      if (!audioEngine.setPitchSemitones(next)) return
-      set({ pitchSemitones: next })
+      let next = Math.min(2, Math.max(0.5, Math.round((get().pitchShift + direction * 0.1) * 100) / 100))
+      if (Math.abs(next - 1) < 0.005) next = 1
+      if (next === get().pitchShift) return
+      if (!audioEngine.setPitchShiftRatio(next)) return
+      set({ pitchShift: next })
     },
     resetPitchShift: () => {
-      if (get().pitchSemitones === 0) return
-      audioEngine.setPitchSemitones(0)
-      set({ pitchSemitones: 0 })
+      if (get().pitchShift === 1) return
+      audioEngine.setPitchShiftRatio(1)
+      set({ pitchShift: 1 })
+    },
+    setStereoMode: (mode) => {
+      if (get().stereoMode === mode) return
+      if (!audioEngine.setStereoMode(mode)) return
+      set({ stereoMode: mode })
+    },
+    cycleStereoMode: () => {
+      const order: StereoListenMode[] = ['stereo', 'mid', 'side', 'left', 'right']
+      const next = order[(order.indexOf(get().stereoMode) + 1) % order.length]
+      get().setStereoMode(next)
     },
     togglePitchLock: () => {
       const next = !get().pitchLock
@@ -6145,13 +6162,16 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   }
 })
 
-// A new song always starts at normal speed.
+// Speed and pitch stay as set when the next song starts. They only go back to normal when asked (K, or
+// clicking the badge), or when the output mode cannot change speed at all.
 usePlayerStore.subscribe((nextState, prevState) => {
-  if (nextState.playbackRate === 1 && nextState.pitchSemitones === 0) return
+  if (nextState.playbackRate === 1 && nextState.pitchShift === 1 && nextState.stereoMode === 'stereo') return
   if (nextState.currentTrack?.path === prevState.currentTrack?.path) return
+  if (audioEngine.getPlaybackOutputMode() === 'standard') return
   audioEngine.setPlaybackRate(1)
-  audioEngine.setPitchSemitones(0)
-  usePlayerStore.setState({ playbackRate: 1, pitchSemitones: 0 })
+  audioEngine.setPitchShiftRatio(1)
+  audioEngine.setStereoMode('stereo')
+  usePlayerStore.setState({ playbackRate: 1, pitchShift: 1, stereoMode: 'stereo' })
 })
 
 useAudioSettingsStore.subscribe((nextState, prevState) => {

@@ -21,6 +21,8 @@ export const INPUT_ACTION_ID_VALUES = [
   'speed-faster-small',
   'speed-normal',
   'pitch-lock-toggle',
+  'stereo-mode-cycle',
+  'live-input-toggle',
   'pitch-up',
   'pitch-down',
   'focus-search-field',

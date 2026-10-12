@@ -1,3 +1,4 @@
+import { PITCH_ENGINES, PITCH_ENGINE_STORAGE_KEY, readStoredPitchEngineId, type PitchEngineId } from './pitchEngines'
 import { createMonoSampleQueue, createStereoSampleQueue, createMultichannelSampleQueue, createMiniSampleQueue } from './visualizerSampleQueue'
 import { clampFilterRange, planCutBranches, planFrequencyFilter, planSolo, NATIVE_CUT_PLAN, type FilterStage, type FrequencyFilterRange } from '../../shared/frequencyFilter/plan'
 import { BandFilter } from '../../shared/frequencyFilter/biquad'
@@ -110,6 +111,17 @@ import {
   type SourceSpeakerRoutingMap,
   type SpeakerRoleId,
 } from '../utils/speakerLayout'
+
+export type StereoListenMode = 'stereo' | 'mid' | 'side' | 'left' | 'right'
+// [left->left, right->left, left->right, right->right]
+const STEREO_LISTEN_MATRIX: Record<StereoListenMode, readonly [number, number, number, number]> = {
+  stereo: [1, 0, 0, 1],
+  mid: [0.5, 0.5, 0.5, 0.5],
+  side: [0.5, -0.5, 0.5, -0.5],
+  left: [1, 0, 1, 0],
+  right: [0, 1, 0, 1]
+}
+
 
 type EventCallback = (...args: unknown[]) => void
 
@@ -536,6 +548,8 @@ export class AudioEngine {
   private analysisTapSinkNode: GainNode | null = null
   private workletNode: AudioWorkletNode | null = null
   private remoteStreamNode: AudioWorkletNode | null = null
+  // A live input (microphone, or BlackHole carrying the computer's sound) that only feeds the visualizers.
+  private liveInput: { stream: MediaStream; source: MediaStreamAudioSourceNode; label: string } | null = null
   private parallaxSinkNode: AudioWorkletNode | null = null
   private workletLoaded: boolean = false
   private disableStandardAnalysisGraphDev: boolean = false
@@ -551,6 +565,8 @@ export class AudioEngine {
     soloWet: GainNode
     cutWet: GainNode
     join: GainNode
+    /** After the stereo-mode stage; the pitch stage (if any) takes its audio from here. */
+    tail: GainNode
     /** Each bank is one or two lines of filters; every line is fed from the same input. */
     solo: BiquadFilterNode[][]
     cut: BiquadFilterNode[][]
@@ -625,9 +641,12 @@ export class AudioEngine {
   // Shuttle speed (1 = normal). The clock above runs in track time: (context time - startTime) * playbackRate.
   private playbackRate = 1
   private pitchLock = false
-  private pitchSemitones = 0
+  private pitchShiftRatio = 1
+  private stereoMode: StereoListenMode = 'stereo'
+  private stereoStage: { splitter: ChannelSplitterNode; merger: ChannelMergerNode; gains: GainNode[]; active: boolean } | null = null
   private pitchCorrectNode: AudioWorkletNode | null = null
-  private pitchCorrectModuleLoaded = false
+  private pitchEngineId: PitchEngineId = readStoredPitchEngineId()
+  private readonly pitchEngineModulesLoaded = new Set<PitchEngineId>()
   private pitchCorrectEngaged = false
   private isGaplessTransition: boolean = false
 
@@ -2766,6 +2785,7 @@ export class AudioEngine {
     this.syncSourceAnalysisTapConnection(this.nextSourceNode, this.nextBuffer?.numberOfChannels)
     this.syncSourceAnalysisTapConnection(this.remoteStreamNode, this.remoteStreamState?.channels)
     this.syncSourceAnalysisTapConnection(this.parallaxSinkNode, this.parallaxSinkState?.channels)
+    this.syncSourceAnalysisTapConnection(this.liveInput?.source ?? null, 2)
   }
 
   private getPostEQOutputNode(): AudioNode | null {
@@ -5801,6 +5821,99 @@ export class AudioEngine {
   }
 
   // Get actual sample rate from AudioContext (for native DSP sync)
+  /** The decoded song in memory, if the current output keeps one. Used to draw the whole-song spectrogram. */
+  getDecodedAudioForAnalysis(): { buffer: AudioBuffer; trackPath: string | null } | null {
+    if (!this.audioBuffer) return null
+    return { buffer: this.audioBuffer, trackPath: this.currentBufferTrackPath }
+  }
+
+  isLiveInputActive(): boolean {
+    return this.liveInput !== null
+  }
+
+  getLiveInputLabel(): string | null {
+    return this.liveInput?.label ?? null
+  }
+
+  /**
+   * Show a live input (a microphone, or BlackHole carrying whatever the computer is playing) in the visualizers.
+   * The sound is only analysed, never played, so there is no echo.
+   */
+  async startLiveInput(deviceId: string | null): Promise<{ ok: true; label: string } | { ok: false; message: string }> {
+    if (this.isNativeExclusiveMode() || this.playbackOutputMode !== 'standard') {
+      return { ok: false, message: 'Live input needs the normal output mode, not bit-perfect.' }
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      return { ok: false, message: 'Audio input is not supported here.' }
+    }
+    await this.initContext()
+    const ctx = this.context
+    if (!ctx || !this.analysisNormalizationGainNode) {
+      return { ok: false, message: 'The audio engine is not ready yet.' }
+    }
+    if (this.shouldBypassStandardAnalysisGraph()) {
+      return { ok: false, message: 'The visualizer analysis graph is switched off.' }
+    }
+    if (ctx.state === 'suspended') {
+      try { await ctx.resume() } catch { /* ignore */ }
+    }
+    this.stopLiveInput()
+
+    const audio: MediaTrackConstraints = {
+      channelCount: { ideal: 2 },
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false
+    }
+    const wanted = deviceId?.trim()
+    if (wanted && wanted !== 'default') audio.deviceId = { exact: wanted }
+
+    let stream: MediaStream
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio, video: false })
+    } catch (error) {
+      return {
+        ok: false,
+        message: this.isLikelyPermissionDenied(error)
+          ? 'Microphone access was denied. Allow it for Astra in System Settings > Privacy & Security > Microphone.'
+          : 'That input could not be opened.'
+      }
+    }
+    const track = stream.getAudioTracks()[0]
+    const label = track?.label || 'Input'
+    try {
+      const source = ctx.createMediaStreamSource(stream)
+      this.liveInput = { stream, source, label }
+      this.connectSourceToAnalysisTap(source, 2)
+      track?.addEventListener('ended', () => {
+        if (this.liveInput?.stream === stream) {
+          this.stopLiveInput()
+          this.emit('stateChange', this._playbackState)
+        }
+      })
+    } catch (error) {
+      for (const t of stream.getTracks()) t.stop()
+      this.liveInput = null
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not start the input.' }
+    }
+    this.syncStandardVisualizerStreaming()
+    this.emit('stateChange', this._playbackState)
+    return { ok: true, label }
+  }
+
+  stopLiveInput(): void {
+    const live = this.liveInput
+    if (!live) return
+    this.liveInput = null
+    this.disconnectSourceFromAnalysisTap(live.source)
+    try { live.source.disconnect() } catch { /* ignore */ }
+    for (const t of live.stream.getTracks()) {
+      try { t.stop() } catch { /* ignore */ }
+    }
+    this.pendingSpectrogramSamples.clear()
+    this.emit('stateChange', this._playbackState)
+  }
+
   getSampleRate(): number {
     if (this.isNativeExclusiveMode()) {
       return this.nativeSnapshot?.outputStatus.processing.targetSampleRate
@@ -9055,10 +9168,14 @@ export class AudioEngine {
     dry.connect(join)
     soloWet.connect(join)
     cutWet.connect(join)
-    join.connect(this.preampNode)
-    this.rangeFilterGraph = { dry, soloWet, cutWet, join, solo, cut, fed: { solo: false, cut: false }, timers: { solo: null, cut: null } }
+    const tail = context.createGain()
+    join.connect(tail)
+    tail.connect(this.preampNode)
+    this.rangeFilterGraph = { dry, soloWet, cutWet, join, tail, solo, cut, fed: { solo: false, cut: false }, timers: { solo: null, cut: null } }
     // A fresh graph starts without the pitch stage; put it back if it is wanted.
     this.pitchCorrectEngaged = false
+    this.stereoStage = null
+    this.applyStereoMode()
     void this.syncPitchCorrection()
     return this.rangeFilterGraph
   }
@@ -9075,6 +9192,70 @@ export class AudioEngine {
     }
     this.normalizationGainNode.connect(graph.dry)
     this.applyRangeFilterGraph()
+  }
+
+  // ---- Stereo listen modes: Stereo, Mid only, Side only, Left only, Right only (standard output only) ----
+
+  getStereoMode(): StereoListenMode {
+    return this.stereoMode
+  }
+
+  setStereoMode(mode: StereoListenMode): boolean {
+    if (mode !== 'stereo' && !this.canShuttle()) return false
+    this.stereoMode = mode
+    this.applyStereoMode()
+    return true
+  }
+
+  private applyStereoMode(): void {
+    const ctx = this.context
+    const graph = this.rangeFilterGraph
+    if (!ctx || !graph) return
+    const mode = this.stereoMode
+    const matrix = STEREO_LISTEN_MATRIX[mode]
+
+    if (mode === 'stereo') {
+      const stage = this.stereoStage
+      if (stage?.active) {
+        try { graph.join.disconnect(stage.splitter) } catch { /* ignore */ }
+        try { graph.join.connect(graph.tail) } catch { /* ignore */ }
+        // Leave the stage wired but unused; it is cheap and avoids rebuilding it.
+        stage.active = false
+      }
+      return
+    }
+
+    let stage = this.stereoStage
+    if (!stage) {
+      const splitter = ctx.createChannelSplitter(2)
+      const merger = ctx.createChannelMerger(2)
+      // Whatever the source is, work on its left and right pair.
+      graph.join.channelCount = 2
+      graph.join.channelCountMode = 'explicit'
+      const gains = [0, 1, 2, 3].map(() => ctx.createGain())
+      // gains: left->left, right->left, left->right, right->right
+      splitter.connect(gains[0], 0)
+      splitter.connect(gains[1], 1)
+      splitter.connect(gains[2], 0)
+      splitter.connect(gains[3], 1)
+      gains[0].connect(merger, 0, 0)
+      gains[1].connect(merger, 0, 0)
+      gains[2].connect(merger, 0, 1)
+      gains[3].connect(merger, 0, 1)
+      merger.connect(graph.tail)
+      stage = { splitter, merger, gains, active: false }
+      this.stereoStage = stage
+    }
+    const now = ctx.currentTime
+    stage.gains.forEach((gain, index) => {
+      if (stage && !stage.active) gain.gain.setValueAtTime(matrix[index], now)
+      else gain.gain.setTargetAtTime(matrix[index], now, 0.01)
+    })
+    if (!stage.active) {
+      try { graph.join.disconnect(graph.tail) } catch { /* ignore */ }
+      try { graph.join.connect(stage.splitter) } catch { /* ignore */ }
+      stage.active = true
+    }
   }
 
   // ---- Shuttle speed (standard output only) ----
@@ -9098,19 +9279,40 @@ export class AudioEngine {
     return this.pitchLock
   }
 
-  /** Shift the pitch by whole or fractional semitones (-12 to +12) without changing the speed. */
-  setPitchSemitones(semitones: number): boolean {
-    if (!Number.isFinite(semitones)) return false
-    const next = Math.min(12, Math.max(-12, semitones))
-    if (next !== 0 && !this.canShuttle()) return false
-    this.pitchSemitones = next
+  getPitchEngine(): PitchEngineId {
+    return this.pitchEngineId
+  }
+
+  /** Switch the pitch-shifting method (see pitchEngines.ts). Takes effect right away if the stage is in use. */
+  setPitchEngine(id: PitchEngineId): void {
+    if (id === this.pitchEngineId) return
+    this.pitchEngineId = id
+    try { localStorage.setItem(PITCH_ENGINE_STORAGE_KEY, id) } catch { /* ignore */ }
+    const graph = this.rangeFilterGraph
+    if (graph && this.preampNode && this.pitchCorrectEngaged) {
+      try { graph.tail.disconnect() } catch { /* ignore */ }
+      try { graph.tail.connect(this.preampNode) } catch { /* ignore */ }
+    }
+    try { this.pitchCorrectNode?.disconnect() } catch { /* ignore */ }
+    this.pitchCorrectNode = null
+    this.pitchCorrectEngaged = false
+    void this.syncPitchCorrection()
+  }
+
+  /** Shift the pitch independently of the speed. 1 = unchanged, 1.1 = 10% higher, 0.9 = 10% lower (0.5 to 2). */
+  setPitchShiftRatio(ratio: number): boolean {
+    if (!Number.isFinite(ratio)) return false
+    const next = Math.min(2, Math.max(0.5, ratio))
+    if (next !== 1 && !this.canShuttle()) return false
+    this.pitchShiftRatio = next
     this.updatePitchCorrection()
     return true
   }
 
   /** How much the pitch stage must shift the (speed-changed) signal: the chosen shift, plus undoing the speed's own shift when the pitch is locked. */
   private desiredPitchRatio(): number {
-    return Math.pow(2, this.pitchSemitones / 12) * (this.pitchLock ? 1 / this.playbackRate : 1)
+    const ratio = this.pitchShiftRatio * (this.pitchLock ? 1 / this.playbackRate : 1)
+    return Math.min(4, Math.max(0.25, ratio))
   }
 
   private applySourcePlaybackRate(source: AudioBufferSourceNode | null): void {
@@ -9154,7 +9356,11 @@ export class AudioEngine {
     const ctx = this.context
     const node = this.pitchCorrectNode
     if (ctx && node && this.pitchCorrectEngaged) {
-      try { node.parameters.get('ratio')?.setTargetAtTime(this.desiredPitchRatio(), ctx.currentTime, 0.02) } catch { /* ignore */ }
+      try {
+        const rubber = node as AudioWorkletNode & { setPitch?: (ratio: number) => void }
+        if (typeof rubber.setPitch === 'function') rubber.setPitch(this.desiredPitchRatio())
+        else node.parameters.get('ratio')?.setTargetAtTime(this.desiredPitchRatio(), ctx.currentTime, 0.02)
+      } catch { /* ignore */ }
     }
     void this.syncPitchCorrection()
   }
@@ -9167,23 +9373,36 @@ export class AudioEngine {
     if (want === this.pitchCorrectEngaged) return
 
     if (!want) {
-      try { graph.join.disconnect() } catch { /* ignore */ }
-      try { graph.join.connect(this.preampNode) } catch { /* ignore */ }
+      try { graph.tail.disconnect() } catch { /* ignore */ }
+      try { graph.tail.connect(this.preampNode) } catch { /* ignore */ }
       try { this.pitchCorrectNode?.disconnect() } catch { /* ignore */ }
       this.pitchCorrectEngaged = false
       return
     }
 
+    const engine = PITCH_ENGINES[this.pitchEngineId]
     try {
-      if (!this.pitchCorrectModuleLoaded) {
-        await ctx.audioWorklet.addModule('./pitch-correct-worklet.js')
-        this.pitchCorrectModuleLoaded = true
+      if (engine.kind === 'rubberband') {
+        if (!this.pitchCorrectNode) {
+          const { createRubberBandPitchNode } = await import('./rubberbandEngine')
+          const created = await createRubberBandPitchNode(ctx, engine.moduleUrl)
+          // Things may have changed while it loaded.
+          if (this.context !== ctx || this.rangeFilterGraph !== graph || !this.preampNode || engine.id !== this.pitchEngineId) {
+            try { created.disconnect() } catch { /* ignore */ }
+            return
+          }
+          this.pitchCorrectNode = created
+        }
+      } else if (!this.pitchEngineModulesLoaded.has(engine.id)) {
+        await ctx.audioWorklet.addModule(engine.moduleUrl)
+        this.pitchEngineModulesLoaded.add(engine.id)
       }
       // Things may have changed while the module loaded.
       if (this.context !== ctx || this.rangeFilterGraph !== graph || !this.preampNode) return
+      if (engine.id !== this.pitchEngineId) return
       if (!(Math.abs(this.desiredPitchRatio() - 1) > 0.0005) || this.pitchCorrectEngaged) return
       if (!this.pitchCorrectNode) {
-        this.pitchCorrectNode = new AudioWorkletNode(ctx, 'pitch-correct-processor', {
+        this.pitchCorrectNode = new AudioWorkletNode(ctx, engine.processorName, {
           numberOfInputs: 1,
           numberOfOutputs: 1,
           outputChannelCount: [2],
@@ -9192,13 +9411,28 @@ export class AudioEngine {
         })
       }
       const node = this.pitchCorrectNode
-      node.parameters.get('ratio')?.setValueAtTime(this.desiredPitchRatio(), ctx.currentTime)
-      try { graph.join.disconnect() } catch { /* ignore */ }
-      graph.join.connect(node)
+      const rubber = node as AudioWorkletNode & { setPitch?: (ratio: number) => void }
+      if (typeof rubber.setPitch === 'function') {
+        rubber.setPitch(this.desiredPitchRatio())
+      } else {
+        // Start from clean state so nothing from an earlier use leaks in.
+        node.port.postMessage({ type: 'reset' })
+        node.parameters.get('ratio')?.setValueAtTime(this.desiredPitchRatio(), ctx.currentTime)
+      }
+      try { graph.tail.disconnect() } catch { /* ignore */ }
+      graph.tail.connect(node)
       node.connect(this.preampNode)
       this.pitchCorrectEngaged = true
     } catch (error) {
       console.error('Failed to start the pitch-correcting stage:', error)
+      if (engine.kind === 'rubberband' && this.pitchEngineId === engine.id) {
+        // Rubber Band is not installed or could not start: go back to the Smooth engine (the saved choice is kept).
+        console.warn('Rubber Band is unavailable, using the Smooth pitch engine instead.')
+        this.pitchEngineId = 'wsola'
+        this.pitchCorrectNode = null
+        this.emit('stateChange', this._playbackState)
+        void this.syncPitchCorrection()
+      }
     }
   }
 
@@ -9463,6 +9697,7 @@ export class AudioEngine {
       this.workletNode.disconnect()
       this.workletNode = null
     }
+    this.stopLiveInput()
     this.disconnectRemoteStreamNode()
     this.disconnectParallaxSinkNode()
     this.parallaxSinkState = null
@@ -9515,7 +9750,7 @@ export class AudioEngine {
       this.rangeFilterGraph = null
     }
     this.pitchCorrectNode = null
-    this.pitchCorrectModuleLoaded = false
+    this.pitchEngineModulesLoaded.clear()
     this.pitchCorrectEngaged = false
     this.gainNode = null
     this.normalizationGainNode = null

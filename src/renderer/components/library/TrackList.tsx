@@ -1114,6 +1114,8 @@ export default function TrackList({
   const queueInsertPointerCleanupRef = useRef<(() => void) | null>(null)
   const queueInsertPointerStateRef = useRef<TrackSelectionPointerState | null>(null)
   const suppressQueueInsertClickRef = useRef(false)
+  // A right-click (or Ctrl+click on a Mac) must never start playback, even if the browser also sends a click.
+  const lastContextMenuAtRef = useRef(0)
   const suppressQueueInsertClickTimerRef = useRef<number | null>(null)
   const listBodyRef = useRef<HTMLDivElement | null>(null)
   const controllerGroupRef = useRef<HTMLDivElement | null>(null)
@@ -1641,6 +1643,28 @@ export default function TrackList({
     })
   }, [trackInstanceKeys, tracks])
 
+  // Cmd/Ctrl+A selects every track in the list in front of you (instead of selecting the whole page).
+  useEffect(() => {
+    const handleSelectAll = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.shiftKey || event.altKey) return
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'a') return
+      const target = event.target instanceof HTMLElement ? event.target : null
+      if (target && (target.isContentEditable || ['input', 'textarea', 'select'].includes(target.tagName.toLowerCase()))) return
+      if (document.querySelector('.modal-overlay, [role="dialog"], .settings-overlay, .quick-launch-overlay')) return
+      const root = controllerGroupRef.current
+      if (!root || !root.isConnected || root.offsetParent === null || tracks.length === 0) return
+      event.preventDefault()
+      const keys = new Set<string>()
+      tracks.forEach((candidate, candidateIndex) => {
+        if (isMissingPlaylistEntryTrack(candidate)) return
+        keys.add(trackInstanceKeys?.[candidateIndex] ?? candidate.path)
+      })
+      setSelectedTrackKeys((current) => (areTrackPathSetsEqual(current, keys) ? current : keys))
+    }
+    document.addEventListener('keydown', handleSelectAll)
+    return () => document.removeEventListener('keydown', handleSelectAll)
+  }, [trackInstanceKeys, tracks])
+
   useEffect(() => {
     if (selectedTrackKeys.size === 0) return
 
@@ -1702,6 +1726,8 @@ export default function TrackList({
   }, [])
 
   const handleTrackClick = useCallback(async (event: React.MouseEvent<HTMLDivElement>, dbTrack: DbTrack, index: number, forcePlay = false) => {
+    if (event.button !== 0) return
+    if (performance.now() - lastContextMenuAtRef.current < 500) return
     if (suppressQueueInsertClickRef.current) {
       suppressQueueInsertClickRef.current = false
       if (suppressQueueInsertClickTimerRef.current !== null) {
@@ -2059,6 +2085,7 @@ export default function TrackList({
   }, [openPlaylistPopupForTracks, resolveActionTracks])
 
   const handleTrackContextMenu = useCallback((event: React.MouseEvent<HTMLDivElement>, track: DbTrack, trackIndex: number) => {
+    lastContextMenuAtRef.current = performance.now()
     event.preventDefault()
     event.stopPropagation()
     closePlaylistPopup()
