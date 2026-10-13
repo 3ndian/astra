@@ -83,9 +83,10 @@ export default function AnalyzerDeck({ onAnalyzerHeightPreviewChange }: Analyzer
 
   // While the spectrogram is open in the tall panel it leaves the row, and the other scopes take its room.
   const spectrogramPanelOpen = useSpectrogramExpandStore((state) => state.open)
+  const panelScope = useSpectrogramExpandStore((state) => state.scope)
   const visibleScopes = useMemo(() => {
-    return scopeOrder.filter((scope) => !hiddenScopes.includes(scope) && !(scope === 'spectrogram' && spectrogramPanelOpen && !isAnalyzerEditMode))
-  }, [hiddenScopes, isAnalyzerEditMode, scopeOrder, spectrogramPanelOpen])
+    return scopeOrder.filter((scope) => !hiddenScopes.includes(scope) && !(scope === panelScope && spectrogramPanelOpen && !isAnalyzerEditMode))
+  }, [hiddenScopes, isAnalyzerEditMode, panelScope, scopeOrder, spectrogramPanelOpen])
 
   const hiddenOrderedScopes = useMemo(() => {
     return scopeOrder.filter((scope) => hiddenScopes.includes(scope))
@@ -136,13 +137,12 @@ export default function AnalyzerDeck({ onAnalyzerHeightPreviewChange }: Analyzer
 
   useEffect(() => {
     if (!isAnalyzerEditMode) {
-      stopHeightResize(false)
       resetDragState()
       setResizePreviewWeights(null)
       setHoveredScope(null)
       setPinnedScope(null)
     }
-  }, [isAnalyzerEditMode, resetDragState, stopHeightResize])
+  }, [isAnalyzerEditMode, resetDragState])
 
   useEffect(() => {
     if (!isAnalyzerEditMode) return
@@ -281,8 +281,6 @@ export default function AnalyzerDeck({ onAnalyzerHeightPreviewChange }: Analyzer
   }, [commitDeckLayout, dragState, hiddenOrderedScopes, resetDragState, visibleScopes])
 
   const startHeightResizeDrag = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (!isAnalyzerEditMode) return
-
     event.preventDefault()
     event.stopPropagation()
 
@@ -324,7 +322,7 @@ export default function AnalyzerDeck({ onAnalyzerHeightPreviewChange }: Analyzer
     window.addEventListener('pointermove', handlePointerMove)
     window.addEventListener('pointerup', handlePointerUp)
     window.addEventListener('pointercancel', handlePointerUp)
-  }, [analyzerHeightPx, isAnalyzerEditMode, stopHeightResize])
+  }, [analyzerHeightPx, stopHeightResize])
 
   const handleHeightReset = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
     event.preventDefault()
@@ -393,18 +391,18 @@ export default function AnalyzerDeck({ onAnalyzerHeightPreviewChange }: Analyzer
         />
       )}
 
-      {isAnalyzerEditMode && (
-        <button
-          type="button"
-          className="analyzer-deck-height-seam"
-          onPointerDown={startHeightResizeDrag}
-          onDoubleClick={handleHeightReset}
-          aria-label={`Resize analyzer rack height. Double-click to reset to ${DEFAULT_ANALYZER_HEIGHT_PX}px.`}
-        >
-          <span className="analyzer-deck-height-seam-line" aria-hidden="true" />
-          <span className="analyzer-deck-height-seam-grip" aria-hidden="true" />
-        </button>
-      )}
+      {/* Always there, so the height can be dragged without opening the editor. It is slimmer when the editor is closed. */}
+      <button
+        type="button"
+        className={`analyzer-deck-height-seam${isAnalyzerEditMode ? '' : ' is-idle'}`}
+        onPointerDown={startHeightResizeDrag}
+        onDoubleClick={handleHeightReset}
+        title="Drag to resize the visualizer row. Double-click to reset."
+        aria-label={`Resize analyzer rack height. Double-click to reset to ${DEFAULT_ANALYZER_HEIGHT_PX}px.`}
+      >
+        <span className="analyzer-deck-height-seam-line" aria-hidden="true" />
+        <span className="analyzer-deck-height-seam-grip" aria-hidden="true" />
+      </button>
     </header>
   )
 }

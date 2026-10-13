@@ -36,6 +36,7 @@ import {
   focusControllerTarget,
   type ControllerVirtualMoveDetail
 } from '../../utils/controllerFocus'
+import { useOutsideDismiss } from '../../hooks/useOutsideDismiss'
 import { rankFuzzyMatches } from '../../utils/fuzzySearch'
 import { highlightSearchMatch } from '../../utils/searchHighlight'
 import { buildVirtualSpeakerLayout } from '../../utils/virtualSpeakerLayout'
@@ -2369,10 +2370,6 @@ export default function TrackList({
   useEffect(() => {
     if (!trackContextMenu) return
 
-    const handlePointerDown = () => {
-      setTrackContextMenu(null)
-    }
-
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault()
@@ -2380,18 +2377,17 @@ export default function TrackList({
       }
     }
 
-    document.addEventListener('mousedown', handlePointerDown)
-    document.addEventListener('touchstart', handlePointerDown)
+    const handleResize = () => setTrackContextMenu(null)
     document.addEventListener('keydown', handleKeyDown)
-    window.addEventListener('resize', handlePointerDown)
+    window.addEventListener('resize', handleResize)
 
     return () => {
-      document.removeEventListener('mousedown', handlePointerDown)
-      document.removeEventListener('touchstart', handlePointerDown)
       document.removeEventListener('keydown', handleKeyDown)
-      window.removeEventListener('resize', handlePointerDown)
+      window.removeEventListener('resize', handleResize)
     }
   }, [trackContextMenu])
+  const dismissTrackContextMenu = useCallback(() => setTrackContextMenu(null), [])
+  useOutsideDismiss(trackContextMenu !== null, dismissTrackContextMenu, '.track-context-menu')
 
   const filteredPlaylists = useMemo(() => {
     return rankFuzzyMatches(getNormalPlaylists(playlists), playlistPopupSearch, (playlist) => [

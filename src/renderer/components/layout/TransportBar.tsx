@@ -15,6 +15,7 @@ import { useOpenAlbumInLibrary } from '../../hooks/useOpenAlbumInLibrary'
 import { useJumpToNowPlaying } from '../../hooks/useJumpToNowPlaying'
 import { usePlaybackClock } from '../../hooks/usePlaybackClock'
 import { audioEngine } from '../../audio/AudioEngine'
+import { describeSavedPitch, useSavedPitchStore } from '../../stores/savedPitchStore'
 import { PITCH_ENGINES, PITCH_ENGINE_ORDER, type PitchEngineId } from '../../audio/pitchEngines'
 import AlbumArtwork from '../library/AlbumArtwork'
 import ArtistNameLinks from '../library/ArtistNameLinks'
@@ -130,6 +131,7 @@ export default function TransportBar() {
   const setPlaybackRateTo = usePlayerStore((s) => s.setPlaybackRateTo)
   const pitchShift = usePlayerStore((s) => s.pitchShift)
   const resetPitchShift = usePlayerStore((s) => s.resetPitchShift)
+  const setPitchShiftTo = usePlayerStore((s) => s.setPitchShiftTo)
   const stereoMode = usePlayerStore((s) => s.stereoMode)
   const [pitchEngine, setPitchEngineLabelId] = useState<PitchEngineId>(() => audioEngine.getPitchEngine())
   useEffect(() => {
@@ -155,6 +157,8 @@ export default function TransportBar() {
     const dx = event.clientX - drag.startX
     if (!drag.moved && Math.abs(dx) < 3) return
     drag.moved = true
+    if (noteShuttleBlocked()) return
+    setShuttleNote(null)
     // 200 px of drag is one whole 1x; hold Shift for ten times finer.
     setPlaybackRateTo(drag.startRate + dx * (event.shiftKey ? 0.0005 : 0.005))
   }
@@ -164,6 +168,42 @@ export default function TransportBar() {
     if (!drag) return
     try { event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* ignore */ }
     if (!drag.moved && event.type === 'pointerup') resetPlaybackRate()
+  }
+  const currentTrackPath = usePlayerStore((s) => s.currentTrack?.path ?? null)
+  const savedPitches = useSavedPitchStore((s) => (currentTrackPath ? s.byTrack[currentTrackPath] : undefined))
+  const saveCurrentPitch = useSavedPitchStore((s) => s.saveCurrent)
+  const removeSavedPitch = useSavedPitchStore((s) => s.remove)
+  const applySavedPitch = useSavedPitchStore((s) => s.apply)
+  const bypassedPitch = useSavedPitchStore((s) => s.bypassed)
+  const toggleOriginalPitch = useSavedPitchStore((s) => s.toggleOriginal)
+  const [shuttleNote, setShuttleNote] = useState<string | null>(null)
+  const noteShuttleBlocked = (): boolean => {
+    const reason = audioEngine.getShuttleBlockReason()
+    setShuttleNote(reason)
+    return reason !== null
+  }
+  const pitchDragRef = useRef<{ startX: number; startPitch: number; moved: boolean } | null>(null)
+  const handlePitchPointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.currentTarget.setPointerCapture(event.pointerId)
+    pitchDragRef.current = { startX: event.clientX, startPitch: usePlayerStore.getState().pitchShift, moved: false }
+  }
+  const handlePitchPointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const drag = pitchDragRef.current
+    if (!drag) return
+    const dx = event.clientX - drag.startX
+    if (!drag.moved && Math.abs(dx) < 3) return
+    drag.moved = true
+    if (noteShuttleBlocked()) return
+    setShuttleNote(null)
+    // 200 px of drag is one whole 1x; hold Shift for ten times finer.
+    setPitchShiftTo(drag.startPitch + dx * (event.shiftKey ? 0.0005 : 0.005))
+  }
+  const handlePitchPointerUp = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const drag = pitchDragRef.current
+    pitchDragRef.current = null
+    if (!drag) return
+    try { event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* ignore */ }
+    if (!drag.moved && event.type === 'pointerup') resetPitchShift()
   }
   const togglePitchLock = usePlayerStore((s) => s.togglePitchLock)
   const remoteLoadProgress = usePlayerStore((s) => s.remoteLoadProgress)
@@ -688,23 +728,82 @@ export default function TransportBar() {
           >
             {playbackRate.toFixed(2).replace(/0$/, '')}×
           </button>
+          {currentTrackPath && (
+            <div className="transport-saved-pitches">
+              {(playbackRate !== 1 || pitchShift !== 1 || bypassedPitch) && (
+                <button
+                  type="button"
+                  className={`transport-speed-pitch${bypassedPitch && playbackRate === 1 && pitchShift === 1 ? ' is-on' : ''}`}
+                  onClick={() => { if (!noteShuttleBlocked()) toggleOriginalPitch() }}
+                  title={bypassedPitch && playbackRate === 1 && pitchShift === 1 ? 'Back to your speed and pitch' : 'Play the original speed and pitch. Press again to bring your setting back.'}
+                >
+                  Original
+                </button>
+              )}
+              <button
+                type="button"
+                className="transport-speed-pitch"
+                disabled={playbackRate === 1 && pitchShift === 1}
+                onClick={() => saveCurrentPitch(currentTrackPath)}
+                title="Save the current speed and pitch for this song"
+              >
+                + Save
+              </button>
+              <button
+                type="button"
+                className="transport-speed-pitch"
+                onClick={() => useUIStore.getState().setActiveView('pitches')}
+                title="See every song that has saved speed/pitch settings"
+              >
+                All saved
+              </button>
+              {(savedPitches ?? []).map((preset) => {
+                const isCurrent = preset.speed === playbackRate && preset.pitch === pitchShift && preset.pitchLock === pitchLock
+                return (
+                  <span key={preset.id} className={`transport-saved-pitch${isCurrent ? ' is-on' : ''}`}>
+                    <button
+                      type="button"
+                      className="transport-speed-pitch"
+                      onClick={() => { if (!noteShuttleBlocked()) applySavedPitch(preset) }}
+                      title="Play with these settings"
+                    >
+                      {describeSavedPitch(preset)}
+                    </button>
+                    <button
+                      type="button"
+                      className="transport-saved-pitch-remove"
+                      onClick={() => removeSavedPitch(currentTrackPath, preset.id)}
+                      title="Delete this saved setting"
+                      aria-label="Delete this saved setting"
+                    >
+                      ×
+                    </button>
+                  </span>
+                )
+              })}
+            </div>
+          )}
+          {shuttleNote && <div className="transport-speed-note" role="status">{shuttleNote}</div>}
           <div className="transport-speed-row">
             <button
               type="button"
-              className={`transport-speed-pitch${pitchLock ? ' is-on' : ''}`}
+              className={`transport-speed-pitch${pitchLock ? '' : ' is-on'}`}
               onClick={() => togglePitchLock()}
-              aria-pressed={pitchLock}
-              title={pitchLock ? 'Pitch is kept steady when the speed changes. Click for tape-style.' : 'Tape-style: pitch follows speed. Click to keep the pitch steady.'}
+              aria-pressed={!pitchLock}
+              title={pitchLock ? 'Tape is off: the pitch stays the same when the speed changes. Click to turn tape on (pitch follows speed).' : 'Tape is on: pitch follows speed. Click to turn it off and keep the pitch steady.'}
             >
-              {pitchLock ? 'Pitch kept' : 'Tape'}
+              Tape
             </button>
             <button
               type="button"
               className={`transport-speed-pitch${pitchShift !== 1 ? ' is-on' : ''}`}
-              onClick={() => resetPitchShift()}
-              title="Pitch shift, in the same 10% steps as speed. [ lowers and ] raises it. Click to clear."
+              onPointerDown={handlePitchPointerDown}
+              onPointerMove={handlePitchPointerMove}
+              onPointerUp={handlePitchPointerUp}
+              onPointerCancel={handlePitchPointerUp}
+              title="Pitch shift. Drag left or right to change it smoothly (hold Shift for finer), click to clear. [ lowers and ] raises it by 10%."
             >
-              Pitch {pitchShift.toFixed(2).replace(/0$/, '')}×
+              Pitch {pitchShift.toFixed(3).replace(/0+$/, '').replace(/\.$/, '')}×
             </button>
             <button
               type="button"

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useInfoSidebarTabStore, type InfoSidebarTab } from '../../stores/infoSidebarTabStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useOpenArtistInLibrary } from '../../hooks/useOpenArtistInLibrary'
@@ -22,26 +23,6 @@ import {
   resolveLyricsBodyState
 } from '../../utils/lyricsPresentation'
 
-type InfoSidebarTab = 'info' | 'lyrics'
-
-const TAB_STORAGE_KEY = 'astra-info-sidebar-tab-v1'
-
-/** The tab you left open (Now Playing or Lyrics) stays until you change it yourself. */
-function readSavedTab(): InfoSidebarTab {
-  try {
-    return window.localStorage.getItem(TAB_STORAGE_KEY) === 'lyrics' ? 'lyrics' : 'info'
-  } catch {
-    return 'info'
-  }
-}
-
-function saveTab(tab: InfoSidebarTab): void {
-  try {
-    window.localStorage.setItem(TAB_STORAGE_KEY, tab)
-  } catch {
-    // session only
-  }
-}
 
 export default function InfoSidebar() {
   const currentTrack = usePlayerStore((s) => s.currentTrack)
@@ -53,32 +34,15 @@ export default function InfoSidebar() {
   const openSignalShare = useUIStore((s) => s.openSignalShare)
   const openArtistInLibrary = useOpenArtistInLibrary()
   const openAlbumInLibrary = useOpenAlbumInLibrary()
-  const [activeTab, setActiveTabState] = useState<InfoSidebarTab>(readSavedTab)
+  const activeTab = useInfoSidebarTabStore((state) => state.tab)
+  const setTabInStore = useInfoSidebarTabStore((state) => state.setTab)
   const setActiveTab = useCallback((next: InfoSidebarTab | ((tab: InfoSidebarTab) => InfoSidebarTab)) => {
-    setActiveTabState((current) => {
-      const resolved = typeof next === 'function' ? next(current) : next
-      saveTab(resolved)
-      return resolved
-    })
-  }, [])
-  const [coverHidden, setCoverHidden] = useState<boolean>(() => {
-    try {
-      return window.localStorage.getItem('astra-lyrics-cover-hidden-v1') === '1'
-    } catch {
-      return false
-    }
-  })
-  const toggleCoverHidden = () => {
-    setCoverHidden((value) => {
-      const next = !value
-      try {
-        window.localStorage.setItem('astra-lyrics-cover-hidden-v1', next ? '1' : '0')
-      } catch {
-        // session only
-      }
-      return next
-    })
-  }
+    const current = useInfoSidebarTabStore.getState().tab
+    setTabInStore(typeof next === 'function' ? next(current) : next)
+  }, [setTabInStore])
+  const coverHidden = useInfoSidebarTabStore((state) => state.coverHidden)
+  const setCoverHidden = useInfoSidebarTabStore((state) => state.setCoverHidden)
+  const toggleCoverHidden = () => setCoverHidden(!useInfoSidebarTabStore.getState().coverHidden)
   const lyricsTrackPath = useLyricsStore((s) => s.currentTrackPath)
   const lyricsResult = useLyricsStore((s) => s.currentResult)
   const lyricsIsLoading = useLyricsStore((s) => s.isLoading)

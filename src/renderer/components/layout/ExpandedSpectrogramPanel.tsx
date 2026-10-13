@@ -5,7 +5,7 @@ import { usePresence } from '../../hooks/usePresence'
 import { useSpectrogramExpandStore } from '../../stores/spectrogramExpandStore'
 import { useThemeStore } from '../../stores/themeStore'
 import { useVisualizerSettingsStore } from '../../stores/visualizerSettingsStore'
-import { DockedSpectrogramTile } from '../visualizers/VisualizerPanel'
+import { DockedSpectrogramTile, DockedVectorscopeTile } from '../visualizers/VisualizerPanel'
 import RightPanelResizer from './RightPanelResizer'
 
 /**
@@ -16,6 +16,10 @@ import RightPanelResizer from './RightPanelResizer'
 export default function ExpandedSpectrogramPanel() {
   const open = useSpectrogramExpandStore((s) => s.open)
   const setOpen = useSpectrogramExpandStore((s) => s.setOpen)
+  const scope = useSpectrogramExpandStore((s) => s.scope)
+  const vectorscopeMode = useVisualizerSettingsStore((s) => s.vectorscopeMode)
+  const vectorscopeMultiband = useVisualizerSettingsStore((s) => s.vectorscopeMultiband)
+  const vectorscopeZoomDb = useVisualizerSettingsStore((s) => s.vectorscopeZoomDb)
   const presence = usePresence(open)
   const frameScheduler = useMemo(() => new FrameScheduler(), [])
   const lineColor = useVisualizerSettingsStore((s) => s.lineColor)
@@ -40,16 +44,16 @@ export default function ExpandedSpectrogramPanel() {
 
   useEffect(() => {
     if (!open) return
-    audioEngine.setVisualizerConsumerDemand('spectrogram-expanded', { spectrogram: isRunning })
+    audioEngine.setVisualizerConsumerDemand('spectrogram-expanded', scope === 'vectorscope' ? { vectorscope: isRunning } : { spectrogram: isRunning })
     return () => audioEngine.clearVisualizerConsumerDemand('spectrogram-expanded')
-  }, [open, isRunning])
+  }, [open, isRunning, scope])
 
   if (!presence.shouldRender) return null
   return (
     <aside
       className="spectrogram-expanded"
       data-presence={presence.phase}
-      aria-label="Spectrogram"
+      aria-label={scope === 'vectorscope' ? 'Vectorscope' : 'Spectrogram'}
       aria-hidden={presence.phase === 'exiting'}
     >
       <RightPanelResizer storageKey="astra.spectrogramWidth" cssVar="--spectrogram-width" defaultWidth={340} label="spectrogram" />
@@ -62,12 +66,23 @@ export default function ExpandedSpectrogramPanel() {
           setOpen(false)
         }}
       >
-        <span>Spectrogram</span>
+        <span>{scope === 'vectorscope' ? 'Vectorscope' : 'Spectrogram'}</span>
         <button type="button" onClick={() => setOpen(false)} aria-label="Close spectrogram panel" title="Close">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
         </button>
       </div>
       <div className="spectrogram-expanded-body">
+        {scope === 'vectorscope' ? (
+          <DockedVectorscopeTile
+            frameScheduler={frameScheduler}
+            lineColor={lineColor}
+            displayColors={displayColors}
+            vectorscopeMode={vectorscopeMode}
+            vectorscopeMultiband={vectorscopeMultiband}
+            zoomDb={vectorscopeZoomDb}
+            isRunning={open && isRunning}
+          />
+        ) : (
         <DockedSpectrogramTile
           frameScheduler={frameScheduler}
           lineColor={lineColor}
@@ -82,6 +97,7 @@ export default function ExpandedSpectrogramPanel() {
           orientation="vertical"
           isRunning={open && isRunning}
         />
+        )}
       </div>
       </div>
     </aside>

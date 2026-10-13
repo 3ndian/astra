@@ -2,8 +2,14 @@ import { create } from 'zustand'
 
 const STORAGE_KEY = 'astra.spectrogram.panelOpen.v1'
 
+export type ExpandableScope = 'spectrogram' | 'vectorscope'
+
 interface SpectrogramExpandState {
   open: boolean
+  /** Which scope the tall panel shows. */
+  scope: ExpandableScope
+  /** Open the panel with this scope, or close it if it is already showing that scope. */
+  toggleScope: (scope: ExpandableScope) => void
   setOpen: (open: boolean) => void
   toggle: () => void
 }
@@ -14,6 +20,18 @@ function load(): boolean {
   } catch {
     return false
   }
+}
+
+const SCOPE_KEY = 'astra.spectrogram.panelScope.v1'
+function loadScope(): ExpandableScope {
+  try {
+    return window.localStorage.getItem(SCOPE_KEY) === 'vectorscope' ? 'vectorscope' : 'spectrogram'
+  } catch {
+    return 'spectrogram'
+  }
+}
+function saveScope(scope: ExpandableScope): void {
+  try { window.localStorage.setItem(SCOPE_KEY, scope) } catch { /* ignore */ }
 }
 
 function save(open: boolean): void {
@@ -30,6 +48,18 @@ function save(open: boolean): void {
  */
 export const useSpectrogramExpandStore = create<SpectrogramExpandState>((set, get) => ({
   open: load(),
+  scope: loadScope(),
+  toggleScope: (scope) => {
+    const state = get()
+    if (state.open && state.scope === scope) {
+      save(false)
+      set({ open: false })
+      return
+    }
+    save(true)
+    saveScope(scope)
+    set({ open: true, scope })
+  },
   setOpen: (open) => {
     save(open)
     set({ open })

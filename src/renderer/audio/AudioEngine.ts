@@ -618,6 +618,8 @@ export class AudioEngine {
   private lastPrebufferLoadTimings: AudioLoadTimings | null = null
   private startTime: number = 0
   private pauseTime: number = 0
+  /** Looping selection (media seconds). While set, the main source loops natively between start and end. */
+  private loopRegion: { start: number; end: number } | null = null
   private _playbackState: PlaybackState = 'stopped'
   private _volume: number = 0.7
   private _isMuted: boolean = false
@@ -640,7 +642,8 @@ export class AudioEngine {
   private scheduledEndTime: number = 0
   // Shuttle speed (1 = normal). The clock above runs in track time: (context time - startTime) * playbackRate.
   private playbackRate = 1
-  private pitchLock = false
+  // Tape-style is off by default: changing the speed keeps the pitch the same.
+  private pitchLock = true
   private pitchShiftRatio = 1
   private stereoMode: StereoListenMode = 'stereo'
   private stereoStage: { splitter: ChannelSplitterNode; merger: ChannelMergerNode; gains: GainNode[]; active: boolean } | null = null
@@ -1692,6 +1695,10 @@ export class AudioEngine {
     this.clearPauseFadeTimer()
     this.cancelCurrentPcmDecode()
     this.cancelPrebufferPcmDecode()
+    if (this.loopRegion) {
+      this.loopRegion = null
+      this.emit('loopRegionChange', null)
+    }
     this.loadGeneration += 1
     this.prebufferGeneration += 1
     this.cancelParallaxHostPublishing()
@@ -5643,7 +5650,55 @@ export class AudioEngine {
     }
     if (!this.context || this._playbackState === 'stopped' || this._playbackState === 'loading') return 0
     if (this._playbackState === 'paused') return this.pauseTime
-    return Math.max(0, (this.context.currentTime - this.startTime) * this.playbackRate - this.getAdaptiveUpmixLatencySeconds())
+    return Math.max(0, this.standardMediaPosition() - this.getAdaptiveUpmixLatencySeconds())
+  }
+
+  /** Media position of the standard (Web Audio) source, wrapped into the loop region while one is active. */
+  private standardMediaPosition(): number {
+    if (!this.context) return 0
+    const raw = (this.context.currentTime - this.startTime) * this.playbackRate
+    const region = this.loopRegion
+    if (region && raw >= region.start) {
+      const len = region.end - region.start
+      if (len > 0) return region.start + ((raw - region.start) % len)
+    }
+    return raw
+  }
+
+  getLoopRegion(): { start: number; end: number } | null {
+    return this.loopRegion ? { ...this.loopRegion } : null
+  }
+
+  /** Loop [start, end] seconds of the current track until clearLoopRegion(). Jumps to the start. */
+  async setLoopRegion(start: number, end: number): Promise<boolean> {
+    if (!this.context || !this.audioBuffer || this.isNativeExclusiveMode() || this.remoteStreamState || this.parallaxSinkState) return false
+    const dur = this.audioBuffer.duration
+    const a = Math.max(0, Math.min(start, dur))
+    const b = Math.max(0, Math.min(end, dur))
+    const lo = Math.min(a, b)
+    const hi = Math.max(a, b)
+    if (hi - lo < 0.05) return false
+    this.loopRegion = { start: lo, end: hi }
+    this.cancelScheduledNext()
+    await this.seek(lo)
+    this.emit('loopRegionChange', this.getLoopRegion())
+    return true
+  }
+
+  /** Stop looping; playback carries on from wherever the loop currently is. */
+  clearLoopRegion(): void {
+    if (!this.loopRegion) return
+    const ctx = this.context
+    const media = this.standardMediaPosition()
+    this.loopRegion = null
+    if (ctx && this._playbackState === 'playing' && this.sourceNode) {
+      try { this.sourceNode.loop = false } catch { /* ignore */ }
+      this.startTime = ctx.currentTime - media / this.playbackRate
+      if (this.nextBuffer) this.scheduleGaplessTransition()
+    } else if (this._playbackState === 'paused') {
+      this.pauseTime = media
+    }
+    this.emit('loopRegionChange', null)
   }
 
   get duration(): number {
@@ -5822,9 +5877,51 @@ export class AudioEngine {
 
   // Get actual sample rate from AudioContext (for native DSP sync)
   /** The decoded song in memory, if the current output keeps one. Used to draw the whole-song spectrogram. */
+  private scrubOutputNode: GainNode | null = null
+  private scrubOutputContext: BaseAudioContext | null = null
+
+  /**
+   * What scratching along the Song view plays through: the decoded song and a small output that joins the chain after the
+   * pause fade (pausing fades the main path to zero and leaves it there, which would mute the scratching). It follows the
+   * volume and mute. Null when the song is not held in memory.
+   */
+  getScrubTarget(): { context: BaseAudioContext; destination: AudioNode; buffer: AudioBuffer } | null {
+    const context = this.context
+    if (!this.audioBuffer || !context) return null
+    if (context.state === 'suspended') void context.resume().catch(() => undefined)
+    if (!this.scrubOutputNode || this.scrubOutputContext !== context) {
+      this.scrubOutputNode = context.createGain()
+      this.scrubOutputContext = context
+    }
+    // Reconnect every time so it follows the graph if the output chain was rebuilt.
+    try { this.scrubOutputNode.disconnect() } catch { /* ignore */ }
+    this.scrubOutputNode.connect(this.programDuckGainNode ?? context.destination)
+    this.scrubOutputNode.gain.value = this._isMuted ? 0 : this._volume
+    return { context, destination: this.scrubOutputNode, buffer: this.audioBuffer }
+  }
+
   getDecodedAudioForAnalysis(): { buffer: AudioBuffer; trackPath: string | null } | null {
     if (!this.audioBuffer) return null
     return { buffer: this.audioBuffer, trackPath: this.currentBufferTrackPath }
+  }
+
+  /** What the engine is holding right now, for the "waiting for the song" logs. */
+  getLoadDiagnostics(): Record<string, unknown> {
+    return {
+      playbackState: this._playbackState,
+      outputMode: this.playbackOutputMode,
+      hasDecodedBuffer: this.audioBuffer !== null,
+      bufferSeconds: this.audioBuffer ? Number(this.audioBuffer.duration.toFixed(2)) : null,
+      bufferTrackPath: this.currentBufferTrackPath,
+      streaming: this.remoteStreamState
+        ? {
+            sourceType: this.remoteStreamState.sourceType,
+            durationSeconds: this.remoteStreamState.durationSeconds,
+            bufferedSeconds: Number(this.getRemoteBufferedSeconds().toFixed(1))
+          }
+        : null,
+      nativeExclusive: this.isNativeExclusiveMode()
+    }
   }
 
   isLiveInputActive(): boolean {
@@ -8292,6 +8389,11 @@ export class AudioEngine {
   private scheduleGaplessTransition(): void {
     if (!this.context || !this.nextBuffer || !this.audioBuffer) return
     if (this._playbackState !== 'playing') return
+    if (this.loopRegion) {
+      // A looping selection never reaches the end of the track, so nothing is scheduled.
+      this.cancelScheduledNext()
+      return
+    }
 
     if (this.nextNormalizationLinearGain == null) {
       this.updateNextNormalizationCache()
@@ -8794,7 +8896,7 @@ export class AudioEngine {
     if (this._playbackState !== 'playing' || !this.context) return
 
     // Record the pause position now so the seek bar/time stay correct while the audio fades out.
-    this.pauseTime = (this.context.currentTime - this.startTime) * this.playbackRate
+    this.pauseTime = this.standardMediaPosition()
     this.cancelScheduledNext() // Cancel scheduled next track
 
     this._playbackState = 'paused'
@@ -8829,6 +8931,10 @@ export class AudioEngine {
   // Stop
   stop(): void | Promise<void> {
     this.invalidateLoadOperations()
+    if (this.loopRegion) {
+      this.loopRegion = null
+      this.emit('loopRegionChange', null)
+    }
     this.clearPauseFadeTimer()
     const stopLoadGeneration = this.loadGeneration
     if (this.isNativeExclusiveMode()) {
@@ -8949,6 +9055,11 @@ export class AudioEngine {
 
     const wasPlaying = this._playbackState === 'playing'
     const clampedTime = Math.max(0, Math.min(time, this.audioBuffer.duration))
+    if (this.loopRegion && (clampedTime < this.loopRegion.start || clampedTime >= this.loopRegion.end)) {
+      // Jumping outside the selection ends the loop.
+      this.loopRegion = null
+      this.emit('loopRegionChange', null)
+    }
 
     // Stop current playback
     this.stopSource()
@@ -9271,6 +9382,17 @@ export class AudioEngine {
     )
   }
 
+  /** Why speed, pitch and looping are unavailable right now, in plain words (null when they work). */
+  getShuttleBlockReason(): string | null {
+    if (!this.context) return 'Nothing is loaded yet. Play a song first.'
+    if (this.isNativeExclusiveMode()) return 'The output is in bit-perfect / exclusive mode. Switch Output to Standard in Settings.'
+    if (this.remoteStreamState) return 'This song is being streamed, which cannot change speed or pitch.'
+    if (this.parallaxSinkState) return 'This output (Parallax) cannot change speed or pitch.'
+    if (this.getPlaybackOutputMode() !== 'standard') return `The output mode is "${this.getPlaybackOutputMode()}". Switch Output to Standard in Settings.`
+    if (!this.audioBuffer) return 'The whole song is not loaded in memory yet.'
+    return null
+  }
+
   getPlaybackRate(): number {
     return this.playbackRate
   }
@@ -9316,7 +9438,16 @@ export class AudioEngine {
   }
 
   private applySourcePlaybackRate(source: AudioBufferSourceNode | null): void {
-    if (!source || this.playbackRate === 1) return
+    if (!source) return
+    const region = this.loopRegion
+    if (region && source === this.sourceNode) {
+      try {
+        source.loopStart = region.start
+        source.loopEnd = region.end
+        source.loop = true
+      } catch { /* ignore */ }
+    }
+    if (this.playbackRate === 1) return
     try { source.playbackRate.value = this.playbackRate } catch { /* ignore */ }
   }
 
@@ -9334,7 +9465,7 @@ export class AudioEngine {
     const playing = this._playbackState === 'playing' && this.sourceNode !== null
     if (playing && this.sourceNode) {
       // Keep the track position steady across the change: media = (now - startTime) * rate.
-      const media = (ctx.currentTime - this.startTime) * this.playbackRate
+      const media = this.standardMediaPosition()
       this.playbackRate = next
       this.startTime = ctx.currentTime - media / next
       try { this.sourceNode.playbackRate.setValueAtTime(next, ctx.currentTime) } catch { /* ignore */ }

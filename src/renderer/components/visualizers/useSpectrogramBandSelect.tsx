@@ -37,8 +37,10 @@ export function useSpectrogramBandSelect({
   containerRef,
   orientation,
   scaleMode,
-  rangeMode
+  rangeMode,
+  enabled = true
 }: {
+  enabled?: boolean
   containerRef: RefObject<HTMLElement | null>
   orientation: SpectrogramOrientation
   scaleMode: FrequencyScaleMode
@@ -87,9 +89,9 @@ export function useSpectrogramBandSelect({
   const bounds = useCallback(() => frequencyBoundsForRange(rangeMode, audioEngine.getSampleRate() || 48000), [rangeMode])
 
   const onPointerDown = useCallback((event: ReactPointerEvent<HTMLElement>) => {
-    if (event.button !== 0) return
+    if (!enabled || event.button !== 0) return
     const target = event.target as HTMLElement
-    if (target.closest('.band-chip, .song-view-strip, .song-view-btn')) return
+    if (target.closest('.band-chip, .song-view-strip, .song-view-btn, .song-view-tool-layer, .song-tools')) return
     const surface = containerRef.current
     if (!surface) return
     const rect = surface.getBoundingClientRect()
@@ -176,7 +178,7 @@ export function useSpectrogramBandSelect({
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
     window.addEventListener('pointercancel', stop)
-  }, [bounds, containerRef, scaleMode, setRange, vertical])
+  }, [bounds, containerRef, enabled, scaleMode, setRange, vertical])
 
   const onClickCapture = useCallback((event: ReactMouseEvent<HTMLElement>) => {
     if (!suppressClickRef.current) return

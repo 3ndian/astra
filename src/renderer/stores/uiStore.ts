@@ -29,7 +29,7 @@ import {
   type HomeSkyTimePreference
 } from '../utils/homePreferences'
 
-export type AppView = 'home' | 'library' | 'stats' | 'graph' | 'eq' | 'settings' | 'playlist' | 'spotify' | 'wanted'
+export type AppView = 'home' | 'library' | 'stats' | 'graph' | 'eq' | 'settings' | 'playlist' | 'spotify' | 'wanted' | 'pitches'
 export type WaveformTimeDisplayMode = MiniPlayerTimeDisplayMode
 export type HomeGreetingTextMode = 'messages' | 'clock' | 'binary-clock' | 'off'
 export type JumpToPlayingDestination = 'smart-source' | 'library-tracks' | 'album' | 'artist' | 'queue'
@@ -67,7 +67,7 @@ export const PARALLAX_SETUP_COMPLETE_STORAGE_KEY = 'astra-parallax-setup-complet
 // hostname". Persisted here (not main) since it's a display-only label for this surface.
 export const PARALLAX_ZONE_NAME_STORAGE_KEY = 'astra-parallax-zone-name-v1'
 
-const APP_VIEW_MOTION_ORDER: AppView[] = ['home', 'library', 'stats', 'spotify', 'wanted', 'graph', 'eq', 'playlist', 'settings']
+const APP_VIEW_MOTION_ORDER: AppView[] = ['home', 'library', 'stats', 'spotify', 'wanted', 'pitches', 'graph', 'eq', 'playlist', 'settings']
 
 export function resolveAppViewTransitionDirection(
   sourceView: AppView | null | undefined,

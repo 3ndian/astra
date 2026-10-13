@@ -8,6 +8,7 @@ import PlaylistView from '../views/PlaylistView'
 import StatsView from '../views/StatsView'
 import SpotifyView from '../views/SpotifyView'
 import WantedView from '../views/WantedView'
+import SavedPitchesView from '../views/SavedPitchesView'
 
 function renderView(view: string): React.ReactElement {
   switch (view) {
@@ -27,6 +28,8 @@ function renderView(view: string): React.ReactElement {
       return <SpotifyView />
     case 'wanted':
       return <WantedView />
+    case 'pitches':
+      return <SavedPitchesView />
     default:
       return <HomeView />
   }

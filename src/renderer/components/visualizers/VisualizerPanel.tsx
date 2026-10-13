@@ -13,8 +13,9 @@ import { useVisualizerSettingsStore, type VectorscopeMode } from '../../stores/v
 import { useUIStore } from '../../stores/uiStore'
 import { useBufferedCanvasResize } from '../../hooks/useBufferedCanvasResize'
 import { isSpectrogramBandDragClick, useSpectrogramBandSelect } from './useSpectrogramBandSelect'
-import { SongSpectrogramView } from './SongSpectrogramView'
-import { useSongViewStore } from '../../stores/songViewStore'
+import { SongSpectrogramStrip, SongSpectrogramView } from './SongSpectrogramView'
+import { useLoopSelectionStore } from '../../stores/loopSelectionStore'
+import { useSongViewStore, useSpectrogramFlowStore } from '../../stores/songViewStore'
 import type { ScopeKind } from '../../../types/scopePopout'
 import type { SpectrogramClarityMode, SpectrogramScaleMode, SpectrogramOrientation } from '../../../types/spectrogram'
 import type { SpectrumDisplayMode } from '../../../types/spectrum'
@@ -410,7 +411,7 @@ function DockedOscilloscopeTile({
   )
 }
 
-function DockedVectorscopeTile({
+export function DockedVectorscopeTile({
   lineColor,
   displayColors,
   vectorscopeMode,
@@ -527,9 +528,12 @@ export function DockedSpectrogramTile({
   const { applyResizeNow } = useBufferedCanvasResize(containerRef, canvasRef, {
     onResize: () => visualizerRef.current?.resize(),
   })
-  const bandSelect = useSpectrogramBandSelect({ containerRef, orientation, scaleMode, rangeMode })
   const songView = useSongViewStore((s) => s.enabled)
+  const loopTool = useLoopSelectionStore((s) => s.tool)
+  const bandSelect = useSpectrogramBandSelect({ containerRef, orientation, scaleMode, rangeMode, enabled: !songView || loopTool === 'band' })
   const setSongView = useSongViewStore((s) => s.setEnabled)
+  const newestAtTop = useSpectrogramFlowStore((s) => s.newestAtTop)
+  const toggleFlow = useSpectrogramFlowStore((s) => s.toggle)
 
   useEffect(() => {
     applyResizeNow()
@@ -549,6 +553,7 @@ export function DockedSpectrogramTile({
         tiltDbPerOctave,
         contrast,
         orientation,
+        flipTime: newestAtTop,
       })
     }
 
@@ -577,8 +582,9 @@ export function DockedSpectrogramTile({
       tiltDbPerOctave,
       contrast,
       orientation,
+      flipTime: newestAtTop,
     })
-  }, [clarityMode, displayColors, lineColor, fftSize, scrollSpeed, scaleMode, rangeMode, tiltDbPerOctave, contrast, orientation])
+  }, [clarityMode, displayColors, lineColor, fftSize, scrollSpeed, scaleMode, rangeMode, tiltDbPerOctave, contrast, orientation, newestAtTop])
 
   useEffect(() => {
     if (isRunning && !songView) {
@@ -589,30 +595,44 @@ export function DockedSpectrogramTile({
   }, [isRunning, songView])
 
   return (
-    <div ref={containerRef} className="visualizer-surface has-band-select" {...bandSelect.surfaceProps}>
-      <canvas ref={canvasRef} className="visualizer-canvas" style={songView ? { visibility: 'hidden' } : undefined} />
-      {songView && (
-        <SongSpectrogramView
-          orientation={orientation}
-          scaleMode={scaleMode}
-          rangeMode={rangeMode}
-          fftSize={fftSize}
-          tiltDbPerOctave={tiltDbPerOctave}
-          contrast={contrast}
-          backgroundColor={displayColors.backgroundColor}
-          labelColor={displayColors.labelColor}
-        />
-      )}
-      {bandSelect.layer}
-      <button
-        type="button"
-        className="song-view-btn song-view-toggle"
-        onPointerDown={(event) => event.stopPropagation()}
-        onClick={(event) => { event.stopPropagation(); setSongView(!songView) }}
-        title={songView ? 'Back to the live scrolling spectrogram' : 'Show the whole song so you can look around in it'}
-      >
-        {songView ? 'Live' : 'Song'}
-      </button>
+    <div className={songView ? 'song-tile-wrap is-song' : 'song-tile-wrap'}>
+      <div ref={containerRef} className="visualizer-surface has-band-select" {...bandSelect.surfaceProps}>
+        <canvas ref={canvasRef} className="visualizer-canvas" style={songView ? { visibility: 'hidden' } : undefined} />
+        {songView && (
+          <SongSpectrogramView
+            orientation={orientation}
+            scaleMode={scaleMode}
+            rangeMode={rangeMode}
+            fftSize={fftSize}
+            tiltDbPerOctave={tiltDbPerOctave}
+            contrast={contrast}
+            backgroundColor={displayColors.backgroundColor}
+            labelColor={displayColors.labelColor}
+          />
+        )}
+        {bandSelect.layer}
+        <button
+          type="button"
+          className="song-view-btn song-view-toggle"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => { event.stopPropagation(); setSongView(!songView) }}
+          title={songView ? 'Back to the live scrolling spectrogram' : 'Show the whole song so you can look around in it'}
+        >
+          {songView ? 'Live' : 'Song'}
+        </button>
+        {orientation === 'vertical' && (
+          <button
+            type="button"
+            className="song-view-btn song-view-flow"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => { event.stopPropagation(); toggleFlow() }}
+            title={newestAtTop ? 'Newest sound at the top. Click to put it at the bottom.' : 'Newest sound at the bottom. Click to put it at the top.'}
+          >
+            {newestAtTop ? '↓ new on top' : '↑ new below'}
+          </button>
+        )}
+      </div>
+      {songView && <SongSpectrogramStrip />}
     </div>
   )
 }
@@ -1006,6 +1026,8 @@ export default function VisualizerPanel({
   const scopePopoutState = useScopePopoutStore((s) => s.state)
   const spectrogramExpanded = useSpectrogramExpandStore((s) => s.open)
   const toggleSpectrogramExpanded = useSpectrogramExpandStore((s) => s.toggle)
+  const panelScope = useSpectrogramExpandStore((s) => s.scope)
+  const toggleScopePanel = useSpectrogramExpandStore((s) => s.toggleScope)
   const openAnalyzerEditMode = useUIStore((s) => s.openAnalyzerEditMode)
   const isFullscreen = useUIStore((s) => s.isFullscreen)
   const panelRef = useRef<HTMLDivElement>(null)
@@ -1282,8 +1304,8 @@ export default function VisualizerPanel({
 
   const renderScopeItem = (scope: ScopeKind) => {
     const isPoppedOut = scopePopoutState[scope]
-    const isExpanded = scope === 'spectrogram' && spectrogramExpanded && !isPoppedOut
-    const canExpand = scope === 'spectrogram' && !isPoppedOut && !isEditMode
+    const isExpanded = (scope === 'spectrogram' || scope === 'vectorscope') && spectrogramExpanded && panelScope === scope && !isPoppedOut
+    const canExpand = (scope === 'spectrogram' || scope === 'vectorscope') && !isPoppedOut && !isEditMode
     const itemIndex = visibleScopes.indexOf(scope)
     const itemClassName = (() => {
       switch (scope) {
@@ -1363,9 +1385,13 @@ export default function VisualizerPanel({
         onClick={isEditMode && onScopeActivate
           ? () => onScopeActivate(scope)
           : canExpand
-            ? () => { if (!isSpectrogramBandDragClick()) toggleSpectrogramExpanded() }
+            ? (event) => {
+                // The song view's own buttons and bar never open or close the big panel.
+                if ((event.target as HTMLElement).closest('.song-view-btn, .song-view-strip, .song-view-tool-layer, .song-tools')) return
+                if (scope === 'vectorscope') { toggleScopePanel('vectorscope'); return }
+                if (!isSpectrogramBandDragClick()) toggleScopePanel('spectrogram')
+              }
             : undefined}
-        title={canExpand ? (isExpanded ? 'Click to close the tall spectrogram' : 'Click to expand the spectrogram') : undefined}
       >
         <div className="visualizer-caption-left">{scopeLabel(scope).toUpperCase()}</div>
         <div className="visualizer-caption-right-group">
@@ -1383,7 +1409,7 @@ export default function VisualizerPanel({
         </div>
         {isExpanded ? (
           <div className="visualizer-popout-placeholder">
-            <div className="visualizer-popout-placeholder-label">Spectrogram expanded on the right</div>
+            <div className="visualizer-popout-placeholder-label">{scopeLabel(scope)} expanded on the right</div>
             <button className="visualizer-popout-placeholder-btn" onClick={toggleSpectrogramExpanded}>Close</button>
           </div>
         ) : isPoppedOut ? (

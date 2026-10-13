@@ -1119,6 +1119,26 @@ function mergeScanIssueLogs(
   }
 }
 
+const EXPANDED_FOLDERS_KEY = 'astra.folderView.expanded.v1'
+
+function readSavedExpandedFolders(): Set<string> {
+  try {
+    const raw = window.localStorage.getItem(EXPANDED_FOLDERS_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    return new Set(Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [])
+  } catch {
+    return new Set<string>()
+  }
+}
+
+function saveExpandedFolders(paths: ReadonlySet<string>): void {
+  try {
+    window.localStorage.setItem(EXPANDED_FOLDERS_KEY, JSON.stringify([...paths]))
+  } catch {
+    // remembered for this session only
+  }
+}
+
 export const useLibraryStore = create<LibraryStore>((set, get) => ({
   // Initial state
   trackByPath: new Map<string, DbTrack>(),
@@ -1170,7 +1190,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   includeSinglesInAlbums: loadIncludeSinglesInAlbumsSetting(),
   includeCollabArtists: loadIncludeCollabArtistsSetting(),
   artistRootViewMode: loadArtistRootViewModeSetting(),
-  folderViewExpandedPaths: new Set<string>(),
+  folderViewExpandedPaths: readSavedExpandedFolders(),
   folderViewScrollTop: 0,
 
   // Load entire library
@@ -2688,7 +2708,9 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   },
 
   setFolderViewExpandedPaths: (paths: Iterable<string>) => {
-    set({ folderViewExpandedPaths: new Set(paths) })
+    const next = new Set(paths)
+    set({ folderViewExpandedPaths: next })
+    saveExpandedFolders(next)
   },
 
   setFolderViewScrollTop: (scrollTop: number) => {
@@ -2709,6 +2731,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       }
 
       if (nextExpandedPaths.size === state.folderViewExpandedPaths.size) return {}
+      saveExpandedFolders(nextExpandedPaths)
       return { folderViewExpandedPaths: nextExpandedPaths }
     })
   },

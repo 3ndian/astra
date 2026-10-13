@@ -50,6 +50,8 @@ export interface SpectrogramOptions {
   clarityMode?: SpectrogramClarityMode
   scaleMode?: SpectrogramScaleMode
   orientation?: SpectrogramOrientation
+  /** Tall (vertical) view only: draw the newest sound at the top instead of the bottom. */
+  flipTime?: boolean
   colorScheme?: 'heat' | 'mono'
   lineColor?: string
   heatColors?: [string, string, string]
@@ -79,6 +81,7 @@ const defaultOptions: ResolvedSpectrogramOptions = {
   clarityMode: DEFAULT_SPECTROGRAM_CLARITY_MODE,
   scaleMode: DEFAULT_SPECTROGRAM_SCALE_MODE,
   orientation: DEFAULT_SPECTROGRAM_ORIENTATION,
+  flipTime: false,
   colorScheme: 'heat',
   lineColor: '#38bdf8',
   heatColors: ['rgb(15, 7, 33)', 'rgb(163, 26, 121)', 'rgb(255, 241, 209)'],
@@ -124,6 +127,7 @@ function resolveOptions(base: ResolvedSpectrogramOptions, overrides: Partial<Spe
     clarityMode: resolveClarityMode(overrides.clarityMode, base.clarityMode),
     scaleMode: resolveScaleMode(overrides.scaleMode, base.scaleMode),
     orientation: resolveOrientation(overrides.orientation, base.orientation),
+    flipTime: overrides.flipTime ?? base.flipTime,
     colorScheme: overrides.colorScheme ?? base.colorScheme,
     lineColor: overrides.lineColor ?? base.lineColor,
     heatColors: overrides.heatColors ?? base.heatColors,
@@ -587,7 +591,16 @@ export class Spectrogram {
       this.ctx.fillStyle = this.options.backgroundColor
       this.ctx.fillRect(0, 0, width, height)
     }
-    this.drawHistory(this.ctx)
+    if (this.options.flipTime && this.options.orientation === 'vertical') {
+      // Mirror only the picture, so the frequency labels stay the right way up.
+      this.ctx.save()
+      this.ctx.translate(0, height)
+      this.ctx.scale(1, -1)
+      this.drawHistory(this.ctx)
+      this.ctx.restore()
+    } else {
+      this.drawHistory(this.ctx)
+    }
     this.drawFrequencyGrid(width, height)
   }
 

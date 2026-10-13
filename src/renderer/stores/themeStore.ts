@@ -1,3 +1,4 @@
+import { isInstantAccent } from '../utils/accentMotion'
 import { create } from 'zustand'
 import { useVisualizerSettingsStore } from './visualizerSettingsStore'
 import {
@@ -770,7 +771,7 @@ export const useThemeStore = create<ThemeSettingsState>((set, get) => {
       )
     }
 
-    if (initialTokens.accent === targetTokens.accent) {
+    if (initialTokens.accent === targetTokens.accent || isInstantAccent()) {
       set((state) => ({
         resolvedTokens: {
           ...state.resolvedTokens,

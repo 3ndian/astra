@@ -7,7 +7,8 @@ const MEBIBYTE = 1024 * 1024
 export const LOCAL_PCM_STREAM_CHUNK_BYTES = 8 * MEBIBYTE
 export const LOCAL_PCM_STREAM_INITIAL_CREDITS = 2
 export const LOCAL_PCM_STREAM_MAX_CREDITS = 2
-export const LOCAL_PCM_STREAM_MAX_BYTES = 192 * MEBIBYTE
+// Raised from 192 MiB (about 8.7 minutes of 48 kHz stereo) so ordinary long tracks load completely; 640 MiB covers about 29 minutes.
+export const LOCAL_PCM_STREAM_MAX_BYTES = 640 * MEBIBYTE
 export const LOCAL_PCM_WAVEFORM_RESOLUTION = 512
 export const LOCAL_PCM_WAVEFORM_BYTES = LOCAL_PCM_WAVEFORM_RESOLUTION * Float32Array.BYTES_PER_ELEMENT
 export const STATIC_TRACK_WAVEFORM_RESULT_VERSION = 1 as const

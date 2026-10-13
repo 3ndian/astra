@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { useInfoSidebarTabStore } from '../../stores/infoSidebarTabStore'
 import { useLyricsPopoutStore } from '../../stores/lyricsPopoutStore'
 import { useQueueTabStore } from '../../stores/queueTabStore'
 import { useRightRailStore } from '../../stores/rightRailStore'
@@ -48,6 +49,17 @@ export default function RightRail() {
     }
     toggleLyricsShelf()
   }
+  const infoTab = useInfoSidebarTabStore((s) => s.tab)
+  const setInfoTab = useInfoSidebarTabStore((s) => s.setTab)
+  const setCoverHidden = useInfoSidebarTabStore((s) => s.setCoverHidden)
+  const lyricsInPanelActive = showInfoSidebar && infoTab === 'lyrics'
+  const handleLyricsInPanel = () => {
+    if (lyricsInPanelActive) { toggleInfoSidebar(); return }
+    // Straight to the lyrics with the cover out of the way; the eye icon in the panel brings it back.
+    setInfoTab('lyrics')
+    setCoverHidden(true)
+    if (!showInfoSidebar) toggleInfoSidebar()
+  }
   const queueTab = useQueueTabStore((s) => s.tab)
   const setQueueTab = useQueueTabStore((s) => s.setTab)
   const spectrogramOpen = useSpectrogramExpandStore((s) => s.open)
@@ -92,8 +104,12 @@ export default function RightRail() {
     {
       id: 'info',
       label: 'Track info',
-      active: showInfoSidebar,
-      onClick: toggleInfoSidebar,
+      active: showInfoSidebar && infoTab !== 'lyrics',
+      onClick: () => {
+        if (showInfoSidebar && infoTab !== 'lyrics') { toggleInfoSidebar(); return }
+        setInfoTab('info')
+        if (!showInfoSidebar) toggleInfoSidebar()
+      },
       icon: (
         <svg {...iconProps}>
           <circle cx="12" cy="12" r="8.5" />
@@ -103,8 +119,21 @@ export default function RightRail() {
       )
     },
     {
-      id: 'lyrics',
+      id: 'lyrics-panel',
       label: 'Lyrics',
+      active: lyricsInPanelActive,
+      onClick: handleLyricsInPanel,
+      icon: (
+        <svg {...iconProps}>
+          <rect x="9" y="3" width="6" height="11" rx="3" />
+          <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0" />
+          <path d="M12 18v3M9 21h6" />
+        </svg>
+      )
+    },
+    {
+      id: 'lyrics',
+      label: 'Lyrics shelf',
       active: showLyricsShelf,
       onClick: handleLyricsToggle,
       icon: (

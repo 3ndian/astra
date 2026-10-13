@@ -15,6 +15,7 @@ import CustomThemeEditor from '../settings/CustomThemeEditor'
 import BackgroundVisualSettings from '../settings/BackgroundVisualSettings'
 import AlbumTintSettings from '../settings/AlbumTintSettings'
 import VisualizerHistorySettings from '../settings/VisualizerHistorySettings'
+import LiveInputSettings from '../settings/LiveInputSettings'
 import VisualizerTintSettings from '../settings/VisualizerTintSettings'
 import AnalyzerPlacementSettings from '../settings/AnalyzerPlacementSettings'
 import TrackClickSettings from '../settings/TrackClickSettings'
@@ -108,6 +109,8 @@ import { LRCLIB_OFFICIAL_BASE_URL } from '../../../types/lyrics'
 import type { AppBuildInfo } from '../../../types/appBuildInfo'
 import type { CompanionApiScope } from '../../../types/companionApi'
 import type { DesktopIntegrationPrefs } from '../../../types/desktopIntegration'
+import AppIconSettings from '../settings/AppIconSettings'
+import InstantAccentToggle from '../settings/InstantAccentToggle'
 import NotchSettings from '../notch/NotchSettings'
 import ParallaxSettingsPanel from '../parallax/ParallaxSettingsPanel'
 
@@ -1918,6 +1921,7 @@ export default function SettingsView() {
             <div className="settings-cards">
               <CustomThemeEditor />
               <AlbumTintSettings />
+              <AppIconSettings />
               <div className="settings-card">
                 <div className="settings-card-label">Accent</div>
                 <div className="settings-grid">
@@ -1990,6 +1994,7 @@ export default function SettingsView() {
                     )}
                   </div>
                   )}
+                  <InstantAccentToggle />
                   <div className="settings-field settings-field-inline">
                     <span className="settings-field-label">Theme</span>
                     <button
@@ -2344,6 +2349,7 @@ export default function SettingsView() {
               <BackgroundVisualSettings />
               <VisualizerTintSettings />
               <VisualizerHistorySettings />
+              <LiveInputSettings />
               <div className="settings-card">
                 <div className="settings-card-label">Visualizer</div>
                 <div className="settings-grid">

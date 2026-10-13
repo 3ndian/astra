@@ -329,6 +329,8 @@ interface PlayerStore {
   pitchShift: number
   setPlaybackRateTo: (rate: number) => void
   shiftPitch: (direction: 1 | -1) => void
+  /** Set the pitch ratio directly (0.5 to 2), for smooth dragging. */
+  setPitchShiftTo: (ratio: number) => void
   resetPitchShift: () => void
   /** What the speakers get: normal stereo, the centre (mid), the sides, or one channel on both ears. */
   stereoMode: StereoListenMode
@@ -415,7 +417,8 @@ const BYTES_PER_FLOAT32_SAMPLE = 4
 const LARGE_LOCAL_FILE_BYTES = 128 * 1024 * 1024
 const MAX_STANDARD_PREBUFFER_TRACK_BYTES = 192 * 1024 * 1024
 const MAX_STANDARD_PREBUFFER_TOTAL_BYTES = 384 * 1024 * 1024
-const LOCAL_PROGRESSIVE_DECODED_BYTES = MAX_STANDARD_PREBUFFER_TRACK_BYTES
+// Raised from 192 MiB (about 8.7 minutes of 48 kHz stereo) so ordinary long tracks decode fully; matches LOCAL_PCM_STREAM_MAX_BYTES.
+const LOCAL_PROGRESSIVE_DECODED_BYTES = 640 * 1024 * 1024
 // Tracks whose decoded size passes this (~45+ minutes of stereo audio: audiobooks, long mixes) are
 // streamed without a loudness analysis and without loudness normalization. Analysing them is slow,
 // and if it failed the player used to fall back to decoding the whole file into memory.
@@ -1190,7 +1193,8 @@ async function ensureCompatiblePlaybackMode(track: Track): Promise<void> {
 
 const PITCH_LOCK_STORAGE_KEY = 'astra.player.pitchLock.v1'
 function readStoredPitchLock(): boolean {
-  try { return localStorage.getItem(PITCH_LOCK_STORAGE_KEY) === '1' } catch { return false }
+  // Tape-style is off until switched on, so the pitch stays put when the speed changes.
+  try { return localStorage.getItem(PITCH_LOCK_STORAGE_KEY) !== '0' } catch { return true }
 }
 
 export const usePlayerStore = create<PlayerStore>((set, get) => {
@@ -1199,8 +1203,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     let next = Math.min(4, Math.max(0.1, Math.round(requested * 100) / 100))
     if (Math.abs(next - 1) < 0.005) next = 1
     if (next === get().playbackRate) return
-    if (!audioEngine.setPlaybackRate(next)) return
+    // Set the pitch mode first so the new speed never plays with the wrong one, even for an instant.
     audioEngine.setPitchLock(get().pitchLock)
+    if (!audioEngine.setPlaybackRate(next)) return
     set({ playbackRate: next })
   }
 
@@ -4000,6 +4005,14 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     shiftPitch: (direction) => {
       let next = Math.min(2, Math.max(0.5, Math.round((get().pitchShift + direction * 0.1) * 100) / 100))
       if (Math.abs(next - 1) < 0.005) next = 1
+      if (next === get().pitchShift) return
+      if (!audioEngine.setPitchShiftRatio(next)) return
+      set({ pitchShift: next })
+    },
+    setPitchShiftTo: (ratio) => {
+      if (!Number.isFinite(ratio)) return
+      let next = Math.min(2, Math.max(0.5, Math.round(ratio * 1000) / 1000))
+      if (Math.abs(next - 1) < 0.002) next = 1
       if (next === get().pitchShift) return
       if (!audioEngine.setPitchShiftRatio(next)) return
       set({ pitchShift: next })

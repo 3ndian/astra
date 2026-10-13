@@ -32357,13 +32357,16 @@ html.band-selecting, html.band-selecting * { cursor: grabbing !important; user-s
 .transport-speed-row .transport-speed-pitch { flex: 1; }
 
 /* Whole-song spectrogram view */
+/* Off: the wrapper disappears so the tile lays out exactly as before. On: the picture shrinks and a bar sits under it. */
+.song-tile-wrap { display: contents; }
+.song-tile-wrap.is-song { position: absolute; inset: 0; display: flex; flex-direction: column; min-height: 0; }
+.spectrogram-expanded-body .song-tile-wrap.is-song { padding: 0 14px; }
+.song-tile-wrap.is-song > .visualizer-surface { position: relative; inset: auto; flex: 1 1 auto; min-height: 0; width: 100%; height: auto; }
 .song-view { position: absolute; inset: 0; overflow: hidden; }
 .song-view-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 .song-view-note { position: absolute; left: 8px; right: 8px; top: 50%; transform: translateY(-50%); text-align: center; font-size: 11px; color: var(--text-secondary); pointer-events: none; }
-.song-view-strip { position: absolute; z-index: 3; cursor: grab; touch-action: none; border-radius: 3px; }
+.song-view-strip { flex: 0 0 22px; width: 100%; height: 22px; margin-top: 3px; cursor: grab; touch-action: none; border-radius: 4px; display: block; }
 .song-view-strip:active { cursor: grabbing; }
-.song-view-strip.is-horizontal { left: 0; right: 0; bottom: 0; width: 100%; height: 16px; }
-.song-view-strip.is-vertical { top: 0; bottom: 0; right: 0; height: 100%; width: 14px; }
 .song-view-btn { position: absolute; z-index: 4; font-size: 10px; line-height: 1; padding: 3px 7px; border-radius: 999px; border: 1px solid rgba(var(--tint), 0.25); background: rgba(0, 0, 0, 0.55); color: #fff; cursor: pointer; }
 .song-view-btn:hover { background: rgba(0, 0, 0, 0.75); }
 .song-view-toggle { top: 4px; left: 4px; opacity: 0.55; }
@@ -32371,3 +32374,95 @@ html.band-selecting, html.band-selecting * { cursor: grabbing !important; user-s
 .song-view-follow { top: 4px; right: 4px; background: rgba(var(--accent-rgb), 0.85); }
 .spectrogram-expanded-body .song-view-follow { right: 18px; }
 .transport-speed-row { flex-wrap: wrap; }
+.song-view-flow { top: 4px; left: 52px; opacity: 0.55; }
+.visualizer-surface:hover .song-view-flow { opacity: 1; }
+.song-view-follow { background: rgba(255, 140, 60, 0.9); color: #1a0b22; }
+.song-view-strip { border: 1px solid rgba(255, 166, 63, 0.25); }
+.song-view-strip { border-radius: 8px; }
+/* Height handle when the scope editor is closed: a slim strip at the edge, grip only on hover. */
+.analyzer-deck-height-seam.is-idle { height: 7px; padding: 0; }
+.analyzer-deck-height-seam.is-idle .analyzer-deck-height-seam-grip { opacity: 0; transform: translateY(4px); }
+.analyzer-deck-height-seam.is-idle:hover .analyzer-deck-height-seam-grip { opacity: 1; transform: translateY(2px); }
+.analyzer-deck-height-seam.is-idle .analyzer-deck-height-seam-line { bottom: 0; opacity: 0.35; }
+.analyzer-bottom .analyzer-deck-height-seam.is-idle { height: 7px; padding: 0; }
+.analyzer-bottom .analyzer-deck-height-seam.is-idle .analyzer-deck-height-seam-line { top: 0; bottom: auto; }
+/* Loop selection tools on the song view */
+.song-tools { position: absolute; left: 4px; bottom: 4px; z-index: 5; display: flex; gap: 4px; }
+.song-tools.is-vertical { bottom: 20px; }
+.song-tools .song-view-btn { position: static; }
+.song-tool-btn.is-on { background: rgba(255, 140, 60, 0.9); color: #1a0b22; border-color: rgba(255, 190, 120, 0.8); }
+.song-view-tool-layer { position: absolute; inset: 0; z-index: 3; cursor: crosshair; touch-action: none; }
+.transport-speed-note { max-width: 240px; font-size: 10px; line-height: 1.3; color: rgb(255, 190, 120); }
+.song-loop-notice { z-index: 6; top: auto; bottom: 34px; left: 4px; right: 4px; transform: none; color: rgb(255, 190, 120); }
+.transport-saved-pitches { display: flex; flex-wrap: wrap; gap: 4px; max-width: 260px; }
+.transport-saved-pitch { display: inline-flex; align-items: center; }
+.transport-saved-pitch.is-on .transport-speed-pitch { color: var(--accent); }
+.transport-saved-pitch-remove { border: 0; background: transparent; color: var(--text-secondary); cursor: pointer; font-size: 11px; padding: 0 3px; opacity: 0.5; }
+.transport-saved-pitch-remove:hover { opacity: 1; }
+.transport-speed-pitch:disabled { opacity: 0.4; cursor: default; }
+.song-view-progress { position: absolute; z-index: 4; left: 50%; bottom: 6px; transform: translateX(-50%); font-size: 10px; padding: 2px 8px; border-radius: 999px; background: rgba(0, 0, 0, 0.55); color: #fff; pointer-events: none; }
+/* Extra columns on folder-view track rows */
+.folder-browse-col { flex-shrink: 0; margin-left: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-tertiary); }
+.folder-browse-col-album { width: 160px; }
+.folder-browse-col-genre { width: 100px; }
+.folder-browse-col-bpm { width: 36px; text-align: right; font-family: var(--font-mono); }
+.folder-browse-col-key { width: 40px; font-family: var(--font-mono); }
+.folder-browse-col-codec { width: 44px; font-family: var(--font-mono); font-size: 11px; }
+.folder-browse-col-plays { width: 32px; text-align: right; font-family: var(--font-mono); }
+
+.folder-browse-track-artist { width: 160px; max-width: 160px; }
+
+/* Hover controls on the visualizers appear at once instead of fading in. */
+.visualizer-popout-btn {
+  transition: border-color var(--transition-fast), background-color var(--transition-fast), color var(--transition-fast);
+}
+
+/* Follow sat under the "SPECTROGRAM / Pop" caption row, so tapping it hit the caption and opened the right panel.
+   Sit below that row instead. */
+.song-view-follow { top: 26px; right: 8px; z-index: 6; }
+.spectrogram-expanded-body .song-view-follow { top: 6px; right: 18px; }
+
+/* The caption row ("SPECTROGRAM", Pop) sits over the top of the picture. Let taps pass through it so a tap on the top row
+   does the same as a tap anywhere else on the picture (moves the playhead in Song view). The Pop button still works. */
+.visualizer-caption-left,
+.visualizer-caption-right,
+.visualizer-caption-right-group { pointer-events: none; }
+
+/* Folder view: sortable column header */
+.folder-browse-tree-with-header { display: flex; flex-direction: column; }
+.folder-sort-header { flex: 0 0 auto; overflow: hidden; border-bottom: 1px solid rgba(var(--tint), 0.08); }
+.folder-sort-header-inner { display: flex; align-items: center; height: 24px; padding: 0 12px 0 0; box-sizing: border-box; }
+.folder-sort-head { border: 0; background: transparent; color: var(--text-tertiary); font: inherit; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer; padding: 0; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.folder-sort-head:hover { color: var(--text-primary); }
+.folder-sort-head.is-sorted { color: var(--accent); }
+.folder-sort-head.folder-browse-col-bpm, .folder-sort-head.folder-browse-col-plays, .folder-sort-head.folder-browse-track-duration { text-align: right; }
+.folder-sort-head.folder-browse-track-duration { min-width: 40px; }
+.folder-sort-title { flex: 1; min-width: 0; padding-left: 52px; }
+
+/* Saved pitches page */
+.saved-pitches-toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.saved-pitches-search { min-width: 240px; }
+.saved-pitches-filters { display: flex; gap: 6px; flex-wrap: wrap; }
+.saved-pitches-filter { height: 26px; padding: 0 12px; border-radius: 13px; border: 1px solid var(--glass-border); background: transparent; color: var(--text-secondary); font-size: 12px; cursor: pointer; }
+.saved-pitches-filter:hover { color: var(--text-primary); }
+.saved-pitches-filter.is-on { background: rgba(var(--accent-rgb), 0.2); border-color: rgba(var(--accent-rgb), 0.6); color: var(--text-primary); }
+.saved-pitches-list { display: flex; flex-direction: column; }
+.saved-pitches-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1.4fr) minmax(0, 1.4fr) 80px 80px 90px 26px; column-gap: 14px; align-items: center; padding: 7px 12px; font-size: 13px; border-radius: 8px; cursor: pointer; }
+.saved-pitches-row:hover:not(.is-head) { background: rgba(var(--tint), 0.06); }
+.saved-pitches-row.is-playing .saved-pitches-cell:first-child { color: var(--accent); }
+.saved-pitches-row.is-head { cursor: default; border-bottom: 1px solid var(--glass-border); border-radius: 0; padding-bottom: 8px; }
+.saved-pitches-head { border: 0; background: transparent; color: var(--text-tertiary); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; text-align: left; cursor: pointer; padding: 0; }
+.saved-pitches-head.is-sorted { color: var(--accent); }
+.saved-pitches-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
+.saved-pitches-dim { color: var(--text-tertiary); }
+.saved-pitches-mono { font-family: var(--font-mono); }
+.saved-pitches-remove { border: 0; background: transparent; color: var(--text-secondary); cursor: pointer; font-size: 17px; line-height: 1; opacity: 0.5; }
+.saved-pitches-remove:hover { opacity: 1; }
+
+/* Loading and retrying stay out of the way: a tiny dim percentage in the bottom corner instead of a message. */
+.song-view-chip { position: absolute; z-index: 4; right: 8px; bottom: 6px; font-size: 9px; line-height: 1; font-family: var(--font-mono); color: var(--text-secondary); opacity: 0.5; pointer-events: none; }
+.song-view-chip-retry { font-size: 8px; opacity: 0.7; }
+.song-view-note-quiet { font-size: 10px; opacity: 0.6; }
+.saved-pitches-combo-row { grid-template-columns: 28px 80px 80px 90px 90px 60px minmax(0, 1fr) 80px 26px; }
+.saved-pitches-star { border: 0; background: transparent; color: var(--text-tertiary); font-size: 16px; cursor: pointer; line-height: 1; }
+.saved-pitches-star.is-on { color: var(--accent); }

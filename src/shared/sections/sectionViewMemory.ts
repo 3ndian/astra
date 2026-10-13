@@ -20,7 +20,7 @@ const MAX_REMEMBERED_FOLDERS = 500
 
 export type SectionViewMemory = Record<string, SectionViewMemoryEntry>
 
-const KNOWN_VIEWS = new Set(['home', 'library', 'stats', 'graph', 'eq', 'settings', 'playlist', 'spotify', 'wanted'])
+const KNOWN_VIEWS = new Set(['home', 'library', 'stats', 'graph', 'eq', 'settings', 'playlist', 'spotify', 'wanted', 'pitches'])
 const KNOWN_LIBRARY_MODES = new Set(['tracks', 'albums', 'artists', 'genres', 'years', 'folders'])
 
 export function sanitizeMemory(raw: unknown): SectionViewMemory {

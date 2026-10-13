@@ -12,7 +12,7 @@ export const SESSION_STATE_SCHEMA_VERSION = 1
 export const SESSION_POSITION_CHECKPOINT_KIND = 'astra-session-position-checkpoint'
 export const SESSION_POSITION_CHECKPOINT_SCHEMA_VERSION = 1
 
-export type SessionAppView = 'home' | 'library' | 'stats' | 'graph' | 'eq' | 'settings' | 'playlist' | 'spotify' | 'wanted'
+export type SessionAppView = 'home' | 'library' | 'stats' | 'graph' | 'eq' | 'settings' | 'playlist' | 'spotify' | 'wanted' | 'pitches'
 export type SessionTrackSortKey = 'title' | 'artist' | 'album' | 'year' | 'genre' | 'duration' | 'bpm' | 'musical_key' | 'added' | 'rating' | 'codec' | 'play_count'
 export type SessionSortDirection = 'asc' | 'desc'
 export type SessionViewMode = 'tracks' | 'albums' | 'artists' | 'genres' | 'years' | 'folders'
@@ -250,6 +250,7 @@ export function normalizeAppView(value: unknown): SessionAppView {
     || value === 'playlist'
     || value === 'spotify'
     || value === 'wanted'
+    || value === 'pitches'
     || value === 'home'
     ? value
     : 'home'

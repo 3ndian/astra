@@ -2,10 +2,14 @@ import { memo, ReactElement, useCallback, useEffect, useLayoutEffect, useMemo, u
 import { List, RowComponentProps, type ListImperativeAPI } from 'react-window'
 import { useLibraryStore, type DbTrack, type LibraryFolder } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
+import { useOutsideDismiss } from '../../hooks/useOutsideDismiss'
+import { useUIStore } from '../../stores/uiStore'
+import { useMetadataEditorStore } from '../../stores/metadataEditorStore'
+import { useLyricsEditorStore } from '../../stores/lyricsEditorStore'
+import { clampFixedOverlayPosition, viewportPointToAppLayout, viewportSizeToAppLayout } from '../../utils/overlayPositioning'
 import { getNormalPlaylists, usePlaylistStore } from '../../stores/playlistStore'
 import {
   buildFolderTree,
-  collectFolderNodePaths,
   type FolderTreeNode as LibraryFolderTreeNode
 } from '../../utils/folderTree'
 import { matchesFuzzyFields, rankFuzzyMatches } from '../../utils/fuzzySearch'
@@ -79,6 +83,9 @@ interface RowSharedProps {
   searchQuery: string
   selectedKey: string | null
   onSelectRow: (key: string) => void
+  onTrackContextMenu: (event: React.MouseEvent<HTMLElement>, track: DbTrack, folderTracks: DbTrack[]) => void
+  showGenre: boolean
+  showBpmKey: boolean
   /** Width the widest visible row needs, so long names can be scrolled into view sideways. */
   minRowWidth: number
 }
@@ -87,6 +94,48 @@ const FOLDER_ROW_HEIGHT = 32
 const FOLDER_ROOT_ROW_HEIGHT = 42
 const TRACK_ROW_HEIGHT = 28
 const FOLDER_TREE_OVERSCAN_COUNT = 10
+
+type FolderSortKey = 'title' | 'artist' | 'album' | 'genre' | 'bpm' | 'key' | 'codec' | 'plays' | 'duration'
+interface FolderSort { key: FolderSortKey; dir: 'asc' | 'desc' }
+const FOLDER_SORT_STORAGE_KEY = 'astra.folderView.sort.v1'
+const NUMERIC_FIRST_DESC: readonly FolderSortKey[] = ['plays', 'bpm', 'duration']
+
+function readFolderSort(): FolderSort | null {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(FOLDER_SORT_STORAGE_KEY) ?? 'null') as FolderSort | null
+    if (parsed && typeof parsed.key === 'string' && (parsed.dir === 'asc' || parsed.dir === 'desc')) return parsed
+  } catch { /* no saved sort */ }
+  return null
+}
+
+function sortValue(track: DbTrack, key: FolderSortKey): string | number | null {
+  switch (key) {
+    case 'title': return track.title || null
+    case 'artist': return track.artist || null
+    case 'album': return track.album || null
+    case 'genre': return track.genre || null
+    case 'bpm': return track.bpm ? track.bpm : null
+    case 'key': return track.musical_key || null
+    case 'codec': return (track.codec ?? track.format ?? '') || null
+    case 'plays': return track.play_count ?? 0
+    case 'duration': return track.duration || null
+  }
+}
+
+/** Sorts one folder's tracks. Empty values always go last, whichever way it is sorted. */
+function sortFolderTracks(tracks: DbTrack[], sort: FolderSort | null): DbTrack[] {
+  if (!sort) return tracks
+  const factor = sort.dir === 'asc' ? 1 : -1
+  return [...tracks].sort((a, b) => {
+    const left = sortValue(a, sort.key)
+    const right = sortValue(b, sort.key)
+    if (left === null && right === null) return 0
+    if (left === null) return 1
+    if (right === null) return -1
+    if (typeof left === 'number' && typeof right === 'number') return (left - right) * factor
+    return String(left).localeCompare(String(right), undefined, { numeric: true, sensitivity: 'base' }) * factor
+  })
+}
 
 function formatDuration(seconds: number): string {
   if (!seconds || !isFinite(seconds)) return '--:--'
@@ -110,6 +159,9 @@ function FolderTreeRowRenderer({
   searchQuery,
   selectedKey,
   onSelectRow,
+  onTrackContextMenu,
+  showGenre,
+  showBpmKey,
   minRowWidth
 }: RowComponentProps<RowSharedProps>): ReactElement | null {
   const row = rows[index]
@@ -198,6 +250,10 @@ function FolderTreeRowRenderer({
           onSelectRow(`t:${track.path}`)
           onPlayTrack(track, folderTracks)
         }}
+        onContextMenu={(event) => {
+          onSelectRow(`t:${track.path}`)
+          onTrackContextMenu(event, track, folderTracks)
+        }}
       >
         <span className="folder-tree-guide">
           {guideMask.map((hasLine, guideIndex) => (
@@ -219,6 +275,12 @@ function FolderTreeRowRenderer({
         </button>
         <span className="folder-browse-track-title" title={track.title}>{highlightSearchMatch(track.title, searchQuery)}</span>
         <span className="folder-browse-track-artist">{highlightSearchMatch(track.artist, searchQuery)}</span>
+        <span className="folder-browse-col folder-browse-col-album" title={track.album}>{track.album}</span>
+        {showGenre && <span className="folder-browse-col folder-browse-col-genre" title={track.genre ?? ''}>{track.genre ?? ''}</span>}
+        {showBpmKey && <span className="folder-browse-col folder-browse-col-bpm" title="BPM">{track.bpm ? Math.round(track.bpm) : ''}</span>}
+        {showBpmKey && <span className="folder-browse-col folder-browse-col-key" title="Key">{track.musical_key ?? ''}</span>}
+        <span className="folder-browse-col folder-browse-col-codec" title="Codec">{(track.codec ?? track.format ?? '').toUpperCase()}</span>
+        <span className="folder-browse-col folder-browse-col-plays" title="Play count">{track.play_count}</span>
         <span className="folder-browse-track-duration">{formatDuration(track.duration)}</span>
       </div>
     </div>
@@ -227,7 +289,7 @@ function FolderTreeRowRenderer({
 
 const MemoizedRow = memo(FolderTreeRowRenderer) as typeof FolderTreeRowRenderer
 
-export default function FolderTreeView({ tracks, allTracks, folders, searchQuery, onClearSearch }: FolderTreeViewProps) {
+export default function FolderTreeView({ tracks, folders, searchQuery, onClearSearch }: FolderTreeViewProps) {
   const [folderPlaylistPopup, setFolderPlaylistPopup] = useState<FolderPlaylistPopupState | null>(null)
   const [folderPlaylistSearch, setFolderPlaylistSearch] = useState('')
   const [folderPlaylistFeedback, setFolderPlaylistFeedback] = useState<FolderPlaylistFeedback | null>(null)
@@ -237,7 +299,6 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
   const expandedNodes = useLibraryStore((state) => state.folderViewExpandedPaths)
   const setFolderViewExpandedPaths = useLibraryStore((state) => state.setFolderViewExpandedPaths)
   const setFolderViewScrollTop = useLibraryStore((state) => state.setFolderViewScrollTop)
-  const pruneFolderViewExpandedPaths = useLibraryStore((state) => state.pruneFolderViewExpandedPaths)
   const currentTrack = usePlayerStore((state) => state.currentTrack)
   const startPlaybackContextByPaths = usePlayerStore((state) => state.startPlaybackContextByPaths)
   const playlists = usePlaylistStore((state) => state.playlists)
@@ -253,7 +314,17 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
   const hasRestoredScrollRef = useRef(restoreScrollTopRef.current <= 0)
 
   const trimmedSearchQuery = searchQuery.trim()
+  const showTracklistGenre = useLibraryStore((state) => state.showTracklistGenre)
+  const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
+  const [folderSort, setFolderSort] = useState<FolderSort | null>(() => readFolderSort())
+  const headerScrollRef = useRef<HTMLDivElement | null>(null)
+  const [trackMenu, setTrackMenu] = useState<{ track: DbTrack; folderTracks: DbTrack[]; x: number; y: number } | null>(null)
+  const [showMenuPlaylists, setShowMenuPlaylists] = useState(false)
+  const uiScalePercent = useUIStore((state) => state.uiScalePercent)
+  const enqueueTrackPaths = usePlayerStore((state) => state.enqueueTrackPaths)
+  const openMetadataEditor = useMetadataEditorStore((state) => state.openPanel)
+  const closeLyricsEditor = useLyricsEditorStore((state) => state.closePanel)
 
   const filteredTracks = useMemo(() => {
     if (!trimmedSearchQuery) return tracks
@@ -266,10 +337,6 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
   const tree = useMemo(() => (
     buildFolderTree(folders, filteredTracks, window.electronAPI.platform)
   ), [filteredTracks, folders])
-
-  const fullFolderNodePaths = useMemo(() => (
-    collectFolderNodePaths(buildFolderTree(folders, allTracks, window.electronAPI.platform))
-  ), [allTracks, folders])
 
   const folderNodesByPath = useMemo(() => {
     const next = new Map<string, FolderTreeNode>()
@@ -295,19 +362,20 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
 
       const childMask = isRoot ? [] : [...guideMask, !isLast]
       const sortedChildren = [...node.children.entries()].sort(([a], [b]) => a.localeCompare(b))
-      const totalItems = sortedChildren.length + node.tracks.length
+      const orderedTracks = sortFolderTracks(node.tracks, folderSort)
+      const totalItems = sortedChildren.length + orderedTracks.length
 
       sortedChildren.forEach(([, child], childIndex) => {
-        const childIsLast = childIndex === sortedChildren.length - 1 && node.tracks.length === 0
+        const childIsLast = childIndex === sortedChildren.length - 1 && orderedTracks.length === 0
         flattenNode(child, childMask, childIsLast, false, node.fullPath)
       })
 
-      node.tracks.forEach((track, trackIndex) => {
+      orderedTracks.forEach((track, trackIndex) => {
         const isLastItem = sortedChildren.length + trackIndex === totalItems - 1
         rows.push({
           type: 'track',
           track,
-          folderTracks: node.tracks,
+          folderTracks: orderedTracks,
           guideMask: childMask,
           isLast: isLastItem,
           parentPath: node.fullPath
@@ -320,12 +388,10 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
     })
 
     return rows
-  }, [tree, expandedNodes])
+  }, [tree, expandedNodes, folderSort])
 
-  useEffect(() => {
-    if (expandedNodes.size === 0) return
-    pruneFolderViewExpandedPaths(fullFolderNodePaths)
-  }, [expandedNodes.size, fullFolderNodePaths, pruneFolderViewExpandedPaths])
+  // Folders only close when you close them (click, or the left arrow). They used to be dropped whenever the library
+  // reloaded and a folder was briefly missing from the list, which happens while a refresh is in progress.
 
   const restoreScrollPosition = useCallback(() => {
     if (hasRestoredScrollRef.current) return true
@@ -688,7 +754,23 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
     }
   }, [recordScrollTop, visibleRows.length])
 
+  const handleSortClick = useCallback((key: FolderSortKey) => {
+    setFolderSort((current) => {
+      const firstDir: FolderSort['dir'] = NUMERIC_FIRST_DESC.includes(key) ? 'desc' : 'asc'
+      let next: FolderSort | null
+      if (!current || current.key !== key) next = { key, dir: firstDir }
+      else if (current.dir === firstDir) next = { key, dir: firstDir === 'asc' ? 'desc' : 'asc' }
+      else next = null
+      try {
+        if (next) localStorage.setItem(FOLDER_SORT_STORAGE_KEY, JSON.stringify(next))
+        else localStorage.removeItem(FOLDER_SORT_STORAGE_KEY)
+      } catch { /* sort lasts this session only */ }
+      return next
+    })
+  }, [])
+
   const handleListScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
+    if (headerScrollRef.current) headerScrollRef.current.scrollLeft = event.currentTarget.scrollLeft
     recordScrollTop(event.currentTarget.scrollTop)
     closeFolderPlaylistPopup()
   }, [closeFolderPlaylistPopup, recordScrollTop])
@@ -734,13 +816,47 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
       const width = row.type === 'folder'
         ? row.guideMask.length * 20 + (row.isRoot ? 24 : 0) + 24 + 4 + row.node.name.length * 8 + 8 + 70 + 44 + 12
         : (row.guideMask.length + 1) * 20 + 22 + row.track.title.length * 8 + 12
-          + Math.min(200, row.track.artist.length * 7.4) + 12 + 52 + 12
+          + 160 + 12 + 52 + 12
+          + 172 + (showTracklistGenre ? 112 : 0) + (showTracklistBpmKey ? 100 : 0) + 68 + 56
       if (width > widest) widest = width
     }
     return Math.min(Math.ceil(widest), 4000)
-  }, [visibleRows])
+  }, [visibleRows, showTracklistGenre, showTracklistBpmKey])
 
   const currentTrackPath = currentTrack?.path ?? null
+  const handleTrackContextMenu = useCallback((event: React.MouseEvent<HTMLElement>, track: DbTrack, folderTracks: DbTrack[]) => {
+    event.preventDefault()
+    event.stopPropagation()
+    closeFolderPlaylistPopup()
+    setShowMenuPlaylists(false)
+    setTrackMenu({ track, folderTracks, x: event.clientX, y: event.clientY })
+  }, [closeFolderPlaylistPopup])
+
+  useEffect(() => {
+    if (!trackMenu) return
+    const close = (): void => setTrackMenu(null)
+    const onKey = (event: KeyboardEvent): void => { if (event.key === 'Escape') { event.preventDefault(); close() } }
+    document.addEventListener('keydown', onKey)
+    window.addEventListener('resize', close)
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      window.removeEventListener('resize', close)
+    }
+  }, [trackMenu])
+  const dismissTrackMenu = useCallback(() => setTrackMenu(null), [])
+  useOutsideDismiss(trackMenu !== null, dismissTrackMenu, '.track-context-menu')
+
+  const trackMenuStyle = useMemo(() => {
+    if (!trackMenu) return undefined
+    const scale = uiScalePercent / 100
+    return clampFixedOverlayPosition({
+      anchor: viewportPointToAppLayout({ x: trackMenu.x, y: trackMenu.y }, scale),
+      overlay: { width: 220, height: showMenuPlaylists ? 330 : 200 },
+      viewport: viewportSizeToAppLayout({ width: window.innerWidth, height: window.innerHeight }, scale),
+      edgePadding: 8
+    })
+  }, [trackMenu, uiScalePercent, showMenuPlaylists])
+
   const rowProps: RowSharedProps = useMemo(() => ({
     rows: visibleRows,
     currentTrackPath,
@@ -753,8 +869,14 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
     searchQuery: trimmedSearchQuery,
     selectedKey,
     onSelectRow: setSelectedKey,
+    onTrackContextMenu: handleTrackContextMenu,
+    showGenre: showTracklistGenre,
+    showBpmKey: showTracklistBpmKey,
     minRowWidth
   }), [
+    showTracklistGenre,
+    showTracklistBpmKey,
+    handleTrackContextMenu,
     selectedKey,
     currentTrackPath,
     expandedNodes,
@@ -780,7 +902,32 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
       <p>No folders with tracks</p>
     </div>
   ) : (
-    <div className="folder-browse-tree" aria-label="Folders. Use the arrow keys to browse, Enter to play.">
+    <div className="folder-browse-tree folder-browse-tree-with-header" aria-label="Folders. Use the arrow keys to browse, Enter to play.">
+      <div className="folder-sort-header" ref={headerScrollRef}>
+        <div className="folder-sort-header-inner" style={{ width: minRowWidth, minWidth: '100%' }}>
+          {([
+            ['title', 'Title', 'folder-sort-title', true],
+            ['artist', 'Artist', 'folder-browse-track-artist', true],
+            ['album', 'Album', 'folder-browse-col folder-browse-col-album', true],
+            ['genre', 'Genre', 'folder-browse-col folder-browse-col-genre', showTracklistGenre],
+            ['bpm', 'BPM', 'folder-browse-col folder-browse-col-bpm', showTracklistBpmKey],
+            ['key', 'Key', 'folder-browse-col folder-browse-col-key', showTracklistBpmKey],
+            ['codec', 'Codec', 'folder-browse-col folder-browse-col-codec', true],
+            ['plays', 'Plays', 'folder-browse-col folder-browse-col-plays', true],
+            ['duration', 'Time', 'folder-browse-track-duration', true]
+          ] as Array<[FolderSortKey, string, string, boolean]>).filter(([, , , visible]) => visible).map(([key, label, className]) => (
+            <button
+              key={key}
+              type="button"
+              className={`folder-sort-head ${className} ${folderSort?.key === key ? 'is-sorted' : ''}`.trim()}
+              onClick={() => handleSortClick(key)}
+              aria-label={`Sort by ${label}`}
+            >
+              {label}{folderSort?.key === key ? (folderSort.dir === 'asc' ? ' ▲' : ' ▼') : ''}
+            </button>
+          ))}
+        </div>
+      </div>
       <List
         className="folder-browse-virtualized"
         defaultHeight={TRACK_ROW_HEIGHT * 8}
@@ -793,14 +940,68 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
         rowCount={visibleRows.length}
         rowHeight={rowHeight}
         rowProps={rowProps}
-        style={{ height: '100%', width: '100%' }}
+        style={{ flex: 1, minHeight: 0, width: '100%' }}
       />
     </div>
   )
 
+  const menuPlaylists = getNormalPlaylists(playlists)
+  const closeMenu = (): void => setTrackMenu(null)
+
   return (
     <>
       {content}
+      {trackMenu && (
+        <div
+          className="track-context-menu"
+          style={trackMenuStyle}
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <button type="button" className="track-context-menu-item" onClick={() => {
+            const { track, folderTracks } = trackMenu
+            closeMenu()
+            void handlePlayTrack(track, folderTracks)
+          }}>Play</button>
+          <button type="button" className="track-context-menu-item" onClick={() => { void enqueueTrackPaths([trackMenu.track.path], 'next'); closeMenu() }}>Play Next</button>
+          <button type="button" className="track-context-menu-item" onClick={() => { void enqueueTrackPaths([trackMenu.track.path], 'end'); closeMenu() }}>Add to Queue</button>
+          <button type="button" className="track-context-menu-item" onClick={() => setShowMenuPlaylists((open) => !open)}>
+            Add to Playlist {showMenuPlaylists ? '▾' : '▸'}
+          </button>
+          {showMenuPlaylists && (
+            <div style={{ maxHeight: 120, overflowY: 'auto' }}>
+              {menuPlaylists.length === 0 && <div className="track-context-menu-item" aria-disabled="true">No playlists yet</div>}
+              {menuPlaylists.map((playlist) => (
+                <button
+                  key={playlist.id}
+                  type="button"
+                  className="track-context-menu-item"
+                  onClick={() => { void addToPlaylist(playlist.id, [trackMenu.track.path]); closeMenu() }}
+                >
+                  {playlist.name}
+                </button>
+              ))}
+            </div>
+          )}
+          <button
+            type="button"
+            className="track-context-menu-item"
+            disabled={trackMenu.track.source_type !== 'local'}
+            onClick={() => {
+              openMetadataEditor({ trackPaths: [trackMenu.track.path], skippedRemoteCount: 0 })
+              closeLyricsEditor()
+              closeMenu()
+            }}
+          >Edit Metadata</button>
+          <button
+            type="button"
+            className="track-context-menu-item"
+            disabled={trackMenu.track.source_type !== 'local'}
+            onClick={() => { void window.electronAPI.revealFileInFolder(trackMenu.track.path); closeMenu() }}
+          >Show in Finder</button>
+        </div>
+      )}
       {folderPlaylistPopup && currentFolderPlaylistNode && (
         <div
           className="track-playlist-popup folder-playlist-popup"
